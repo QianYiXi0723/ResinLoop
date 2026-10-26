@@ -1,0 +1,5 @@
+# 本地运行依赖（标准库覆盖配置/日志/http 其余部分）
+requests>=2.28.0
+# 扫码登录鹰角通行证（python main.py --login-skland）需要；只在登录时使用
+qrcode>=7.4
+pillow>=10.0

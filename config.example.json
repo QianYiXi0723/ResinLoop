@@ -1,0 +1,108 @@
+{
+  "app": {
+    "test_mode": "auto",
+    "check_times": [
+      "08:30",
+      "20:30"
+    ]
+  },
+  "accounts": [
+    {
+      "game": "genshin",
+      "nickname": "旅行者",
+      "enabled": true,
+      "credential": {
+        "uid": "100000000",
+        "server": "cn_gf01",
+        "cookie": "ltuid=请填写; ltoken=请填写"
+      }
+    },
+    {
+      "game": "starrail",
+      "nickname": "开拓者",
+      "enabled": true,
+      "credential": {
+        "uid": "100000000",
+        "server": "prod_gf_cn",
+        "cookie": "ltuid=请填写; ltoken=请填写"
+      }
+    },
+    {
+      "game": "zzz",
+      "nickname": "绳匠",
+      "enabled": true,
+      "credential": {
+        "uid": "100000000",
+        "server": "prod_gf_cn",
+        "cookie": "ltuid=请填写; ltoken=请填写"
+      }
+    },
+    {
+      "game": "arknights",
+      "nickname": "博士",
+      "enabled": true,
+      "credential": {
+        "token": "请填写鹰角通行证Token"
+      }
+    },
+    {
+      "game": "endfield",
+      "nickname": "管理员",
+      "enabled": true,
+      "credential": {
+        "token": "请填写鹰角通行证Token"
+      }
+    }
+  ],
+  "push": {
+    "channels": [
+      "bark"
+    ],
+    "bark": {
+      "enabled": true,
+      "server": "https://api.day.app",
+      "device_key": "",
+      "group": "游戏日常",
+      "sound": "birdsong",
+      "icon": "",
+      "level": "active",
+      "timeout": 10
+    },
+    "serverchan": {
+      "enabled": true,
+      "sendkey": "",
+      "timeout": 10
+    },
+    "feishu": {
+      "enabled": true,
+      "webhook": "",
+      "secret": "",
+      "timeout": 10
+    },
+    "dingtalk": {
+      "enabled": true,
+      "webhook": "",
+      "secret": "",
+      "timeout": 10
+    },
+    "qmsg": {
+      "enabled": true,
+      "key": "",
+      "server": "https://qmsg.zendee.cn",
+      "timeout": 10
+    }
+  },
+  "query": {
+    "provider": "mock",
+    "timeout": 10,
+    "mihoyo_enabled": true,
+    "proxy": "",
+    "mihoyo_device_mode": "auto",
+    "mihoyo_task_scope": "daily"
+  },
+  "logging": {
+    "dir": "logs",
+    "level": "INFO",
+    "keep_days": 14
+  }
+}
