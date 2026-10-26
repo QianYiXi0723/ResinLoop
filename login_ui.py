@@ -23,6 +23,7 @@ import argparse
 import base64
 import json
 import logging
+import os
 import socket
 import sys
 import threading
@@ -565,17 +566,28 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def pick_port(preferred: int, tries: int = 12) -> int:
-    """从 preferred 开始找一个能绑定的端口。"""
+    """从 preferred 开始找一个真正空闲的端口。
+
+    注意：这里**不能**加 SO_REUSEADDR。Windows 的语义与 Unix 不同 ——
+    它允许与"已监听"的端口重复绑定，探测会误判为空闲，结果两个进程
+    同时监听同一端口，请求随机落到其中一个，表现为会话莫名失效。
+    """
     for offset in range(tries):
         port = preferred + offset
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 probe.bind(("127.0.0.1", port))
                 return port
             except OSError:
                 continue
     raise RuntimeError(f"{preferred}~{preferred + tries - 1} 端口都被占用")
+
+
+class LocalHTTPServer(ThreadingHTTPServer):
+    """只服务本机；Windows 上禁用 allow_reuse_address（原因同 pick_port）。"""
+
+    daemon_threads = True
+    allow_reuse_address = os.name != "nt"
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -602,7 +614,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
 
     url = f"http://127.0.0.1:{port}/"
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = LocalHTTPServer(("127.0.0.1", port), Handler)
     print("=" * 58)
     print("  账号登录界面已启动")
     print(f"  地址：{url}")
