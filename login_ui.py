@@ -951,8 +951,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);
        font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
-       padding:32px 16px 64px}
-  .wrap{max-width:760px;margin:0 auto}
+       padding:48px 16px;
+       min-height:100vh;display:flex;flex-direction:column;justify-content:center}
+  .wrap{width:100%;max-width:820px;margin:0 auto}
   header{margin-bottom:18px}
   h1{font-size:22px;margin:0 0 6px;letter-spacing:-.01em}
   .sub{margin:0;color:var(--muted);font-size:14px}
