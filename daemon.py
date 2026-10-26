@@ -378,7 +378,7 @@ def _wait(seconds: float, stop_event: threading.Event) -> None:
             logger.info("检测到停止标记 %s", STOP_FLAG.name)
             stop_event.set()
             return
-        stop_event.wait(min(1.0, remaining))
+        stop_event.wait(min(0.5, remaining))
 
 
 def _tick(stop_event: threading.Event) -> None:
