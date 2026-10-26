@@ -270,15 +270,17 @@ def main(argv: Optional[list] = None) -> int:
     ok = False
     if not args.browser:
         ok = run_window(url, debug=args.debug)
+        if not ok:
+            # 只有"想开窗口但没开成"才提示；--browser 是用户主动选的，不该弹窗
+            _message_box(
+                "独立窗口没能启动，已改用默认浏览器打开控制台。\n\n"
+                "常见原因：缺少 Microsoft Edge WebView2 运行时。\n"
+                "可到微软官网下载安装后重试；不影响当前使用。",
+                icon=0x30,
+            )
 
     if not ok:
         logger.warning("进入浏览器降级模式：%s", url)
-        _message_box(
-            "独立窗口没能启动，已改用默认浏览器打开控制台。\n\n"
-            "常见原因：缺少 Microsoft Edge WebView2 运行时。\n"
-            "可到微软官网下载安装后重试；不影响当前使用。",
-            icon=0x30,
-        )
         webbrowser.open(url)
         _keep_alive(console)
 
