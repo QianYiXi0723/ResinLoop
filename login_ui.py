@@ -295,9 +295,10 @@ def _enabled_account_info() -> List[Dict[str, str]]:
 
 #: 前端字段名 -> (写到 config.app 的 JSON 键, 默认值)。跟 core/config 字段名保持一致。
 _THRESHOLD_FIELDS: Tuple[Tuple[str, str, int], ...] = (
-    ("genshin",  "genshin_resin_threshold",    160),
-    ("starrail", "starrail_stamina_threshold", 240),
-    ("zzz",      "zzz_energy_threshold",       200),
+    ("genshin",   "genshin_resin_threshold",    160),
+    ("starrail",  "starrail_stamina_threshold", 240),
+    ("zzz",       "zzz_energy_threshold",       200),
+    ("arknights", "arknights_ap_threshold",     135),
 )
 
 
@@ -365,13 +366,15 @@ def save_thresholds(payload: Dict[str, Any]) -> Dict[str, Any]:
     raw["app"]["genshin_resin_threshold"]    = normalized["genshin"]
     raw["app"]["starrail_stamina_threshold"] = normalized["starrail"]
     raw["app"]["zzz_energy_threshold"]       = normalized["zzz"]
+    raw["app"]["arknights_ap_threshold"]     = normalized["arknights"]
 
     # 用 core.config 自己的规则做全量复检 —— 校验不过就抛异常，文件保持原样
     parse_config(raw, source=CONFIG_PATH)
     save_raw_config(raw)
     logger.info(
-        "体力溢出阈值已更新：原粹树脂=%d / 开拓力=%d / 电量=%d",
-        normalized["genshin"], normalized["starrail"], normalized["zzz"],
+        "体力溢出阈值已更新：原粹树脂=%d / 开拓力=%d / 电量=%d / 理智=%d",
+        normalized["genshin"], normalized["starrail"],
+        normalized["zzz"], normalized["arknights"],
     )
 
     result = thresholds_status()
@@ -1383,37 +1386,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <b>保存后必须重新扫码</b>，否则登录设备与查询设备不一致。
       </p>
     </section>
-
-    <!-- 体力溢出警告：阈值设置（与 config.app.genshin_resin_threshold 等对应） -->
-    <section class="card">
-      <div class="chan-head">
-        <h2><span class="dot" style="background:var(--warn)"></span>体力溢出警告</h2>
-        <span class="badge" id="resin-state">读取中</span>
-      </div>
-      <p class="desc">
-        当前体力 / 树脂 / 电量 ≥ 阈值时强制推送一条提醒。
-        <b>0 = 关闭该游戏</b>，留空则用默认值。改完下次检查自动生效，<b>不用重启守护进程</b>。
-      </p>
-      <div class="resin-row">
-        <label>
-          <span>原粹树脂</span>
-          <input type="number" id="resin-genshin" min="0" max="1000" step="10"
-                 placeholder="160" inputmode="numeric">
-        </label>
-        <label>
-          <span>开拓力</span>
-          <input type="number" id="resin-starrail" min="0" max="1000" step="10"
-                 placeholder="240" inputmode="numeric">
-        </label>
-        <label>
-          <span>电量</span>
-          <input type="number" id="resin-zzz" min="0" max="1000" step="10"
-                 placeholder="200" inputmode="numeric">
-        </label>
-      </div>
-      <button id="btn-resin-save">保存阈值</button>
-      <p class="hint" id="resin-hint">读取中…</p>
-    </section>
   </section>
 
   <!-- ======================= Tab 2：通知绑定 ======================= -->
@@ -1528,6 +1500,42 @@ HTML_PAGE = r"""<!DOCTYPE html>
         单位分钟，<b>0 = 关闭补发</b>（错过就当天不再提醒），最大 720。
       </p>
     </section>
+
+    <!-- 体力溢出警告：阈值设置（与 config.app 的 *_threshold 字段对应） -->
+    <section class="card">
+      <div class="chan-head">
+        <h2><span class="dot" style="background:var(--warn)"></span>体力溢出警告</h2>
+        <span class="badge" id="resin-state">读取中</span>
+      </div>
+      <p class="desc">
+        当前体力 / 树脂 / 电量 / 理智 ≥ 阈值时强制推送一条提醒。
+        <b>0 = 关闭该游戏</b>，留空则用默认值。改完下次检查自动生效，<b>不用重启守护进程</b>。
+      </p>
+      <div class="resin-row">
+        <label>
+          <span>原神 · 原粹树脂</span>
+          <input type="number" id="resin-genshin" min="0" max="1000" step="10"
+                 placeholder="160" inputmode="numeric">
+        </label>
+        <label>
+          <span>星铁 · 开拓力</span>
+          <input type="number" id="resin-starrail" min="0" max="1000" step="10"
+                 placeholder="240" inputmode="numeric">
+        </label>
+        <label>
+          <span>绝区零 · 电量</span>
+          <input type="number" id="resin-zzz" min="0" max="1000" step="10"
+                 placeholder="200" inputmode="numeric">
+        </label>
+        <label>
+          <span>明日方舟 · 理智</span>
+          <input type="number" id="resin-arknights" min="0" max="1000" step="10"
+                 placeholder="135" inputmode="numeric">
+        </label>
+      </div>
+      <button id="btn-resin-save">保存阈值</button>
+      <p class="hint" id="resin-hint">读取中…</p>
+    </section>
   </section>
 
   <!-- ======================= Tab 4：每日报表 ======================= -->
@@ -1582,8 +1590,8 @@ function switchTab(name){
   });
 
   if (name === 'notify') loadPush();
-  if (name === 'schedule') { loadSchedule(); startSchedPoll(); } else { stopSchedPoll(); }
-  if (name === 'account') { loadDevice(); refreshNotice(); loadThresholds(); }
+  if (name === 'schedule') { loadSchedule(); startSchedPoll(); loadThresholds(); } else { stopSchedPoll(); }
+  if (name === 'account') { loadDevice(); refreshNotice(); }
   if (name === 'history') loadHistory();
 }
 
@@ -1839,7 +1847,7 @@ function renderThresholds(d){
   if (!d || !d.ok) { return; }
   const values = d.values || {};
   const defs = d.defaults || {};
-  ['genshin','starrail','zzz'].forEach(function(gid){
+  ['genshin','starrail','zzz','arknights'].forEach(function(gid){
     const box = document.getElementById('resin-' + gid);
     if (!box) return;
     box.value = (values[gid] != null) ? values[gid] : '';
@@ -1853,7 +1861,7 @@ function renderThresholds(d){
   }
   const hint = document.getElementById('resin-hint');
   if (hint) {
-    hint.innerHTML = '默认值：原神 160、星铁 240、绝区零 200（写 0 关闭）';
+    hint.innerHTML = '默认值：原神 160、星铁 240、绝区零 200、方舟理智 135（写 0 关闭）';
   }
 }
 
@@ -1873,9 +1881,10 @@ async function saveThresholds(){
   btn.disabled = true; btn.textContent = '保存中…';
   try {
     const payload = {
-      genshin:  document.getElementById('resin-genshin').value,
+      genshin:   document.getElementById('resin-genshin').value,
       starrail:  document.getElementById('resin-starrail').value,
-      zzz:        document.getElementById('resin-zzz').value
+      zzz:       document.getElementById('resin-zzz').value,
+      arknights: document.getElementById('resin-arknights').value
     };
     const d = await postJSON('/api/settings', payload);
     if (!d.ok) { toast(d.message || '保存失败', true); return; }

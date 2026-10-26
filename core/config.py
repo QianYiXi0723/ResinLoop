@@ -62,14 +62,16 @@ RESOURCE_THRESHOLD_DEFAULT: Dict[str, int] = {
     "genshin": 160,    # 原粹树脂，上限 200
     "starrail": 240,   # 开拓力，上限 240
     "zzz": 200,        # 电量，上限 240
+    "arknights": 135,  # 理智，上限随账号等级（常见 135~180）
 }
 
-#: 各游戏"体力/树脂/电量"在任务列表里的显示名，用于从查询结果里认出那一项。
+#: 各游戏"体力/树脂/电量/理智"在任务列表里的显示名，用于从查询结果里认出那一项。
 #: 值与 core/querier.py 里 TaskItem 的 name 必须一致。
 RESOURCE_TASK_NAMES: Dict[str, str] = {
     "genshin": "原粹树脂",
     "starrail": "开拓力",
     "zzz": "电量",
+    "arknights": "理智",
 }
 
 #: 阈值允许的最大值（体力上限普遍在 200~240 之间，留点余量）
@@ -92,6 +94,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "genshin_resin_threshold": RESOURCE_THRESHOLD_DEFAULT["genshin"],
         "starrail_stamina_threshold": RESOURCE_THRESHOLD_DEFAULT["starrail"],
         "zzz_energy_threshold": RESOURCE_THRESHOLD_DEFAULT["zzz"],
+        "arknights_ap_threshold": RESOURCE_THRESHOLD_DEFAULT["arknights"],
     },
     "accounts": [
         {
@@ -586,6 +589,7 @@ class AppConfig:
     genshin_resin_threshold: int = RESOURCE_THRESHOLD_DEFAULT["genshin"]
     starrail_stamina_threshold: int = RESOURCE_THRESHOLD_DEFAULT["starrail"]
     zzz_energy_threshold: int = RESOURCE_THRESHOLD_DEFAULT["zzz"]
+    arknights_ap_threshold: int = RESOURCE_THRESHOLD_DEFAULT["arknights"]
     accounts: List[AccountConfig] = field(default_factory=list)
     push: PushConfig = field(default_factory=PushConfig)
     query: QueryConfig = field(default_factory=QueryConfig)
@@ -620,6 +624,7 @@ class AppConfig:
             "genshin": self.genshin_resin_threshold,
             "starrail": self.starrail_stamina_threshold,
             "zzz": self.zzz_energy_threshold,
+            "arknights": self.arknights_ap_threshold,
         }
 
     def to_dict(self) -> Dict[str, Any]:
@@ -631,6 +636,7 @@ class AppConfig:
                 "genshin_resin_threshold": int(self.genshin_resin_threshold),
                 "starrail_stamina_threshold": int(self.starrail_stamina_threshold),
                 "zzz_energy_threshold": int(self.zzz_energy_threshold),
+                "arknights_ap_threshold": int(self.arknights_ap_threshold),
             },
             "accounts": [account.to_dict() for account in self.accounts],
             "push": self.push.to_dict(),
@@ -723,6 +729,8 @@ def parse_config(data: Dict[str, Any], source: Optional[Path] = None) -> AppConf
             app_section.get("starrail_stamina_threshold"), "starrail_stamina_threshold", "starrail"),
         zzz_energy_threshold=_parse_threshold(
             app_section.get("zzz_energy_threshold"), "zzz_energy_threshold", "zzz"),
+        arknights_ap_threshold=_parse_threshold(
+            app_section.get("arknights_ap_threshold"), "arknights_ap_threshold", "arknights"),
         accounts=accounts,
         push=PushConfig.from_dict(merged.get("push")),
         query=QueryConfig.from_dict(merged.get("query")),

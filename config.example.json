@@ -8,7 +8,8 @@
     "catch_up_minutes": 180,
     "genshin_resin_threshold": 160,
     "starrail_stamina_threshold": 240,
-    "zzz_energy_threshold": 200
+    "zzz_energy_threshold": 200,
+    "arknights_ap_threshold": 135
   },
   "accounts": [
     {

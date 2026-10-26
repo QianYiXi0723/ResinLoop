@@ -462,7 +462,7 @@ class SklandQuerier(BaseQuerier):
 
     @staticmethod
     def parse_arknights(data: Dict[str, Any]) -> List[TaskItem]:
-        """明日方舟 player/info -> 每日任务（data.routine.daily）。"""
+        """明日方舟 player/info -> 每日任务（data.routine.daily）+ 理智（data.status.ap）。"""
         routine = data.get("routine")
         if not isinstance(routine, dict):
             raise SklandQueryError("明日方舟返回数据缺少 routine 字典")
@@ -473,7 +473,19 @@ class SklandQuerier(BaseQuerier):
         total = _require_int_field(daily, "total", "routine.daily.total")
         if total <= 0:
             raise SklandQueryError(f"routine.daily.total 异常（{total}），无法判断完成度")
-        return [TaskItem("每日任务", done=current >= total, progress=f"{current}/{total}")]
+        tasks = [TaskItem("每日任务", done=current >= total, progress=f"{current}/{total}")]
+
+        # 理智：status.ap = {current, max}。可选字段，缺了宁可不展示，不让整款游戏失败。
+        status = data.get("status")
+        ap = status.get("ap") if isinstance(status, dict) else None
+        if isinstance(ap, dict):
+            ap_cur = _optional_int(ap, "current")
+            ap_max = _optional_int(ap, "max")
+            if ap_cur is not None and ap_max:
+                tasks.append(TaskItem(
+                    "理智", ap_cur >= ap_max, f"{ap_cur}/{ap_max}", counted=False,
+                ))
+        return tasks
 
     @staticmethod
     def parse_endfield(detail: Dict[str, Any]) -> List[TaskItem]:
