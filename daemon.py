@@ -502,7 +502,7 @@ def _run_tray(stop_event: threading.Event, on_ready: Any = None) -> None:
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("退出程序", on_quit),
     )
-    icon = pystray.Icon("resinloop", _tray_image(), "ResinLoop · 游戏日常巡查", menu)
+    icon = pystray.Icon("resinloop", _tray_image(), "ResinLoop · 日常巡查", menu)
     logger.info("托盘图标已创建")
     if on_ready is not None:
         on_ready(icon)

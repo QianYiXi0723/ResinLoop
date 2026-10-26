@@ -41,7 +41,7 @@ if str(BASE_DIR) not in sys.path:
 LOGS_DIR = BASE_DIR / "logs"
 LOG_FILE = LOGS_DIR / "desktop.log"
 
-WINDOW_TITLE = "ResinLoop · 游戏日常巡查"
+WINDOW_TITLE = "ResinLoop · 日常巡查"
 WINDOW_WIDTH = 980
 WINDOW_HEIGHT = 800
 WINDOW_MIN = (820, 620)
