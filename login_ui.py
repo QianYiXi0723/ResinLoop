@@ -289,6 +289,100 @@ def _enabled_account_info() -> List[Dict[str, str]]:
     return items
 
 
+# --------------------------------------------------------------------------- #
+# 体力溢出阈值（/api/settings）：用户在 UI 改完直接写 config.app
+# --------------------------------------------------------------------------- #
+
+#: 前端字段名 -> (写到 config.app 的 JSON 键, 默认值)。跟 core/config 字段名保持一致。
+_THRESHOLD_FIELDS: Tuple[Tuple[str, str, int], ...] = (
+    ("genshin",  "genshin_resin_threshold",    160),
+    ("starrail", "starrail_stamina_threshold", 240),
+    ("zzz",      "zzz_energy_threshold",       200),
+)
+
+
+def _resource_thresholds() -> Dict[str, int]:
+    """读当前 config.json 里的三个阈值，缺字段按默认值返回；0 = 已关闭。"""
+    try:
+        raw = load_raw_config()
+    except Exception:  # noqa: BLE001
+        return {key: default for key, _jk, default in _THRESHOLD_FIELDS}
+    app = raw.get("app") if isinstance(raw.get("app"), dict) else {}
+    out: Dict[str, int] = {}
+    for key, json_key, default in _THRESHOLD_FIELDS:
+        value = app.get(json_key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            out[key] = default
+        else:
+            try:
+                out[key] = int(value)
+            except (TypeError, ValueError):
+                out[key] = default
+    return out
+
+
+def _normalize_threshold(raw: Any, label: str, default: int) -> int:
+    """阈值校验：空 -> 默认；非法 -> 抛 ValueError；0=关闭；最大 1000。"""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} 必须是 0（关闭）或正整数，收到：{raw!r}")
+    if value < 0:
+        return 0
+    return min(value, 1000)
+
+
+def thresholds_status() -> Dict[str, Any]:
+    """返回当前阈值 + 默认值 + 上限（前端占位符、提示用）。"""
+    return {
+        "ok": True,
+        "values": _resource_thresholds(),
+        "defaults": {key: default for key, _jk, default in _THRESHOLD_FIELDS},
+        "max": 1000,
+    }
+
+
+def save_thresholds(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """保存三个阈值。校验不过抛 ValueError（接口返 400，不落盘）。"""
+    from core.config import parse_config
+
+    normalized: Dict[str, int] = {}
+    problems: List[str] = []
+    for key, _json_key, default in _THRESHOLD_FIELDS:
+        raw = payload.get(key) if isinstance(payload, dict) else None
+        try:
+            normalized[key] = _normalize_threshold(raw, key, default)
+        except ValueError as exc:
+            problems.append(str(exc))
+    if problems:
+        raise ValueError("；".join(problems))
+
+    raw = load_raw_config()
+    if not isinstance(raw.get("app"), dict):
+        raw["app"] = {}
+    raw["app"]["genshin_resin_threshold"]    = normalized["genshin"]
+    raw["app"]["starrail_stamina_threshold"] = normalized["starrail"]
+    raw["app"]["zzz_energy_threshold"]       = normalized["zzz"]
+
+    # 用 core.config 自己的规则做全量复检 —— 校验不过就抛异常，文件保持原样
+    parse_config(raw, source=CONFIG_PATH)
+    save_raw_config(raw)
+    logger.info(
+        "体力溢出阈值已更新：原粹树脂=%d / 开拓力=%d / 电量=%d",
+        normalized["genshin"], normalized["starrail"], normalized["zzz"],
+    )
+
+    result = thresholds_status()
+    off = [k for k, v in normalized.items() if v == 0]
+    result["message"] = (
+        f"已保存（{', '.join(off)} 已关闭）" if off
+        else "已保存，下次检查自动生效"
+    )
+    return result
+
+
 def save_raw_config(raw: Dict[str, Any]) -> None:
     """写回 config.json：先序列化到临时文件并复检，再原子替换。
 
@@ -1180,6 +1274,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .chip.empty{color:var(--muted);border-style:dashed;padding:5px 12px;font-family:inherit}
   .row3{display:grid;grid-template-columns:1fr auto;gap:10px;margin-top:14px}
   .row3 button{width:auto;padding:10px 18px}
+  /* 体力溢出阈值三栏：窄屏变单列 */
+  .resin-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:4px 0 14px}
+  @media (max-width:640px){ .resin-row{grid-template-columns:1fr} }
+  .resin-row label{display:block;font-size:12.5px;color:var(--muted)}
+  .resin-row input[type=number]{
+    width:100%;margin-top:4px;padding:8px 10px;border-radius:9px;
+    border:1px solid var(--line);background:var(--bg);color:var(--fg);
+    font-size:14px;font-family:ui-monospace,Consolas,monospace}
+  .resin-row input[type=number]:focus{outline:none;border-color:var(--brand);
+    box-shadow:0 0 0 3px rgba(37,99,235,.14)}
   input[type=time]{width:100%;padding:10px 12px;border-radius:9px;border:1px solid var(--line);
                    background:var(--bg);color:var(--fg);font-size:14px;
                    font-family:ui-monospace,Consolas,monospace}
@@ -1278,6 +1382,37 @@ HTML_PAGE = r"""<!DOCTYPE html>
         保存后会删掉 <code>logs/device_fp.json</code>，下次查询自动按新档案重签指纹。
         <b>保存后必须重新扫码</b>，否则登录设备与查询设备不一致。
       </p>
+    </section>
+
+    <!-- 体力溢出警告：阈值设置（与 config.app.genshin_resin_threshold 等对应） -->
+    <section class="card">
+      <div class="chan-head">
+        <h2><span class="dot" style="background:var(--warn)"></span>体力溢出警告</h2>
+        <span class="badge" id="resin-state">读取中</span>
+      </div>
+      <p class="desc">
+        当前体力 / 树脂 / 电量 ≥ 阈值时强制推送一条提醒。
+        <b>0 = 关闭该游戏</b>，留空则用默认值。改完下次检查自动生效，<b>不用重启守护进程</b>。
+      </p>
+      <div class="resin-row">
+        <label>
+          <span>原粹树脂</span>
+          <input type="number" id="resin-genshin" min="0" max="1000" step="10"
+                 placeholder="160" inputmode="numeric">
+        </label>
+        <label>
+          <span>开拓力</span>
+          <input type="number" id="resin-starrail" min="0" max="1000" step="10"
+                 placeholder="240" inputmode="numeric">
+        </label>
+        <label>
+          <span>电量</span>
+          <input type="number" id="resin-zzz" min="0" max="1000" step="10"
+                 placeholder="200" inputmode="numeric">
+        </label>
+      </div>
+      <button id="btn-resin-save">保存阈值</button>
+      <p class="hint" id="resin-hint">读取中…</p>
     </section>
   </section>
 
@@ -1448,7 +1583,7 @@ function switchTab(name){
 
   if (name === 'notify') loadPush();
   if (name === 'schedule') { loadSchedule(); startSchedPoll(); } else { stopSchedPoll(); }
-  if (name === 'account') { loadDevice(); refreshNotice(); }
+  if (name === 'account') { loadDevice(); refreshNotice(); loadThresholds(); }
   if (name === 'history') loadHistory();
 }
 
@@ -1698,6 +1833,62 @@ function loadDevice(){
     .then(renderDevice)
     .catch(function(){ toast('无法读取设备档案', true); });
 }
+
+/* =========================== 体力溢出阈值 =========================== */
+function renderThresholds(d){
+  if (!d || !d.ok) { return; }
+  const values = d.values || {};
+  const defs = d.defaults || {};
+  ['genshin','starrail','zzz'].forEach(function(gid){
+    const box = document.getElementById('resin-' + gid);
+    if (!box) return;
+    box.value = (values[gid] != null) ? values[gid] : '';
+    box.placeholder = (defs[gid] != null) ? String(defs[gid]) : '0';
+  });
+  const state = document.getElementById('resin-state');
+  if (state) {
+    const off = Object.keys(values).filter(function(k){ return values[k] === 0; });
+    state.textContent = off.length ? off.length + ' 项关闭' : '已启用';
+    state.className = 'badge ' + (off.length ? 'warn' : 'ok');
+  }
+  const hint = document.getElementById('resin-hint');
+  if (hint) {
+    hint.innerHTML = '默认值：原神 160、星铁 240、绝区零 200（写 0 关闭）';
+  }
+}
+
+function loadThresholds(){
+  fetch('/api/settings').then(function(r){ return r.json(); })
+    .then(renderThresholds)
+    .catch(function(){
+      const hint = document.getElementById('resin-hint');
+      if (hint) hint.textContent = '读取失败，请刷新重试';
+    });
+}
+
+async function saveThresholds(){
+  const btn = document.getElementById('btn-resin-save');
+  if (!btn) return;
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = '保存中…';
+  try {
+    const payload = {
+      genshin:  document.getElementById('resin-genshin').value,
+      starrail:  document.getElementById('resin-starrail').value,
+      zzz:        document.getElementById('resin-zzz').value
+    };
+    const d = await postJSON('/api/settings', payload);
+    if (!d.ok) { toast(d.message || '保存失败', true); return; }
+    renderThresholds(d);
+    toast(d.message || '已保存');
+  } catch (e) {
+    toast('保存失败：' + e, true);
+  } finally {
+    btn.disabled = false; btn.textContent = old;
+  }
+}
+
+document.getElementById('btn-resin-save').addEventListener('click', saveThresholds);
 
 async function saveDevice(){
   const btn = document.getElementById('btn-dev-save');
@@ -2065,6 +2256,7 @@ const hash = (location.hash || '').replace('#', '');
 switchTab(PANEL_NAMES.indexOf(hash) >= 0 ? hash : 'account');
 refreshNotice();
 loadDevice();
+loadThresholds();
 </script>
 </body>
 </html>
@@ -2185,6 +2377,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(session.snapshot())
             return
 
+        if parsed.path == "/api/settings":
+            self._json(thresholds_status())
+            return
+
         self._send(404, b"not found", "text/plain; charset=utf-8")
 
     # ------------------------------ POST ------------------------------ #
@@ -2296,6 +2492,18 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "message": str(exc)}, 400)
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("保存补发窗口失败")
+                    self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)
+            return
+
+        if path == "/api/settings":
+            payload = self._read_json_body()
+            if payload is not None:
+                try:
+                    self._json(save_thresholds(payload))
+                except ValueError as exc:
+                    self._json({"ok": False, "message": str(exc)}, 400)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("保存阈值失败")
                     self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)
             return
 
