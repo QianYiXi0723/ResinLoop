@@ -489,7 +489,12 @@ class SklandQuerier(BaseQuerier):
 
     @staticmethod
     def parse_endfield(detail: Dict[str, Any]) -> List[TaskItem]:
-        """终末地 card/detail -> 每日活跃度（dailyMission）。"""
+        """终末地 card/detail -> 每日活跃度（dailyMission）+ 理智（dungeon）。
+
+        理智在 ``detail.dungeon = {curStamina, maxStamina, maxTs}``，
+        注意这两个值是**字符串**（实测 "91"/"350"），要按字符串转 int，
+        不能直接当数字用（int("350") 可以，但 int 里套字符串要小心）。
+        """
         mission = detail.get("dailyMission")
         if not isinstance(mission, dict):
             raise SklandQueryError("终末地返回数据缺少 dailyMission 字典")
@@ -501,7 +506,18 @@ class SklandQuerier(BaseQuerier):
         )
         if total <= 0:
             raise SklandQueryError(f"dailyMission.maxDailyActivation 异常（{total}）")
-        return [TaskItem("每日活跃度", done=current >= total, progress=f"{current}/{total}")]
+        tasks = [TaskItem("每日活跃度", done=current >= total, progress=f"{current}/{total}")]
+
+        # 理智：可选字段，缺了宁可不展示，不让整款游戏变成"查询失败"
+        dungeon = detail.get("dungeon")
+        if isinstance(dungeon, dict):
+            cur = _optional_int(dungeon, "curStamina")
+            max_ = _optional_int(dungeon, "maxStamina")
+            if cur is not None and max_:
+                tasks.append(TaskItem(
+                    "理智", cur >= max_, f"{cur}/{max_}", counted=False,
+                ))
+        return tasks
 
     @staticmethod
     def _find_binding(players: Dict[str, Any], game_id: str) -> Dict[str, Any]:

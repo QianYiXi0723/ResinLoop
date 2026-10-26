@@ -299,6 +299,7 @@ _THRESHOLD_FIELDS: Tuple[Tuple[str, str, int], ...] = (
     ("starrail",  "starrail_stamina_threshold", 240),
     ("zzz",       "zzz_energy_threshold",       200),
     ("arknights", "arknights_ap_threshold",     135),
+    ("endfield",  "endfield_sanity_threshold",  300),
 )
 
 
@@ -367,14 +368,15 @@ def save_thresholds(payload: Dict[str, Any]) -> Dict[str, Any]:
     raw["app"]["starrail_stamina_threshold"] = normalized["starrail"]
     raw["app"]["zzz_energy_threshold"]       = normalized["zzz"]
     raw["app"]["arknights_ap_threshold"]     = normalized["arknights"]
+    raw["app"]["endfield_sanity_threshold"]  = normalized["endfield"]
 
     # 用 core.config 自己的规则做全量复检 —— 校验不过就抛异常，文件保持原样
     parse_config(raw, source=CONFIG_PATH)
     save_raw_config(raw)
     logger.info(
-        "体力溢出阈值已更新：原粹树脂=%d / 开拓力=%d / 电量=%d / 理智=%d",
+        "体力溢出阈值已更新：原粹树脂=%d / 开拓力=%d / 电量=%d / 方舟理智=%d / 终末地理智=%d",
         normalized["genshin"], normalized["starrail"],
-        normalized["zzz"], normalized["arknights"],
+        normalized["zzz"], normalized["arknights"], normalized["endfield"],
     )
 
     result = thresholds_status()
@@ -1532,6 +1534,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <input type="number" id="resin-arknights" min="0" max="1000" step="10"
                  placeholder="135" inputmode="numeric">
         </label>
+        <label>
+          <span>终末地 · 理智</span>
+          <input type="number" id="resin-endfield" min="0" max="1000" step="10"
+                 placeholder="300" inputmode="numeric">
+        </label>
       </div>
       <button id="btn-resin-save">保存阈值</button>
       <p class="hint" id="resin-hint">读取中…</p>
@@ -1847,7 +1854,7 @@ function renderThresholds(d){
   if (!d || !d.ok) { return; }
   const values = d.values || {};
   const defs = d.defaults || {};
-  ['genshin','starrail','zzz','arknights'].forEach(function(gid){
+  ['genshin','starrail','zzz','arknights','endfield'].forEach(function(gid){
     const box = document.getElementById('resin-' + gid);
     if (!box) return;
     box.value = (values[gid] != null) ? values[gid] : '';
@@ -1861,7 +1868,7 @@ function renderThresholds(d){
   }
   const hint = document.getElementById('resin-hint');
   if (hint) {
-    hint.innerHTML = '默认值：原神 160、星铁 240、绝区零 200、方舟理智 135（写 0 关闭）';
+    hint.innerHTML = '默认值：原神 160、星铁 240、绝区零 200、方舟理智 135、终末地理智 300（写 0 关闭）';
   }
 }
 
@@ -1884,7 +1891,8 @@ async function saveThresholds(){
       genshin:   document.getElementById('resin-genshin').value,
       starrail:  document.getElementById('resin-starrail').value,
       zzz:       document.getElementById('resin-zzz').value,
-      arknights: document.getElementById('resin-arknights').value
+      arknights: document.getElementById('resin-arknights').value,
+      endfield:  document.getElementById('resin-endfield').value
     };
     const d = await postJSON('/api/settings', payload);
     if (!d.ok) { toast(d.message || '保存失败', true); return; }

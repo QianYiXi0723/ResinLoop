@@ -9,7 +9,8 @@
     "genshin_resin_threshold": 160,
     "starrail_stamina_threshold": 240,
     "zzz_energy_threshold": 200,
-    "arknights_ap_threshold": 135
+    "arknights_ap_threshold": 135,
+    "endfield_sanity_threshold": 300
   },
   "accounts": [
     {
