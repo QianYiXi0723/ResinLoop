@@ -1,9 +1,29 @@
-# 游戏每日任务未完成提醒（第 2 阶段）
+# 游戏每日任务未完成提醒
 
 只做「查询 → 判断 → 提醒」三件事：**不签到、不领奖励、不修改任何游戏数据**。
 
-- 第 1 阶段：骨架 + 配置 + mock 全流程（已完成并验收）。
-- 第 2 阶段：接入**米游社真实查询器**，原神 / 崩铁 / 绝区零走实时便笺接口；**森空岛系（明日方舟、终末地）仍为 mock**，配置用 `miyoushe` provider 时它们自动回退 mock，五款游戏混跑。
+内置常驻守护进程 + 系统托盘，**不需要 Windows 任务计划**；所有配置都在网页控制台里完成。
+
+---
+
+## 零、三步走（给不想折腾的人）
+
+前提：装好 Python 3.10+，安装时勾选 **Add python.exe to PATH**。
+
+```
+1. 双击 start.bat
+     → 自动装依赖 → 后台拉起控制台和守护进程 → 自动开浏览器
+
+2. 浏览器里配三个页签
+     账号绑定  ：贴设备指纹（推荐）→ 扫码登录
+     通知绑定  ：填 Server酱 / Qmsg 的 Key → 发送测试推送
+     定时与状态：加提醒时间点 → 启动守护进程
+
+3. 挂机
+     右下角托盘常驻，关掉网页不影响；到点自动检查并推送
+```
+
+托盘图标右键：**打开控制台 / 立即执行一次 / 退出程序**。
 
 ---
 
@@ -11,26 +31,32 @@
 
 ```
 check in/
-├── main.py                 # 入口：CLI 解析 + 编排主流程（配置→查询→判断→推送→日志→退出码）
-├── login_ui.py             # 图形化界面：账号绑定 + 通知绑定（本地 Web，见 5.6）
-├── config.json             # 本地私有配置（含 Bark Key、凭证）。由 --init 生成，.gitignore 已排除
+├── start.bat               # 一键启动：装依赖 + 拉起控制台与守护进程 + 开浏览器
+├── daemon.py               # 常驻守护进程：30 秒轮询 check_times、托盘、防重复触发
+├── main.py                 # 命令行入口：run_once 编排（查询→判断→推送→退出码）
+├── login_ui.py             # 网页控制台：账号绑定 / 通知绑定 / 定时与状态
+├── login_ui.bat            # 只开控制台（调试用）
+├── run.bat                 # 手动跑一次检查（不涉及调度）
+├── tools/设备信息.apk       # 手机端「设备信息」App，供扫码下载
+├── config.json             # 本地私有配置（含凭据）。首次运行自动生成，.gitignore 已排除
 ├── config.example.json     # 配置示例，字段与默认值同源（core/config.py 的 DEFAULT_CONFIG）
-├── requirements.txt        # 依赖清单（requests / qrcode / pillow）
-├── .gitignore              # 排除 config.json / logs / 缓存
-├── logs/                   # 运行时自动创建，日志文件 dailycheck.log（按天切分，保留 14 天）
+├── requirements.txt        # 依赖清单（requests / qrcode / pillow / pystray）
+├── .gitignore              # 排除 config.json / logs / 缓存 / APK
+├── logs/                   # 运行时创建：dailycheck.log、device_fp.json、daemon.pid 等
 └── core/
     ├── __init__.py         # 包声明与分层说明
-    ├── models.py           # 数据模型：TaskItem / GameStatus / PushResult，含 finished、unfinished_tasks 等派生属性
-    ├── config.py           # 配置读写：DEFAULT_CONFIG 默认值、AppConfig 等强类型对象、load/save/校验、检查时间计算
-    ├── mihoyo_api.py       # 米游社 HTTP 层（第 2 阶段）：接口 URL / server / Cookie 字段名 / DS 签名 / 设备指纹 / retcode 处理，全部常量集中在此
-    ├── skland_api.py       # 森空岛 HTTP 层（第 2 阶段）：HMAC+MD5 请求签名、鹰角 token 换 cred（自动缓存）、绑定角色与签到状态查询（全部只读）
-    ├── querier.py          # 查询层：BaseQuerier + MockQuerier + MiyousheQuerier（原神/崩铁/绝区零）+ SklandQuerier（明日方舟/终末地）+ provider 注册表与回退链
-    ├── analyzer.py         # 判断层：DailyReport 汇总未完成项，渲染控制台文本 / 推送标题正文 / 可序列化 dict
-    ├── notifier.py         # 推送层：BaseNotifier + BarkNotifier（GET），测试模式决策、单通道失败隔离
-    └── logger.py           # 日志初始化：控制台 + 按天切分的文件日志，统一挂在 "dailycheck" 根 logger
+    ├── models.py           # 数据模型：TaskItem / GameStatus / PushResult
+    ├── config.py           # 默认值、强类型对象、load/save/校验、check_times 计算
+    ├── mihoyo_api.py       # 米游社 HTTP 层：DS 签名 / 设备指纹 / 设备档案覆盖 / 风控重试
+    ├── skland_api.py       # 森空岛 HTTP 层：HMAC+MD5 签名、cred 缓存与 401 自动重换
+    ├── querier.py          # 查询层：Mock / Miyoushe / Skland + provider 注册表与回退链
+    ├── analyzer.py         # 判断层：汇总未完成项，渲染控制台文本 / 推送文案
+    ├── notifier.py         # 推送层：Bark / Server酱 / Qmsg / 飞书 / 钉钉
+    ├── tools_server.py     # 局域网只读文件服务：只为手机下载 tools/ 里的 APK
+    └── logger.py           # 日志初始化：控制台 + 按天切分的文件日志
 ```
 
-分层原则：查询层只负责「拿到状态」，判断层只负责「要不要催、催什么」，推送层只负责「发出去」，配置与日志横切。接真实接口时只动 `core/querier.py`。
+分层原则：查询层只负责「拿到状态」，判断层只负责「要不要催、催什么」，推送层只负责「发出去」，守护进程只负责「什么时候跑」，配置与日志横切。
 
 ---
 
@@ -44,11 +70,15 @@ source .venv/Scripts/activate      # Windows
 
 pip install -r requirements.txt
 # 或者直接：
-pip install "requests>=2.28.0" "qrcode>=7.4" "pillow>=10.0"
-# （qrcode/pillow 只在扫码登录 --login-skland 时使用）
+pip install "requests>=2.28.0" "qrcode>=7.4" "pillow>=10.0" "pystray>=0.19"
+# （qrcode/pillow 用于二维码与托盘图标，pystray 提供托盘菜单）
 ```
 
+> 用 `start.bat` 启动的话，这一节可以跳过 —— 它会先 `import` 试一遍，缺依赖自动装上。
+>
 > `requests` 采用惰性导入：即使没装，脚本仍能完成查询、判断、控制台输出和日志，只在真正推送时报「缺少依赖 requests」并以退出码 3 结束。
+>
+> 没装 `pystray` 时守护进程不会崩，会打印一条警告并**转为无界面常驻**（托盘没了，调度照常）。
 
 ---
 
@@ -519,65 +549,89 @@ Bark 请求形态：`GET {server}/{device_key}/{quote(标题)}/{quote(正文)}?g
 - 加签算法按官方文档实现（飞书：base64(hmac-sha256("{ts}\\n{secret}"))；钉钉：URL 上追加 timestamp+sign），填了 `secret` 自动启用；
 - 某个通道 key/webhook 没填时优雅跳过并提示，不算推送失败；`--dry-run` 对所有通道生效。
 
-### 5.5 Windows 任务计划程序（每日 22:00 自动跑）
+### 5.5 常驻守护进程（推荐，取代 Windows 任务计划）
 
-工作区里已经备好两个文件，全部用**绝对路径**，不依赖 PATH / 当前工作目录：
+早期版本用 `schtasks` 建计划任务，现在已经**完全弃用**——小白配不明白、要输系统密码、每次运行还闪黑窗口、改时间得重装任务。
 
-| 文件 | 作用 |
+现在由 `daemon.py` 常驻负责调度：
+
+| 特性 | 实现 |
 | --- | --- |
-| `run.bat` | `cd /d` 进项目目录 → 绝对路径调 `python.exe main.py` → 输出追加进 `logs\cron_run.log`（UTF-8）→ `exit /b` 回传退出码。**没有 `pause`**，不会卡在后台等交互 |
-| `task_gamedaily.xml` | 任务计划导入模板：每日 22:00、最高权限、**错过时间开机后补跑**、电池供电也运行 |
+| 轮询 | 每 **30 秒**醒一次，读 `config.json` 的 `app.check_times` |
+| 命中判定 | 与目标时间相差 **±1 分钟**即触发（`SLOT_TOLERANCE = 60`） |
+| 防重复 | 每个时间点按 `YYYY-MM-DD HH:MM` 记账到 `logs/.last_run`，**先记账再执行**，中途崩溃也不会重复推送；重启进程同样不会重发 |
+| 异常防崩 | 单轮检查全部包在 `try/except` 里，断网 / 接口改版只写日志，进程不退出 |
+| 资源占用 | 空闲时阻塞在 `Event.wait`（等价 sleep），**CPU 0%** |
+| 托盘 | `pystray` + `Pillow`，右键菜单：打开控制台 / 立即执行一次 / 退出程序 |
+| 线程模型 | 轮询跑在**独立线程**，主线程留给 pystray 的消息循环 |
 
-创建任务（**管理员**终端，二选一）：
+启动方式（任选）：
 
 ```bat
-:: 方式 1：一行创建（够用）
-schtasks /Create /TN "游戏日常提醒" /TR "\"D:\Tools\gamedaily\run.bat\"" /SC DAILY /ST 22:00 /RL HIGHEST /F
+:: 1. 一键（同时拉起控制台 + 守护进程 + 开浏览器）
+start.bat
 
-:: 方式 2：导入 XML（推荐，多出"错过补跑 + 电池也跑"两项）
-schtasks /Create /TN "游戏日常提醒" /XML "D:\Tools\gamedaily\task_gamedaily.xml" /F
+:: 2. 只起守护进程（后台，无窗口）
+pythonw daemon.py
+
+:: 3. 前台带托盘（能看到日志输出，调试用）
+python daemon.py
 ```
 
-> PowerShell 里方式 1 的引号写法不同，用：`/TR '"D:\Tools\gamedaily\run.bat"'`；或者直接用方式 2，XML 里路径不带引号，cmd / PowerShell 都通吃。
+网页「定时与状态」页也能启停，背后调的是同一套逻辑（`pythonw.exe` 拉起、`taskkill` 兜底）。
 
-**一键脚本（推荐给不想敲命令的人）**：
+命令行工具：
 
-| 文件 | 用途 |
+| 命令 | 作用 |
 | --- | --- |
-| `fix_task.bat` | 任务丢失/损坏时一键重建（自动申请管理员，优先用 `task_gamedaily.xml` 导入，失败退回 `/TR` 写法，再失败重启 Schedule 服务重试） |
-| `fix_task_bg.bat` | 把任务从"仅登录时运行"改成**后台静默**（`schtasks /Change /RU <user> /RP *`，原地改主体，不重建，会提示输入 Windows 密码） |
+| `python daemon.py --status` | 打印状态 JSON（是否运行、PID、下次提醒、最近一次） |
+| `python daemon.py --start` | 后台拉起 |
+| `python daemon.py --stop` | 停止（先写 `logs/.stop` 温和退出，超时才强杀） |
+| `python daemon.py --once` | 立即跑一次就退出 |
+| `python daemon.py --once --dry-run` | 同上，但不真的发推送 |
 
-两者都设计成"右键以管理员身份运行"即可，无需手敲命令行。
+**停止是怎么保证"彻底"的**：
 
-**最终形态（本机已验证）**：`Execute=...\run.bat`、`Arguments` 空、`WorkingDirectory` 正确、`LogonType=Password`（后台会话，22:00 无窗口、不抢焦点、未登录也跑）、`RunLevel=Highest`、`StartWhenAvailable=true`、每天 22:00、超时 1 小时。手动触发实测 `LastTaskResult=0`、日志 `exit=0`。
+1. 写 `logs/.stop` 标记 → 轮询线程在 1 秒内发现，置停止事件；
+2. 监视线程（`tray-watchdog`）收到停止事件后调 `icon.stop()`，让主线程的 `icon.run()` 返回——
+   否则进程会卡在托盘消息循环里永远退不掉（实测过，不这么做只能强杀）；
+3. 等 8 秒仍未退出，才 `taskkill /PID <pid> /F` 强杀；
+4. 清掉 `daemon.pid` / `daemon.heartbeat` / `.stop` 三个文件。
 
-> 换成 Password 模式后，**改 Windows 登录密码必须重跑 `fix_task_bg.bat`**，否则任务以旧凭据登录失败（`0x8007052E`，任务列表里仍显示"就绪"，容易被忽略）。
+实测优雅停止耗时 ~2.5 秒，`forced=False`，进程消失、内存释放。
 
-排查顺序：
+运行时文件（都在 `logs/`，已被 `.gitignore` 排除）：
 
-1. 打开 `logs\cron_run.log`，看最后一段 `===== START ... =====` 到 `===== END ... exit=N =====`；
-2. `exit=0` 正常；`1` 配置错误；`2` 全部查询失败；`3` 推送全通道失败（含义见第六节）；
-3. 手动跑一次 `run.bat` 对比结果，能区分"脚本问题"和"任务计划问题"；
-4. 22:00 会有一个命令行窗口闪 10~20 秒，属正常现象；不想要就把任务改成"不管用户是否登录都要运行"（需存密码，此时跑在后台无窗口）。
+| 文件 | 含义 |
+| --- | --- |
+| `daemon.pid` | JSON：`pid` / `started_at` / `python` |
+| `daemon.heartbeat` | 每次轮询写一次；超过 120 秒没更新视为已死 |
+| `.last_run` | 防重复记账 + 最近一次结果 |
+| `.stop` | 停止标记 |
+
+排查：
+
+1. 看 `logs\dailycheck.log`，搜 `命中时间点` 确认是否触发过；
+2. `python daemon.py --status` 看 `running` / `next_run`；
+3. `python daemon.py --once` 手动跑一轮，区分「调度问题」和「查询问题」。
+
+> **关机/重启后要重新双击 `start.bat`。** 想开机自动挂上，把 `start.bat` 的快捷方式丢进
+> `shell:startup`（Win+R 输入即可打开启动文件夹）——比任务计划省事，也不会有密码问题。
+
 
 ---
 
 ### 5.6 图形化登录界面（不想在终端里看二维码时用）
 
-命令行版是在终端里打 ASCII 二维码，手机要凑近屏幕扫。换成界面版更省事：
-
-```bash
-python login_ui.py
-```
-
-会自动打开浏览器（默认 `http://127.0.0.1:8765`）。页面顶部有两个导航按钮，点哪个就只显示哪个：
+会自动打开浏览器（默认 `http://127.0.0.1:8765`）。页面顶部有三个导航按钮，点哪个就只显示哪个：
 
 | 导航 | 作用 |
 | --- | --- |
-| **账号绑定** | 扫码写入 Cookie / token（本节） |
-| **通知绑定** | 填推送 Key、发测试推送（见下） |
+| **账号绑定** | 设备伪装 + 扫码写入 Cookie / token |
+| **通知绑定** | 填推送 Key、发测试推送 |
+| **定时与状态** | 守护进程启停、提醒时间点增删 |
 
-地址栏带 `#notify` 可以直接落在通知绑定页。
+地址栏带 `#account` / `#notify` / `#schedule` 可以直接落在对应页。
 
 #### 账号绑定
 
@@ -606,6 +660,40 @@ python login_ui.py
 - 失败时给出具体原因（二维码过期、手机上取消、Token 校验不通过等），
   并保留已完成的部分（比如第 2 款失败，第 1 款仍然写入了）。
 
+#### 设备伪装（同一个页签下方）
+
+米游社按「设备指纹」判风险，机型 / 系统版本 / Build 号 / OAID 必须自洽。用你自己手机的
+真实档案，通过率最高：
+
+1. 手机扫页面上的二维码（局域网地址，形如 `http://192.168.x.x:8790/设备信息.apk`），
+   下载安装 `tools/设备信息.apk`；
+2. 打开 App 点「复制」；
+3. 把内容粘到文本框 → 点「保存并清空指纹缓存」。
+
+后端做的事：
+
+```
+粘贴文本 → 截取首尾花括号（容错：连带说明文字一起复制也能用）
+        → normalize_device_profile() 归一化字段
+            deviceModel       -> model / device_type
+            androidVersion    -> os_version，并推导 sdk_version
+            deviceFingerprint -> device_info，并从中拆 brand / device / display / build_id
+            oaid              -> oaid
+        → 写入 logs/device_profile.json
+        → reload_device_profile()：原地刷新 DEVICE_MODEL + 重建 USER_AGENT
+        → 删除 logs/device_fp.json，下次查询按新档案重签指纹
+```
+
+**为什么要原地刷新**：`USER_AGENT` 里写着机型与系统版本，必须和 `getFp` 上报的
+`ext_fields` 一致，否则会被判定"环境不一致"。`mihoyo_login` 的 `QR_HEADERS` 通过
+订阅回调同步更新（`on_device_profile_change`）。
+
+**保存后必须重新扫码**：设备身份变了，旧 Cookie 对应的还是旧设备。
+
+> 这一步是可选的。不填就用内置的默认档案（Redmi K80 公开参数），也能跑。
+>
+> `logs/device_profile.json` 已被 `.gitignore` 排除，不会进版本库。
+
 #### 通知绑定
 
 扫码只解决"查得到"，收不收得到提醒取决于推送通道有没有 Key。这一页把
@@ -622,6 +710,17 @@ python login_ui.py
 写入只碰 `push.channels` 和 `push.{serverchan,qmsg}.{enabled,key/sendkey}`，
 `timeout` / `server` / `bark` / `feishu` 等其它字段原样保留；落盘前会先过一遍
 `PushConfig.from_dict()` 校验，并通过"临时文件 + 原子替换"写入，避免写坏配置。
+
+#### 定时与状态
+
+**守护进程状态**（每 3 秒刷新）：运行中 / 已停止、PID、启动时间、下次提醒、最近一次结果。
+底下两个按钮直接调 `daemon.start_daemon()` / `daemon.stop_daemon()`。
+
+**提醒时间点**：`+` 添加、`×` 删除，立即写入 `app.check_times` 并生效，**不用重启守护进程**
+（`daemon.py` 每一轮都重新读 `config.json`）。至少保留一个，最多 12 个。
+
+写入前会跑 `_normalize_times()`（校验 `HH:MM`、去重、排序）和 `parse_config()` 全量校验，
+形如 `25:99`、空数组都会被拒绝，`config.json` 不会被写坏。
 
 可用参数：
 
@@ -655,15 +754,17 @@ python login_ui.py
 
 ---
 
-## 七、当前边界、TODO 与第 3 阶段预留
+## 七、当前边界与 TODO
 
-已实现：配置读写与校验、mock 查询、米游社真实查询（原神/崩铁/绝区零）、汇总判断、Bark 推送、日志、CLI 与退出码。
+已实现：配置读写与校验、五款游戏真实查询（米游社三款 + 森空岛两款）、汇总判断、
+五通道推送（Bark / Server酱 / Qmsg / 飞书 / 钉钉）、日志、CLI 与退出码、
+网页控制台（三个页签）、设备伪装、常驻守护进程 + 系统托盘、一键启动。
 
 明确未做：
 
 - 自动签到 / 领取奖励 —— 本脚本只读不写。
-- 森空岛（明日方舟、终末地）真实查询 —— 仍为 mock，属第 3 阶段。
-- 常驻调度 —— 脚本自身不带定时器（`check_times` 只用于展示"下次检查"），定时由外部触发：Windows 用 `run.bat` + 任务计划程序（见 5.5），Linux/macOS 用 cron。
+- 开机自启 —— 需要用户把 `start.bat` 快捷方式放进 `shell:startup`，不做注册表/服务安装。
+- 多用户 / 多实例 —— 单机单实例，`daemon.pid` 做互斥。
 
 ### TODO 清单（未核实的接口细节，全部标注在代码里）
 

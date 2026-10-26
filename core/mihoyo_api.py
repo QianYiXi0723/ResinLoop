@@ -24,7 +24,7 @@ import string
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlencode as _urlencode
 
 from .config import AccountConfig
@@ -70,21 +70,25 @@ COOKIE_REGEX: Dict[str, re.Pattern] = {
 #: 与其盐表（K2 / LK2 / 22 / 25 四套）。GS 便笺用 "25"（即本文件的 DS_SALT）。
 APP_VERSION = "2.102.1"
 
-#: 米游社安卓 App 的 UA —— 格式与 GsCore `BaseMysApi._HEADER` 一致（含 `wv)` 后
-#: 无空格这个细节），机型换成你手机的真实档案（Redmi 24122RKC7C / Android 16）。
-#: 机型、系统、Build 号三者必须与下方 DEVICE_MODEL 完全一致。
-USER_AGENT = (
-    "Mozilla/5.0 (Linux; Android 16; 24122RKC7C Build/BP2A.250605.031.A3; wv)"
-    "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/"
-    f"126.0.6478.133 Mobile Safari/537.36 miHoYoBBS/{APP_VERSION}"
-)
+# --------------------------------------------------------------------------- #
+# 设备档案（机型伪装）
+# --------------------------------------------------------------------------- #
+#
+# 米游社按「设备指纹」判定风险：机型、系统版本、Build 号、OAID 必须自洽。
+# 默认档案是一台公开机型的通用参数；用户可以在网页「设备伪装」里粘贴自己手机
+# 导出的真实档案，覆盖到 logs/device_profile.json（该目录已被 .gitignore 排除）。
 
 #: OAID 默认值：随机生成的示例串，不是任何真机标识，仅参与 ext_fields 拼装。
 _DEFAULT_OAID = "4e8a1c73b95f2d06"
 
-#: 真机 OAID 的本地覆盖文件。放在 logs/ 下（该目录已被 .gitignore 排除），
-#: 这样源码可以公开，而本机仍沿用原来那台设备的身份，不必重签指纹。
-_OAID_OVERRIDE_PATH = Path(__file__).resolve().parent.parent / "logs" / "device_oaid.txt"
+#: logs/ 目录：真机档案与指纹缓存都放这里，不进版本库
+_LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+
+#: 真机 OAID 的旧覆盖方式（单值），保留兼容
+_OAID_OVERRIDE_PATH = _LOGS_DIR / "device_oaid.txt"
+
+#: 完整设备档案的覆盖文件（网页「设备伪装」写入）
+PROFILE_OVERRIDE_PATH = _LOGS_DIR / "device_profile.json"
 
 
 def _load_oaid() -> str:
@@ -96,27 +100,242 @@ def _load_oaid() -> str:
     return value or _DEFAULT_OAID
 
 
-#: 设备档案 —— 按 Redmi K80（24122RKC7C）的公开机型参数填写：
-#:   {"deviceModel":"24122RKC7C","androidVersion":"16",
-#:    "deviceFingerprint":"Redmi/miro/miro:16/BP2A.250605.031.A3/OS3.0.305.0.WOMCNXM:user/release-keys",
-#:    "deviceName":"miro","deviceBoard":"sun","deviceProduct":"miro"}
-#: 字段含义与 GsCore `generate_fake_fp` 的七个入参一一对应；screen_size / display
-#: 是按 Redmi K80（2K 屏）与 HyperOS 版本号补的，如与你手机实际不符可直接改这里。
-#: oaid 走 _load_oaid()：本机可在 logs/device_oaid.txt 填真实值，源码里只留示例值。
-DEVICE_MODEL: Dict[str, str] = {
+#: 默认设备档案 —— Redmi K80（24122RKC7C）的公开机型参数。
+#: 字段与 GsCore `generate_fake_fp` 的七个入参一一对应。
+DEFAULT_DEVICE_MODEL: Dict[str, str] = {
     "brand": "Redmi",
     "manufacturer": "Xiaomi",
     "model": "24122RKC7C",
     "device": "miro",
     "device_type": "24122RKC7C",
     "board": "sun",
-    "oaid": _load_oaid(),
+    "oaid": _DEFAULT_OAID,
     "device_info": "Redmi/miro/miro:16/BP2A.250605.031.A3/OS3.0.305.0.WOMCNXM:user/release-keys",
     "os_version": "16",
     "sdk_version": "36",
     "screen_size": "1440x3200",
     "display": "miro_OS3.0.305.0.WOMCNXM",
 }
+
+#: Android 大版本 -> API level：UA 与 ext_fields 里的 sdkVersion 必须对得上
+_ANDROID_SDK: Dict[str, str] = {
+    "16": "36",
+    "15": "35",
+    "14": "34",
+    "13": "33",
+    "12": "32",
+    "11": "30",
+    "10": "29",
+    "9": "28",
+}
+
+#: 品牌 -> 厂商名（Build 指纹首段一般就是品牌）
+_MANUFACTURERS: Dict[str, str] = {
+    "redmi": "Xiaomi",
+    "xiaomi": "Xiaomi",
+    "poco": "Xiaomi",
+    "honor": "HONOR",
+    "huawei": "HUAWEI",
+    "oppo": "OPPO",
+    "vivo": "vivo",
+    "iqoo": "vivo",
+    "oneplus": "OnePlus",
+    "realme": "realme",
+    "samsung": "samsung",
+    "meizu": "Meizu",
+    "motorola": "motorola",
+    "nokia": "HMD Global",
+}
+
+
+def _fingerprint_parts(device_info: str) -> Dict[str, str]:
+    """从 Build 指纹里拆字段。
+
+    标准格式：``brand/product/device:version/incremental:type/tags``，
+    例如 ``Redmi/miro/miro:16/BP2A.250605.031.A3/OS3.0.305.0.WOMCNXM:user/release-keys``。
+    """
+    parts = (device_info or "").split("/")
+    if len(parts) < 4:
+        return {}
+
+    device_ver = parts[2].split(":")
+    result = {
+        "brand": parts[0].strip(),
+        "product": parts[1].strip(),
+        "device": device_ver[0].strip(),
+        "os_version": device_ver[1].strip() if len(device_ver) > 1 else "",
+        "build_id": parts[3].strip(),
+    }
+    if len(parts) >= 5:
+        result["display"] = parts[4].split(":")[0].strip()
+    return {key: value for key, value in result.items() if value}
+
+
+def normalize_device_profile(raw: Dict[str, Any]) -> Dict[str, str]:
+    """把手机「设备信息」App 导出的 JSON 归一化成 DEVICE_MODEL 的字段。
+
+    兼容两种输入：
+      - App 导出的原始 JSON（``deviceModel`` / ``deviceFingerprint`` / ``androidVersion`` …）
+      - 已经是 DEVICE_MODEL 形状的 JSON（``model`` / ``device_info`` / ``os_version`` …）
+
+    只收录认识且非空的字段，其余忽略；缺失项由调用方用默认值补齐。
+    机型与 Build 指纹是必需的 —— 少了它们无法拼出自洽的真机环境。
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("设备档案必须是 JSON 对象")
+
+    flat: Dict[str, str] = {}
+    for key, value in raw.items():
+        if value is None or isinstance(value, (dict, list)):
+            continue
+        text = str(value).strip()
+        if text:
+            flat[str(key).strip().lower()] = text
+
+    def pick(*names: str) -> str:
+        for name in names:
+            got = flat.get(name.lower())
+            if got:
+                return got
+        return ""
+
+    device_info = pick("deviceFingerprint", "device_info", "fingerprint")
+    derived = _fingerprint_parts(device_info)
+
+    model = pick("deviceModel", "model", "device_model")
+    brand = pick("brand", "deviceBrand") or derived.get("brand", "")
+    device = pick("deviceName", "device", "device_name") or derived.get("device", "")
+    board = pick("deviceBoard", "board", "device_board")
+    os_version = (
+        pick("androidVersion", "os_version", "release") or derived.get("os_version", "")
+    )
+    display = pick("display", "buildDisplay") or derived.get("display", "")
+    oaid = pick("oaid")
+    sdk_version = (
+        pick("sdkVersion", "sdk_version", "sdkInt") or _ANDROID_SDK.get(os_version, "")
+    )
+    screen_size = pick("screenSize", "screen_size", "resolution")
+    manufacturer = pick("manufacturer") or _MANUFACTURERS.get(brand.lower(), brand)
+
+    if not model:
+        raise ValueError(
+            "没找到机型字段 deviceModel。请粘贴 App 导出的完整 JSON 文本。"
+        )
+    if not device_info:
+        raise ValueError(
+            "没找到 Build 指纹字段 deviceFingerprint。"
+            "请确认复制的是「设备信息」App 的完整导出内容。"
+        )
+
+    pairs = {
+        "brand": brand,
+        "manufacturer": manufacturer,
+        "model": model,
+        "device": device,
+        "device_type": model,
+        "board": board,
+        "device_info": device_info,
+        "os_version": os_version,
+        "sdk_version": sdk_version,
+        "screen_size": screen_size,
+        "display": display,
+        "oaid": oaid,
+    }
+    return {key: value for key, value in pairs.items() if value}
+
+
+def load_device_profile() -> Dict[str, str]:
+    """默认档案 <- OAID 覆盖 <- 完整档案覆盖（logs/device_profile.json）。"""
+    profile = dict(DEFAULT_DEVICE_MODEL)
+    profile["oaid"] = _load_oaid()
+
+    if PROFILE_OVERRIDE_PATH.exists():
+        try:
+            stored = json.loads(PROFILE_OVERRIDE_PATH.read_text(encoding="utf-8"))
+            profile.update(normalize_device_profile(stored))
+        except (OSError, ValueError) as exc:
+            logger.warning("设备档案覆盖文件无效，已忽略：%s", exc)
+    return profile
+
+
+def build_user_agent(profile: Dict[str, str]) -> str:
+    """按设备档案拼米游社 App 的 UA。
+
+    机型、系统版本、Build 号必须与 ext_fields 完全一致，否则会被判定环境异常。
+    """
+    build_id = _fingerprint_parts(profile.get("device_info", "")).get("build_id", "")
+    if not build_id:
+        build_id = profile.get("build_id", "") or "UNKNOWN"
+    return (
+        f"Mozilla/5.0 (Linux; Android {profile['os_version']}; {profile['model']} "
+        f"Build/{build_id}; wv)AppleWebKit/537.36 (KHTML, like Gecko) "
+        f"Version/4.0 Chrome/126.0.6478.133 Mobile Safari/537.36 "
+        f"miHoYoBBS/{APP_VERSION}"
+    )
+
+
+def save_device_profile(raw: Dict[str, Any]) -> Dict[str, str]:
+    """校验并写入设备档案覆盖文件，返回归一化后的档案。"""
+    profile = normalize_device_profile(raw)
+    _LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    PROFILE_OVERRIDE_PATH.write_text(
+        json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return profile
+
+
+def clear_device_profile() -> None:
+    """恢复默认档案（删掉覆盖文件）。"""
+    PROFILE_OVERRIDE_PATH.unlink(missing_ok=True)
+
+
+def clear_device_cache() -> bool:
+    """删掉 device_fp / device_id 缓存，强制下次按当前档案重新签发。
+
+    返回是否真的删掉了文件（没有缓存时返回 False）。
+    """
+    existed = _FP_CACHE_PATH.exists()
+    _FP_CACHE_PATH.unlink(missing_ok=True)
+    return existed
+
+
+#: 档案变化时的订阅者：其它模块把自己缓存的请求头刷新一下
+_PROFILE_LISTENERS: List[Any] = []
+
+
+def on_device_profile_change(callback: Any) -> None:
+    """注册回调：设备档案重载后调用，用于刷新各模块缓存的请求头。"""
+    if callback not in _PROFILE_LISTENERS:
+        _PROFILE_LISTENERS.append(callback)
+
+
+def reload_device_profile() -> Dict[str, str]:
+    """重新读取覆盖文件，刷新模块级 DEVICE_MODEL / USER_AGENT 并通知订阅者。
+
+    必须用"原地更新"而不是重新赋值：别的模块 ``from .mihoyo_api import DEVICE_MODEL``
+    拿到的是同一个 dict 对象，原地更新才能一起生效。
+    """
+    global USER_AGENT
+
+    fresh = load_device_profile()
+    DEVICE_MODEL.clear()
+    DEVICE_MODEL.update(fresh)
+    USER_AGENT = build_user_agent(DEVICE_MODEL)
+
+    for callback in list(_PROFILE_LISTENERS):
+        try:
+            callback(DEVICE_MODEL)
+        except Exception:  # noqa: BLE001 - 订阅者出错不能影响主流程
+            logger.warning("设备档案订阅回调失败（已忽略）", exc_info=True)
+    return DEVICE_MODEL
+
+
+#: 运行时生效的设备档案：默认值 + 本地覆盖
+DEVICE_MODEL: Dict[str, str] = load_device_profile()
+
+#: 米游社安卓 App 的 UA —— 由 DEVICE_MODEL 推导，换档案后自动跟着变
+USER_AGENT = build_user_agent(DEVICE_MODEL)
+
 
 #: GsCore 命中风控码后追加的挑战头（_CHALLENGE_META，按游戏区分）。
 #: 它不解决问题，但能让服务端把请求识别为"App 内嵌 H5 的验证流程"，配合新指纹

@@ -485,6 +485,68 @@ def collect_statuses(config: AppConfig) -> List[GameStatus]:
     return statuses
 
 
+def run_once(config: AppConfig, dry_run: bool = False) -> int:
+    """跑一轮完整检查：查询 -> 判断 -> 推送 -> 返回退出码。
+
+    命令行（cmd_run）和守护进程（daemon.py）共用这一份逻辑，避免两处行为漂移。
+    退出码含义与模块文档一致。
+    """
+    import logging
+
+    logger = logging.getLogger("dailycheck.main")
+
+    # 1) 查询
+    statuses = collect_statuses(config)
+
+    # 2) 判断
+    report = build_report(statuses)
+    _safe_console(report.to_console_text())
+    logger.info(
+        "汇总：总数=%d 已完成=%d 未完成=%d 失败=%d 漏做任务=%d",
+        len(report.statuses),
+        len(report.finished),
+        len(report.unfinished),
+        len(report.failed),
+        report.unfinished_task_count,
+    )
+
+    # 3) 推送决策
+    alert, reason = should_push(
+        config.test_mode, report.need_alert, len(report.unfinished)
+    )
+    logger.info("推送决策：%s（%s）", "推送" if alert else "不推送", reason)
+
+    push_results = []
+    if alert:
+        notifiers = build_notifiers(config.push)
+        if not notifiers:
+            logger.warning("push.channels 里没有可用通道，本次不推送")
+        else:
+            title, body = report.to_push_payload()
+            logger.info("推送标题：%s", title)
+            push_results = push_all(notifiers, title, body, dry_run=dry_run)
+            for result in push_results:
+                logger.info("推送结果 %s", result)
+
+    # 4) 收尾 + 退出码
+    if statuses and all(not status.ok for status in statuses):
+        logger.error("所有账号查询失败，请检查凭证或数据源配置")
+        logger.info("=" * 56)
+        return 2
+
+    if alert and push_results and not any(r.ok for r in push_results):
+        if all(r.skipped for r in push_results):
+            logger.warning("没有任何通道真正发出消息（配置不全或 dry-run），本次算作已提醒但未送达")
+        else:
+            logger.error("推送全部失败，请检查网络或 Bark 配置")
+            logger.info("=" * 56)
+            return 3
+
+    logger.info("本轮检查结束")
+    logger.info("=" * 56)
+    return 0
+
+
 def cmd_run(config_path: Path, args: argparse.Namespace) -> int:
     """主流程。"""
     import logging
@@ -524,56 +586,8 @@ def cmd_run(config_path: Path, args: argparse.Namespace) -> int:
     if args.dry_run:
         logger.info("dry-run 已开启：不会发起真实推送请求")
 
-    # 1) 查询
-    statuses = collect_statuses(config)
+    return run_once(config, dry_run=args.dry_run)
 
-    # 2) 判断
-    report = build_report(statuses)
-    _safe_console(report.to_console_text())
-    logger.info(
-        "汇总：总数=%d 已完成=%d 未完成=%d 失败=%d 漏做任务=%d",
-        len(report.statuses),
-        len(report.finished),
-        len(report.unfinished),
-        len(report.failed),
-        report.unfinished_task_count,
-    )
-
-    # 3) 推送决策
-    alert, reason = should_push(
-        config.test_mode, report.need_alert, len(report.unfinished)
-    )
-    logger.info("推送决策：%s（%s）", "推送" if alert else "不推送", reason)
-
-    push_results = []
-    if alert:
-        notifiers = build_notifiers(config.push)
-        if not notifiers:
-            logger.warning("push.channels 里没有可用通道，本次不推送")
-        else:
-            title, body = report.to_push_payload()
-            logger.info("推送标题：%s", title)
-            push_results = push_all(notifiers, title, body, dry_run=args.dry_run)
-            for result in push_results:
-                logger.info("推送结果 %s", result)
-
-    # 4) 收尾 + 退出码
-    if statuses and all(not status.ok for status in statuses):
-        logger.error("所有账号查询失败，请检查凭证或数据源配置")
-        logger.info("=" * 56)
-        return 2
-
-    if alert and push_results and not any(r.ok for r in push_results):
-        if all(r.skipped for r in push_results):
-            logger.warning("没有任何通道真正发出消息（配置不全或 dry-run），本次算作已提醒但未送达")
-        else:
-            logger.error("推送全部失败，请检查网络或 Bark 配置")
-            logger.info("=" * 56)
-            return 3
-
-    logger.info("本轮检查结束")
-    logger.info("=" * 56)
-    return 0
 
 
 # --------------------------------------------------------------------------- #

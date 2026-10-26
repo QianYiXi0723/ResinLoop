@@ -147,173 +147,83 @@ echo         Install Python 3.10+ and tick "Add python.exe to PATH".
 exit /b 1
 """
 
-# ------------------------------------------------------- 通用 setup_task.bat
-SETUP_BAT = r"""@echo off
-rem ============================================================
-rem  Create a Windows Scheduled Task that runs run.bat daily 22:00
-rem  Right-click - Run as administrator.
-rem  Keep this file ASCII-only: cmd.exe encoding safety.
-rem ============================================================
-setlocal
-chcp 65001 >nul 2>&1
-set "TASKNAME=GameDailyCheck"
-set "DIR=%~dp0"
-if "%DIR:~-1%"=="\" set "DIR=%DIR:~0,-1%"
-set "BAT=%DIR%\run.bat"
-
-fltmc >nul 2>&1
-if errorlevel 1 (
-    echo [INFO] Administrator rights required, asking for elevation...
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
-    exit /b
-)
-
-cls
-echo ============================================================
-echo   Create task "%TASKNAME%" : daily 22:00
-echo   Script: %BAT%
-echo ============================================================
-echo.
-
-if not exist "%BAT%" (
-    echo [FAIL] run.bat not found next to this file.
-    goto :end
-)
-
-echo [1/3] creating scheduled task ...
-schtasks /Create /TN "%TASKNAME%" /TR "\"%BAT%\"" /SC DAILY /ST 22:00 /RL HIGHEST /F
-if errorlevel 1 (
-    echo [FAIL] schtasks returned an error. See message above.
-    goto :end
-)
-echo   OK
-
-echo.
-echo [2/3] tuning settings ...
-powershell -NoProfile -Command "$n='%TASKNAME%'; $t=Get-ScheduledTask -TaskName $n; $t.Settings.StartWhenAvailable=$true; $t.Settings.DisallowStartIfOnBatteries=$false; $t.Settings.StopIfGoingOnBatteries=$false; try{Set-ScheduledTask -TaskName $n -Settings $t.Settings -ErrorAction Stop; '  OK'}catch{'  [warn] '+$_.Exception.Message}"
-
-echo.
-echo [3/3] verifying ...
-schtasks /Query /TN "%TASKNAME%" /FO LIST
-
-echo.
-echo ============================================================
-echo   Done. The task will fire every day at 22:00.
-echo   Run it once now:  schtasks /Run /TN "%TASKNAME%"
-echo   Check log:        %DIR%\logs\cron_run.log
-echo.
-echo   To hide the console window, make it run whether the user
-echo   is logged on or not:
-echo       schtasks /Change /TN "%TASKNAME%" /RU %USERNAME% /RP *
-echo   (type your Windows password when asked)
-echo ============================================================
-
-:end
-echo.
-pause
-"""
-
 # ---------------------------------------------------------------- 上手说明
-README_TXT = """游戏日常任务提醒 —— 开始使用
+README_TXT = """游戏日常提醒 —— 三步搞定
 ================================================
 
 每天定时查一次游戏日常进度，没做完就推送到手机（微信 / QQ）。
-
 支持：原神、崩坏：星穹铁道、绝区零、明日方舟、明日方舟：终末地
 
 
-一、准备
+第零步：装 Python（只做一次）
 ------------------------------------------------
-1. 装 Python 3.10 或更高版本
-   下载：https://www.python.org/downloads/
-   安装时务必勾选  "Add python.exe to PATH"
+下载：https://www.python.org/downloads/
+安装时务必勾选  "Add python.exe to PATH"
 
-2. 把本文件夹放到一个固定位置，比如
-       D:\Tools\gamedaily
-   （路径里有空格没关系，但别在压缩包里直接运行）
+装完就不用管了，下面的依赖 start.bat 会自动装。
 
 
-二、装依赖
+第一步：双击 start.bat
 ------------------------------------------------
-在本文件夹地址栏输入 cmd 回车，然后执行：
+它会自动做完这些事：
 
-    pip install -r requirements.txt
+  1. 检查依赖，缺了自动 pip install
+  2. 后台启动控制台（网页服务）
+  3. 后台启动守护进程（右下角出现托盘图标）
+  4. 自动打开浏览器 http://127.0.0.1:8765
+
+窗口里显示"已启动"就可以关掉它了。
 
 
-三、登录游戏账号（扫码，不用手抄 Cookie）
+第二步：在网页里配三个页签
 ------------------------------------------------
-双击本文件夹里的  login_ui.bat
+【账号绑定】
+  设备伪装（推荐，但不强制）
+      手机扫页面上的二维码 -> 安装「设备信息」App
+      -> 打开 App 点"复制" -> 粘到文本框 -> 点保存
+      保存后必须重新扫码（设备身份变了）
 
-浏览器会自动打开登录页面，上面有两块：
+  扫码登录
+      米游社：勾几款就更新几款，扫 1 次码
+      森空岛：勾几款就依次扫几次码
 
-    米游社   ☑ 原神  ☑ 崩铁  ☑ 绝区零     → 扫 1 次码，勾选的都更新
-    森空岛   ☑ 明日方舟  ☑ 终末地         → 勾几款就依次扫几次
+【通知绑定】
+  Server酱（微信）：打开 https://sct.ftqq.com 微信扫码，
+                    复制 SendKey 填进去，勾上"启用"
+  Qmsg 酱（QQ） ：打开 https://qmsg.zendee.cn 登录，
+                  复制 key 填进去，勾上"启用"
+  填完点"发送测试推送"，手机收到就说明通了，再点"保存配置"。
 
-只登录一款就只勾那一款；全勾就是全部一起登录。
-登录成功后页面会显示写入结果，config.json 自动更新，不用手工改。
+【定时与状态】
+  添加提醒时间点（例如 08:30、20:30）
+  点"启动守护进程"，状态变成"运行中"就齐了。
 
-（也可以用命令行：python login_ui.py）
 
-
-四、配置推送通道（不配就收不到提醒）
+第三步：挂机
 ------------------------------------------------
-扫码只解决"查得到"，收不收得到提醒取决于这一步。
+到点自动检查并推送，关掉网页不影响。
 
-选一个填就行，都在 config.json 里：
-
-  Server酱（微信，最简单）
-      打开 https://sct.ftqq.com 微信扫码登录
-      复制 SendKey → 填到 push.serverchan.sendkey
-      把 push.channels 改成  ["serverchan"]
-
-  Qmsg酱（QQ）
-      打开 https://qmsg.zendee.cn 登录并添加机器人好友
-      复制 key → 填到 push.qmsg.key
-      把 push.channels 改成  ["qmsg"]
-
-  两个都想要就写  ["serverchan", "qmsg"]，互不影响，
-  一个挂了另一个照常收到。
-
-页面上如果出现"还没配置推送通道"的黄色提示，就是这一步没做。
+右下角托盘图标右键：
+    打开控制台  /  立即执行一次  /  退出程序
 
 
-五、先手动跑一次
+常见问题
 ------------------------------------------------
-    python main.py
+- 扫码报 1034 / 5003（风控）
+    换个网络（手机热点）重试；
+    或在「账号绑定」贴上自己手机的设备指纹，通过率更高。
 
-没做完会立即推送一条；都做完了默认不打扰。
-想强制发一条测试：python main.py --force-alert
+- 手机收不到提醒
+    去「通知绑定」点"发送测试推送"，按页面提示排查。
 
+- 想看详细日志
+    logs\\dailycheck.log
 
-六、设置每天定时
-------------------------------------------------
-右键"以管理员身份运行"  setup_task.bat
+- 想彻底停止
+    网页「定时与状态」点"停止守护进程"，或托盘右键退出。
 
-会建一个名为 GameDailyCheck 的计划任务，每天 22:00 自动跑。
-想改时间，改它里面的 /ST 22:00 再跑一次。
-
-默认是"仅当用户登录时运行"，会闪一下黑窗口。
-想完全后台静默，执行：
-
-    schtasks /Change /TN "GameDailyCheck" /RU 你的用户名 /RP *
-
-然后输入你的 Windows 登录密码。
-
-
-七、排错
-------------------------------------------------
-- 日志文件：logs\dailycheck.log（详细）、logs\cron_run.log（定时任务输出）
-- 扫码后报 1034 / 5003：米游社风控，换个网络（手机热点）重试
-- 提示"没有找到 Python"：重装 Python 并勾选 Add to PATH
-- 页面提示"还没配置推送通道"：照第四节填一下
-- 详细说明见 README.md
-
-
-八、说明
-------------------------------------------------
-- 首次运行会自动生成 config.json，登录后自动填充账号。
 - 不要把自己填好的 config.json 发给别人，里面有账号 Cookie。
-- 脚本只读查询，不会代打游戏、不会自动签到。
+- 只读查询，不会代打游戏、不会自动签到。
 - 本项目使用 MIT 许可证，可自由修改分发。
 """
 
@@ -333,21 +243,31 @@ def main() -> None:
 
     # 1) 源码与文档（README 里的真实指纹 / 出口 IP 就地脱敏，本地原件不动）
     shutil.copy2(ROOT / "main.py", OUT / "main.py")
+    shutil.copy2(ROOT / "daemon.py", OUT / "daemon.py")
     shutil.copy2(ROOT / "login_ui.py", OUT / "login_ui.py")
     shutil.copy2(ROOT / "login_ui.bat", OUT / "login_ui.bat")
+    shutil.copy2(ROOT / "start.bat", OUT / "start.bat")
     shutil.copy2(ROOT / "LICENSE", OUT / "LICENSE")
     for py in sorted((ROOT / "core").glob("*.py")):
         shutil.copy2(py, OUT / "core" / py.name)
     shutil.copy2(ROOT / "requirements.txt", OUT / "requirements.txt")
     shutil.copy2(ROOT / "README.md", OUT / "README.md")
 
+    # 1.1) tools/：手机端 APK（体积大，不进 git，但必须进发布包）
+    tools_src = ROOT / "tools"
+    if tools_src.is_dir():
+        (OUT / "tools").mkdir(exist_ok=True)
+        for item in sorted(tools_src.iterdir()):
+            if item.is_file() and not item.name.startswith("."):
+                shutil.copy2(item, OUT / "tools" / item.name)
+
     # 2) 空白配置（模板内容，绝无凭据）
     shutil.copy2(ROOT / "config.example.json", OUT / "config.json")
     shutil.copy2(ROOT / "config.example.json", OUT / "config.example.json")
 
-    # 3) 通用启动 / 部署脚本
+    # 3) 通用启动脚本（start.bat 已是很随身的版本，直接复制；
+    #    run.bat 用于手动跑一次检查，没有调度逻辑）
     write_crlf_ascii(OUT / "run.bat", RUN_BAT)
-    write_crlf_ascii(OUT / "setup_task.bat", SETUP_BAT)
     write_crlf_bom(OUT / "开始使用.txt", README_TXT)
 
     # 4) 体检：敏感值从本地 config.json / logs 动态提取，源码里不存任何真实 key

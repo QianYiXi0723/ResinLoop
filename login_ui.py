@@ -26,6 +26,7 @@ import base64
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import threading
@@ -36,9 +37,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 CONFIG_PATH = BASE_DIR / "config.json"
 
 logger = logging.getLogger("dailycheck.loginui")
@@ -470,6 +473,203 @@ def run_test_push(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "results": rows}
 
 
+# --------------------------------------------------------------------------- #
+# 设备伪装
+# --------------------------------------------------------------------------- #
+
+#: 指纹缓存：换设备档案后必须删掉，否则会继续用旧机型的 device_fp
+_DEVICE_CACHE_PATH = BASE_DIR / "logs" / "device_fp.json"
+
+#: APK 下载服务信息（main() 启动后填充）
+TOOLS_SERVER: Optional[Dict[str, Any]] = None
+
+_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+
+
+def _human_size(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size} B"
+
+
+def _mask_oaid(value: str) -> str:
+    text = (value or "").strip()
+    if len(text) <= 8:
+        return "*" * len(text)
+    return f"{text[:4]}****{text[-4:]}"
+
+
+def apk_info() -> Dict[str, Any]:
+    """tools/ 里的 APK 信息 + 手机扫码下载地址。"""
+    from core import tools_server
+
+    if not TOOLS_SERVER:
+        return {"available": False, "message": "下载服务未启动"}
+    files = [
+        item for item in tools_server.list_files() if item["name"].lower().endswith(".apk")
+    ]
+    if not files:
+        return {"available": False, "message": "tools/ 目录里没有 APK"}
+
+    apk = files[0]
+    url = TOOLS_SERVER["url"] + quote(apk["name"])
+    return {
+        "available": True,
+        "name": apk["name"],
+        "size": apk["size"],
+        "size_text": _human_size(apk["size"]),
+        "url": url,
+        "ip": TOOLS_SERVER["ip"],
+        "port": TOOLS_SERVER["port"],
+        "qr": qr_png_base64(url),
+    }
+
+
+def device_status() -> Dict[str, Any]:
+    """当前生效的设备档案（OAID 打码）与相关状态。"""
+    from core import mihoyo_api
+
+    profile = mihoyo_api.load_device_profile()  # 读盘，换完立刻反映
+    return {
+        "ok": True,
+        "custom": mihoyo_api.PROFILE_OVERRIDE_PATH.exists(),
+        "profile": {
+            "brand": profile.get("brand", ""),
+            "model": profile.get("model", ""),
+            "os_version": profile.get("os_version", ""),
+            "sdk_version": profile.get("sdk_version", ""),
+            "device": profile.get("device", ""),
+            "device_info": profile.get("device_info", ""),
+            "oaid": _mask_oaid(profile.get("oaid", "")),
+        },
+        "ua": mihoyo_api.build_user_agent(profile),
+        "cache_exists": _DEVICE_CACHE_PATH.exists(),
+        "apk": apk_info(),
+    }
+
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
+    """从粘贴内容里截出 JSON 对象。
+
+    小白常常连着"设备信息"几个字一起复制，严格 json.loads 会失败，
+    这里按首尾花括号截取，容错更高。
+    """
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("没找到 JSON 内容（应当以 { 开头、} 结尾）")
+    try:
+        data = json.loads(text[start : end + 1])
+    except ValueError as exc:
+        raise ValueError(f"JSON 解析失败：{exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("粘贴的内容不是 JSON 对象")
+    return data
+
+
+def save_device_text(raw_text: str) -> Dict[str, Any]:
+    """解析用户粘贴的手机档案 -> 写入覆盖文件 -> 清指纹缓存。"""
+    from core import mihoyo_api
+
+    text = (raw_text or "").strip()
+    if not text:
+        raise ValueError("请先粘贴「设备信息」App 导出的内容")
+
+    data = _extract_json_object(text)
+    mihoyo_api.save_device_profile(data)   # 校验 + 落盘
+    mihoyo_api.reload_device_profile()     # 让 UA 等缓存立刻跟上
+    removed = mihoyo_api.clear_device_cache()
+
+    result = device_status()
+    result["removed_cache"] = removed
+    result["message"] = "设备指纹已替换，请重新扫码"
+    logger.info("设备档案已替换为 %s（UA 已同步）", result["profile"]["model"])
+    return result
+
+
+def reset_device_text() -> Dict[str, Any]:
+    """恢复默认设备档案并清缓存。"""
+    from core import mihoyo_api
+
+    mihoyo_api.clear_device_profile()
+    mihoyo_api.reload_device_profile()
+    removed = mihoyo_api.clear_device_cache()
+
+    result = device_status()
+    result["removed_cache"] = removed
+    result["message"] = "已恢复默认设备档案，请重新扫码"
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# 定时与守护进程
+# --------------------------------------------------------------------------- #
+
+
+def _normalize_times(times: Any) -> List[str]:
+    if not isinstance(times, list):
+        raise ValueError("times 必须是数组")
+    result: List[str] = []
+    for item in times:
+        text = str(item).strip()
+        if not _TIME_RE.match(text):
+            raise ValueError(f"「{text}」不是合法时间，格式应为 HH:MM（如 08:30）")
+        if text not in result:
+            result.append(text)
+    if not result:
+        raise ValueError("至少要保留一个时间点")
+    if len(result) > 12:
+        raise ValueError("时间点最多 12 个")
+    return sorted(result)
+
+
+def daemon_status() -> Dict[str, Any]:
+    try:
+        import daemon as daemon_mod
+
+        return daemon_mod.status()
+    except Exception as exc:  # noqa: BLE001 - 状态读不到不能影响页面
+        logger.warning("读取守护进程状态失败：%s", exc)
+        return {"running": False, "error": str(exc), "check_times": [], "next_run": ""}
+
+
+def schedule_status() -> Dict[str, Any]:
+    from core.config import next_check_time
+
+    raw = load_raw_config()
+    app = raw.get("app") if isinstance(raw.get("app"), dict) else {}
+    times = [str(item) for item in (app.get("check_times") or [])]
+    target = next_check_time(times)
+    return {
+        "ok": True,
+        "times": times,
+        "next_run": target.strftime("%Y-%m-%d %H:%M") if target else "",
+        "daemon": daemon_status(),
+    }
+
+
+def save_schedule(times: Any) -> Dict[str, Any]:
+    normalized = _normalize_times(times)
+    raw = load_raw_config()
+    if not isinstance(raw.get("app"), dict):
+        raw["app"] = {}
+    raw["app"]["check_times"] = normalized
+
+    # 写盘前用真正的配置解析器复检，保证不会把 config.json 写坏
+    from core.config import parse_config
+
+    parse_config(raw, source=CONFIG_PATH)
+    save_raw_config(raw)
+
+    result = schedule_status()
+    result["message"] = f"已保存 {len(normalized)} 个时间点"
+    logger.info("时间点已更新：%s", "、".join(normalized))
+    return result
+
+
 def write_mihoyo(cookie: str, games: List[str]) -> List[str]:
     """把 Cookie 写进**选中的**游戏节点，其余游戏原样不动。"""
     raw = load_raw_config()
@@ -656,16 +856,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>游戏日常提醒 · 绑定</title>
+<title>游戏日常提醒 · 控制台</title>
 <style>
   :root{
     --bg:#f6f7f9; --card:#fff; --fg:#1a1c1f; --muted:#6b7280;
     --line:#e5e7eb; --brand:#2563eb; --ok:#059669; --warn:#d97706; --err:#dc2626;
+    --violet:#7c3aed;
     --shadow:0 1px 2px rgba(16,24,40,.06),0 8px 24px rgba(16,24,40,.06);
   }
   @media (prefers-color-scheme: dark){
     :root{ --bg:#0f1115; --card:#181b21; --fg:#e8eaed; --muted:#9aa3af;
            --line:#272b33; --brand:#5b8def; --ok:#34d399; --warn:#fbbf24; --err:#f87171;
+           --violet:#a78bfa;
            --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3); }
   }
   *{box-sizing:border-box}
@@ -677,12 +879,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   h1{font-size:22px;margin:0 0 6px;letter-spacing:-.01em}
   .sub{margin:0;color:var(--muted);font-size:14px}
 
-  /* ---------- 顶部两个导航按钮 ---------- */
+  /* ---------- 顶部三个导航按钮 ---------- */
   .tabs{display:flex;gap:6px;margin:0 0 20px;padding:5px;background:var(--card);
         border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
-  .tabs button{flex:1;padding:9px 12px;border-radius:8px;border:none;background:transparent;
+  .tabs button{flex:1;padding:9px 8px;border-radius:8px;border:none;background:transparent;
                color:var(--muted);font-size:14px;font-weight:500;cursor:pointer;
-               transition:background .15s,color .15s}
+               transition:background .15s,color .15s;white-space:nowrap}
   .tabs button:hover{color:var(--fg);opacity:1}
   .tabs button.on{background:var(--brand);color:#fff}
   .tabpanel{display:none}
@@ -690,17 +892,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   .cards{display:grid;gap:14px;grid-template-columns:1fr 1fr}
   .cards .card{display:flex;flex-direction:column}
-  .cards .card > button{margin-top:auto}   /* 两侧按钮底部对齐 */
+  .cards .card > button{margin-top:auto}
   @media (max-width:640px){ .cards{grid-template-columns:1fr} }
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
         padding:18px;box-shadow:var(--shadow)}
+  .card + .card{margin-top:14px}
   .card-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
   .card h2{font-size:15px;margin:0}
-  .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--muted)}
   .dot.m{background:#4f9cf9}.dot.s{background:#f0a04b}
   .desc{color:var(--muted);font-size:12.5px;margin:0 0 12px}
-  .desc code{background:var(--bg);padding:1px 5px;border-radius:4px;font-size:12px;
-             border:1px solid var(--line)}
+  .desc code,.hint code{background:var(--bg);padding:1px 5px;border-radius:4px;
+                        font-size:12px;border:1px solid var(--line)}
   .checks{display:flex;flex-direction:column;gap:7px;margin-bottom:14px}
   .checks label{display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
                 padding:2px 0}
@@ -716,7 +919,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                width:auto;padding:8px 14px;margin-top:14px}
   button.alt{background:transparent;border-color:var(--line);color:var(--fg)}
   button.alt:hover{border-color:var(--brand);color:var(--brand);opacity:1}
-  .stage{margin-top:22px;background:var(--card);border:1px solid var(--line);
+  .stage{margin-top:14px;background:var(--card);border:1px solid var(--line);
          border-radius:14px;padding:22px;box-shadow:var(--shadow);text-align:center}
   .qrbox{display:inline-flex;padding:12px;background:#fff;border-radius:12px;
          border:1px solid var(--line);min-height:224px;min-width:224px;
@@ -744,8 +947,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
           line-height:1.7;border:1px solid var(--warn);background:rgba(217,119,6,.08);
           color:var(--fg)}
   .notice b{color:var(--warn)}
-  .notice code{background:var(--card);padding:1px 5px;border-radius:4px;font-size:12px;
-               border:1px solid var(--line)}
   .notice.info{border-color:var(--line);background:var(--card)}
   .notice.info b{color:var(--fg)}
   .notice a{color:var(--brand);text-decoration:none;font-weight:500;
@@ -760,12 +961,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
           cursor:pointer;white-space:nowrap;user-select:none}
   .switch input{width:15px;height:15px;accent-color:var(--brand);cursor:pointer;margin:0}
   .field{margin-top:4px}
-  .field input{width:100%;padding:10px 12px;border-radius:9px;border:1px solid var(--line);
-               background:var(--bg);color:var(--fg);font-size:13.5px;
-               font-family:ui-monospace,SFMono-Regular,Consolas,"Courier New",monospace}
-  .field input:focus{outline:none;border-color:var(--brand);
+  .field input,.field textarea{width:100%;padding:10px 12px;border-radius:9px;
+               border:1px solid var(--line);background:var(--bg);color:var(--fg);
+               font-size:13.5px}
+  .field input{font-family:ui-monospace,SFMono-Regular,Consolas,"Courier New",monospace}
+  .field textarea{font:12.5px/1.55 ui-monospace,SFMono-Regular,Consolas,"Courier New",monospace;
+                  resize:vertical;min-height:110px}
+  .field input:focus,.field textarea:focus{outline:none;border-color:var(--brand);
                      box-shadow:0 0 0 3px rgba(37,99,235,.14)}
-  .field input::placeholder{color:var(--muted);font-family:inherit;opacity:.7}
+  .field input::placeholder,.field textarea::placeholder{color:var(--muted);opacity:.65}
   .hint{margin:7px 0 0;font-size:12px;color:var(--muted);line-height:1.55}
   .hint b{color:var(--fg)}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
@@ -774,24 +978,68 @@ HTML_PAGE = r"""<!DOCTYPE html>
   #toast{position:fixed;left:50%;top:20px;transform:translate(-50%,-14px);
          background:var(--fg);color:var(--bg);padding:10px 18px;border-radius:10px;
          font-size:14px;font-weight:500;opacity:0;pointer-events:none;z-index:99;
-         transition:opacity .2s,transform .2s;box-shadow:0 10px 30px rgba(0,0,0,.22)}
+         transition:opacity .2s,transform .2s;box-shadow:0 10px 30px rgba(0,0,0,.22);
+         max-width:88vw;text-align:center}
   #toast.show{opacity:1;transform:translate(-50%,0)}
   #toast.err{background:var(--err);color:#fff}
+
+  /* ---------- 设备伪装 ---------- */
+  .dev-top{display:grid;grid-template-columns:1fr 150px;gap:16px;align-items:start}
+  @media (max-width:600px){ .dev-top{grid-template-columns:1fr} }
+  .steps{display:flex;flex-direction:column;gap:8px;margin:0 0 14px}
+  .step{display:flex;gap:9px;align-items:flex-start;font-size:13px;color:var(--muted)}
+  .step b{flex:none;width:19px;height:19px;border-radius:50%;background:var(--brand);
+          color:#fff;font-size:11.5px;display:flex;align-items:center;justify-content:center;
+          margin-top:1px}
+  .apk{text-align:center}
+  .apk-qr{display:inline-block;padding:8px;background:#fff;border:1px solid var(--line);
+          border-radius:10px}
+  .apk-qr img{width:126px;height:126px;display:block}
+  .apk-meta{font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.4;
+            word-break:break-all}
+  .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;
+        word-break:break-all}
+
+  /* ---------- 定时与状态 ---------- */
+  .kv2{display:grid;grid-template-columns:1fr 1fr;gap:10px 18px;margin-top:12px;
+       font-size:13px}
+  @media (max-width:520px){ .kv2{grid-template-columns:1fr} }
+  .kv2 > div{display:flex;justify-content:space-between;gap:10px;
+             border-bottom:1px dashed var(--line);padding-bottom:6px}
+  .kv2 span{color:var(--muted)}
+  .kv2 b{font-weight:500;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+         font-size:12.5px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .chip{display:inline-flex;align-items:center;gap:6px;background:var(--bg);
+        border:1px solid var(--line);border-radius:999px;padding:5px 6px 5px 12px;
+        font-size:13.5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+  .chip button{width:20px;height:20px;padding:0;border-radius:50%;background:transparent;
+               color:var(--muted);border:none;font-size:15px;line-height:1;cursor:pointer}
+  .chip button:hover{background:var(--err);color:#fff;opacity:1}
+  .chip.empty{color:var(--muted);border-style:dashed;padding:5px 12px;font-family:inherit}
+  .row3{display:grid;grid-template-columns:1fr auto;gap:10px;margin-top:14px}
+  .row3 button{width:auto;padding:10px 18px}
+  input[type=time]{width:100%;padding:10px 12px;border-radius:9px;border:1px solid var(--line);
+                   background:var(--bg);color:var(--fg);font-size:14px;
+                   font-family:ui-monospace,Consolas,monospace}
+  input[type=time]:focus{outline:none;border-color:var(--brand);
+                         box-shadow:0 0 0 3px rgba(37,99,235,.14)}
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1>游戏日常提醒 · 绑定</h1>
-    <p class="sub">账号绑定解决「查得到」，通知绑定解决「收得到」</p>
+    <h1>游戏日常提醒 · 控制台</h1>
+    <p class="sub">账号绑定解决「查得到」，通知绑定解决「收得到」，定时与状态负责「一直跑」</p>
   </header>
 
   <nav class="tabs">
     <button type="button" data-tab="account" class="on">账号绑定</button>
     <button type="button" data-tab="notify">通知绑定</button>
+    <button type="button" data-tab="schedule">定时与状态</button>
   </nav>
 
-  <!-- ============================ Tab 1：账号绑定 ============================ -->
+  <!-- ======================= Tab 1：账号绑定 ======================= -->
   <section class="tabpanel on" id="tab-account">
     <div class="notice" id="notice" style="display:none"></div>
 
@@ -831,9 +1079,49 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div class="kv" id="detail" hidden></div>
       <button class="ghost" onclick="reset()">重新开始</button>
     </section>
+
+    <section class="card" id="dev-card">
+      <div class="chan-head">
+        <h2><span class="dot" style="background:var(--violet)"></span>设备伪装（可选，但强烈推荐）</h2>
+        <span class="badge" id="dev-badge">读取中</span>
+      </div>
+      <p class="desc">
+        米游社按「设备指纹」判断风险。用你自己手机的真实档案，通过率最高；
+        不填则用内置的通用机型。
+      </p>
+
+      <div class="dev-top">
+        <div>
+          <div class="steps">
+            <div class="step"><b>1</b><span>手机扫码下载并安装「设备信息」App</span></div>
+            <div class="step"><b>2</b><span>打开 App，点「复制设备信息」</span></div>
+            <div class="step"><b>3</b><span>把复制到的内容粘到下面，点保存</span></div>
+          </div>
+          <div class="field">
+            <textarea id="dev-text" spellcheck="false"
+              placeholder='把「设备信息」App 复制出来的内容粘贴到这里，形如：
+{"deviceModel":"24122RKC7C","androidVersion":"16","deviceFingerprint":"...","oaid":"..."}'></textarea>
+          </div>
+        </div>
+        <div class="apk" id="apk-box">
+          <div class="apk-qr" id="apk-qr"><span class="ph" style="font-size:12px;color:#9aa3af">二维码生成中…</span></div>
+          <div class="apk-meta" id="apk-meta"></div>
+        </div>
+      </div>
+
+      <p class="hint" id="dev-current">正在读取当前设备档案…</p>
+      <div class="row">
+        <button id="btn-dev-save">保存并清空指纹缓存</button>
+        <button id="btn-dev-reset" class="alt">恢复默认</button>
+      </div>
+      <p class="hint">
+        保存后会删掉 <code>logs/device_fp.json</code>，下次查询自动按新档案重签指纹。
+        <b>保存后必须重新扫码</b>，否则登录设备与查询设备不一致。
+      </p>
+    </section>
   </section>
 
-  <!-- ============================ Tab 2：通知绑定 ============================ -->
+  <!-- ======================= Tab 2：通知绑定 ======================= -->
   <section class="tabpanel" id="tab-notify">
     <div class="notice info" style="display:block">
       Key 由后端打码后再传到页面，网页里看不到明文。
@@ -877,13 +1165,53 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </p>
     <div id="test-result" hidden></div>
   </section>
+
+  <!-- ======================= Tab 3：定时与状态 ======================= -->
+  <section class="tabpanel" id="tab-schedule">
+    <section class="card">
+      <div class="chan-head">
+        <h2><span class="dot" id="d-dot"></span>守护进程</h2>
+        <span class="badge" id="d-state">读取中</span>
+      </div>
+      <p class="desc">常驻后台，到点自动检查并推送。托盘图标在右下角。</p>
+      <div class="kv2">
+        <div><span>进程 PID</span><b id="d-pid">-</b></div>
+        <div><span>启动时间</span><b id="d-since">-</b></div>
+        <div><span>下次提醒</span><b id="d-next">-</b></div>
+        <div><span>最近一次</span><b id="d-last">-</b></div>
+      </div>
+      <div class="row">
+        <button id="btn-daemon-start">启动守护进程</button>
+        <button id="btn-daemon-stop" class="alt">停止守护进程</button>
+      </div>
+      <p class="hint">
+        启动后关掉本网页也不影响提醒；要彻底停掉就点「停止守护进程」，
+        或在右下角托盘图标上右键 → 退出程序。
+      </p>
+    </section>
+
+    <section class="card">
+      <div class="chan-head">
+        <h2><span class="dot" style="background:var(--ok)"></span>提醒时间点</h2>
+        <span class="badge" id="d-count">-</span>
+      </div>
+      <p class="desc">每天到这些时间点检查一次；同一分钟只会提醒一次，不会重复推送。</p>
+      <div class="chips" id="d-times"></div>
+      <div class="row3">
+        <input type="time" id="d-new-time" value="22:00" step="60">
+        <button id="btn-add-time">添加</button>
+      </div>
+      <p class="hint">改完立即生效，<b>不用重启守护进程</b>。</p>
+    </section>
+  </section>
 </div>
 
 <div id="toast"></div>
 
 <script>
-/* =========================== 顶部 Tab 切换 =========================== */
-const PANEL_NAMES = ['account', 'notify'];
+/* =========================== Tab 切换 =========================== */
+const PANEL_NAMES = ['account', 'notify', 'schedule'];
+let schedTimer = null;
 
 function switchTab(name){
   PANEL_NAMES.forEach(function(k){
@@ -895,12 +1223,48 @@ function switchTab(name){
     const btn = document.querySelector('.tabs button[data-tab="' + k + '"]');
     if (btn) btn.classList.toggle('on', k === name);
   });
+
   if (name === 'notify') loadPush();
+  if (name === 'schedule') { loadSchedule(); startSchedPoll(); } else { stopSchedPoll(); }
+  if (name === 'account') { loadDevice(); refreshNotice(); }
+}
+
+function startSchedPoll(){
+  stopSchedPoll();
+  schedTimer = setInterval(loadSchedule, 3000);
+}
+function stopSchedPoll(){
+  if (schedTimer) { clearInterval(schedTimer); schedTimer = null; }
 }
 
 document.querySelectorAll('.tabs button[data-tab]').forEach(function(btn){
   btn.addEventListener('click', function(){ switchTab(this.dataset.tab); });
 });
+
+document.addEventListener('click', function(e){
+  const link = e.target.closest('[data-goto]');
+  if (!link) return;
+  e.preventDefault();
+  switchTab(link.dataset.goto);
+});
+
+/* =========================== 通用提示 =========================== */
+function toast(text, isErr){
+  const el = document.getElementById('toast');
+  el.textContent = text;
+  el.className = 'show' + (isErr ? ' err' : '');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(function(){ el.className = ''; }, 2800);
+}
+
+async function postJSON(url, payload){
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  return r.json();
+}
 
 /* =========================== Tab 1：账号绑定 =========================== */
 let sid = null, timer = null;
@@ -1034,7 +1398,6 @@ function reset(){
   document.getElementById('detail').hidden = true;
 }
 
-/* 推送通道没配时给一条明确提示：扫码只解决"查得到"，不解决"收得到" */
 function refreshNotice(){
   fetch('/api/env').then(function(r){ return r.json(); }).then(function(d){
     const box = document.getElementById('notice');
@@ -1047,23 +1410,73 @@ function refreshNotice(){
   }).catch(function(){});
 }
 
-document.addEventListener('click', function(e){
-  const link = e.target.closest('[data-goto]');
-  if (!link) return;
-  e.preventDefault();
-  switchTab(link.dataset.goto);
-});
+/* ---------- 设备伪装 ---------- */
+function renderDevice(d){
+  if (!d.ok) { toast(d.message || '读取设备档案失败', true); return; }
+  const p = d.profile || {};
+  document.getElementById('dev-badge').textContent = d.custom ? '已使用自定义档案' : '内置默认档案';
+  document.getElementById('dev-badge').className = 'badge ' + (d.custom ? 'ok' : '');
+  document.getElementById('dev-current').innerHTML =
+    '当前设备：<b>' + (p.brand || '?') + ' ' + (p.model || '?') + '</b>' +
+    ' · Android ' + (p.os_version || '?') +
+    ' · OAID <code>' + (p.oaid || '?') + '</code>' +
+    ' · 指纹缓存' + (d.cache_exists ? '存在' : '<b>已清空</b>');
+
+  const apk = d.apk || {};
+  const qrBox = document.getElementById('apk-qr');
+  const meta = document.getElementById('apk-meta');
+  if (apk.available && apk.qr) {
+    qrBox.innerHTML = '<img alt="APK 下载二维码">';
+    qrBox.querySelector('img').src = 'data:image/png;base64,' + apk.qr;
+    let shown = apk.url;
+    try { shown = decodeURIComponent(apk.url); } catch (e) {}
+    meta.innerHTML = apk.name + '（' + apk.size_text + '）<br>' + shown;
+  } else {
+    qrBox.innerHTML = '<span style="font-size:12px;color:#9aa3af">二维码不可用</span>';
+    meta.textContent = apk.message || '未找到 APK';
+  }
+}
+
+function loadDevice(){
+  fetch('/api/device').then(function(r){ return r.json(); })
+    .then(renderDevice)
+    .catch(function(){ toast('无法读取设备档案', true); });
+}
+
+async function saveDevice(){
+  const btn = document.getElementById('btn-dev-save');
+  const text = document.getElementById('dev-text').value;
+  if (!text.trim()) { toast('请先粘贴设备信息', true); return; }
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = '保存中…';
+  try {
+    const d = await postJSON('/api/device', { text: text });
+    if (!d.ok) { toast(d.message || '保存失败', true); return; }
+    renderDevice(d);
+    document.getElementById('dev-text').value = '';
+    toast(d.message || '设备指纹已替换，请重新扫码');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (e) {
+    toast('保存失败：' + e, true);
+  } finally {
+    btn.disabled = false; btn.textContent = old;
+  }
+}
+
+async function resetDevice(){
+  if (!confirm('恢复内置默认设备档案？恢复后需要重新扫码。')) return;
+  try {
+    const d = await postJSON('/api/device/reset', {});
+    if (!d.ok) { toast(d.message || '恢复失败', true); return; }
+    renderDevice(d);
+    toast(d.message || '已恢复默认');
+  } catch (e) {
+    toast('恢复失败：' + e, true);
+  }
+}
 
 /* =========================== Tab 2：通知绑定 =========================== */
 const CHANNELS = ['serverchan', 'qmsg'];
-
-function toast(text, isErr){
-  const el = document.getElementById('toast');
-  el.textContent = text;
-  el.className = 'show' + (isErr ? ' err' : '');
-  clearTimeout(toast._t);
-  toast._t = setTimeout(function(){ el.className = ''; }, 2600);
-}
 
 function hintText(it){
   if (!it.has_key && !it.enabled) return '未配置，也未启用';
@@ -1112,12 +1525,7 @@ async function savePush(){
   const old = btn.textContent;
   btn.textContent = '保存中…';
   try {
-    const r = await fetch('/api/push', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(collectPush())
-    });
-    const d = await r.json();
+    const d = await postJSON('/api/push', collectPush());
     if (!d.ok) { toast(d.message || '保存失败', true); return; }
     renderPush(d);
     document.getElementById('test-result').hidden = true;
@@ -1138,12 +1546,7 @@ async function testPush(){
   btn.textContent = '发送中…';
   box.hidden = true;
   try {
-    const r = await fetch('/api/test_push', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(collectPush())
-    });
-    const d = await r.json();
+    const d = await postJSON('/api/test_push', collectPush());
     if (!d.ok) { toast(d.message || '发送失败', true); return; }
     const rows = (d.results || []).map(function(x){
       return '<div><span class="' + (x.ok ? 'i-ok' : 'i-no') + '">' +
@@ -1172,9 +1575,114 @@ CHANNELS.forEach(function(name){
 document.getElementById('btn-save').addEventListener('click', savePush);
 document.getElementById('btn-test').addEventListener('click', testPush);
 
-/* 启动：默认账号绑定；地址栏带 #notify 可直接落在通知绑定 */
-switchTab(location.hash === '#notify' ? 'notify' : 'account');
+/* =========================== Tab 3：定时与状态 =========================== */
+function renderDaemon(st){
+  const dot = document.getElementById('d-dot');
+  const badge = document.getElementById('d-state');
+  const running = !!st.running;
+  dot.style.background = running ? 'var(--ok)' : 'var(--err)';
+  badge.textContent = running ? '运行中' : '已停止';
+  badge.className = 'badge ' + (running ? 'ok' : 'err');
+
+  document.getElementById('d-pid').textContent = st.pid || '-';
+  document.getElementById('d-since').textContent = st.started_at || '-';
+
+  const last = st.last_run || {};
+  document.getElementById('d-last').textContent =
+    last.at ? (last.at + '（' + (last.exit === 0 ? '成功' : '退出码 ' + last.exit) + '）') : '还没跑过';
+  document.getElementById('btn-daemon-start').disabled = running;
+  document.getElementById('btn-daemon-stop').disabled = !running;
+}
+
+function renderSchedule(d){
+  if (!d.ok) { toast(d.message || '读取失败', true); return; }
+  const times = d.times || [];
+  const box = document.getElementById('d-times');
+  if (!times.length) {
+    box.innerHTML = '<span class="chip empty">还没有时间点</span>';
+  } else {
+    box.innerHTML = times.map(function(t){
+      return '<span class="chip">' + t +
+             '<button title="删除" data-remove="' + t + '">×</button></span>';
+    }).join('');
+  }
+  document.getElementById('d-count').textContent = times.length + ' 个';
+  document.getElementById('d-next').textContent = d.next_run || '-';
+  renderDaemon(d.daemon || {});
+}
+
+function loadSchedule(){
+  fetch('/api/schedule').then(function(r){ return r.json(); })
+    .then(renderSchedule)
+    .catch(function(){});
+}
+
+async function saveTimes(times){
+  try {
+    const d = await postJSON('/api/schedule', { times: times });
+    if (!d.ok) { toast(d.message || '保存失败', true); return false; }
+    renderSchedule(d);
+    toast(d.message || '已保存');
+    return true;
+  } catch (e) {
+    toast('保存失败：' + e, true);
+    return false;
+  }
+}
+
+async function addTime(){
+  const input = document.getElementById('d-new-time');
+  const value = (input.value || '').trim();
+  if (!value) { toast('请先选择时间', true); return; }
+  const current = currentTimes();
+  if (current.indexOf(value) >= 0) { toast('这个时间点已经有了', true); return; }
+  await saveTimes(current.concat([value]));
+}
+
+function currentTimes(){
+  return [...document.querySelectorAll('#d-times .chip')]
+    .map(function(el){ return el.textContent.replace('×','').trim(); })
+    .filter(function(t){ return /^\d{1,2}:\d{2}$/.test(t); });
+}
+
+document.getElementById('d-times').addEventListener('click', async function(e){
+  const btn = e.target.closest('[data-remove]');
+  if (!btn) return;
+  const target = btn.dataset.remove;
+  const current = currentTimes();
+  if (current.length <= 1) { toast('至少要保留一个时间点', true); return; }
+  await saveTimes(current.filter(function(t){ return t !== target; }));
+});
+
+document.getElementById('btn-add-time').addEventListener('click', addTime);
+
+async function controlDaemon(action){
+  const btn = document.getElementById(action === 'start' ? 'btn-daemon-start' : 'btn-daemon-stop');
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = action === 'start' ? '启动中…' : '停止中…';
+  try {
+    const d = await postJSON('/api/daemon/' + action, {});
+    if (d.daemon) renderDaemon(d.daemon);
+    toast(d.message || (d.ok ? '操作完成' : '操作失败'), !d.ok);
+  } catch (e) {
+    toast('操作失败：' + e, true);
+  } finally {
+    btn.textContent = old;
+    loadSchedule();
+  }
+}
+
+document.getElementById('btn-daemon-start').addEventListener('click', function(){ controlDaemon('start'); });
+document.getElementById('btn-daemon-stop').addEventListener('click', function(){ controlDaemon('stop'); });
+document.getElementById('btn-dev-save').addEventListener('click', saveDevice);
+document.getElementById('btn-dev-reset').addEventListener('click', resetDevice);
+
+/* =========================== 启动 =========================== */
+const hash = (location.hash || '').replace('#', '');
+switchTab(PANEL_NAMES.indexOf(hash) >= 0 ? hash : 'account');
 refreshNotice();
+loadDevice();
 </script>
 </body>
 </html>
@@ -1261,6 +1769,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(push_detail())
             return
 
+        if parsed.path == "/api/device":
+            self._json(device_status())
+            return
+
+        if parsed.path == "/api/schedule":
+            self._json(schedule_status())
+            return
+
         if parsed.path == "/api/state":
             sid = (query.get("sid") or [""])[0]
             session = _get(sid)
@@ -1336,6 +1852,60 @@ class Handler(BaseHTTPRequestHandler):
             if payload is not None:
                 result = run_test_push(payload)
                 self._json(result, 200 if result.get("ok") else 400)
+            return
+
+        if path == "/api/device":
+            payload = self._read_json_body()
+            if payload is not None:
+                try:
+                    self._json(save_device_text(str(payload.get("text") or "")))
+                except ValueError as exc:
+                    self._json({"ok": False, "message": str(exc)}, 400)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("保存设备档案失败")
+                    self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)
+            return
+
+        if path == "/api/device/reset":
+            payload = self._read_json_body()
+            if payload is not None:
+                try:
+                    self._json(reset_device_text())
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("恢复默认设备档案失败")
+                    self._json({"ok": False, "message": f"恢复失败：{exc}"}, 500)
+            return
+
+        if path == "/api/schedule":
+            payload = self._read_json_body()
+            if payload is not None:
+                try:
+                    self._json(save_schedule(payload.get("times")))
+                except ValueError as exc:
+                    self._json({"ok": False, "message": str(exc)}, 400)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("保存时间点失败")
+                    self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)
+            return
+
+        if path in ("/api/daemon/start", "/api/daemon/stop"):
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            try:
+                import daemon as daemon_mod
+
+                result = (
+                    daemon_mod.start_daemon()
+                    if path.endswith("start")
+                    else daemon_mod.stop_daemon()
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("守护进程控制失败")
+                result = {"ok": False, "message": f"操作失败：{exc}"}
+            status_payload = daemon_status()
+            result["daemon"] = status_payload
+            self._json(result, 200 if result.get("ok") else 400)
             return
 
         self._json({"ok": False, "message": "not found"}, 404)
@@ -1423,9 +1993,16 @@ class LocalHTTPServer(ThreadingHTTPServer):
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="图形化扫码登录（本地网页）")
+    global TOOLS_SERVER
+
+    parser = argparse.ArgumentParser(description="游戏日常提醒 · 本地控制台")
     parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    parser.add_argument(
+        "--no-lan-tools",
+        action="store_true",
+        help="不启动 APK 局域网下载服务（手机就没法扫码下载了）",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -1440,6 +2017,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[错误] 无法生成 config.json：{exc}")
         return 1
 
+    # APK 下载服务：只读、只暴露 tools/，与主控制台分端口
+    if not args.no_lan_tools:
+        try:
+            from core import tools_server
+
+            TOOLS_SERVER = tools_server.start()
+            if not TOOLS_SERVER:
+                print("[提示] tools/ 为空或端口被占用，手机扫码下载不可用")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("APK 下载服务启动失败：%s", exc)
+
     try:
         port = pick_port(args.port)
     except RuntimeError as exc:
@@ -1449,9 +2037,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     url = f"http://127.0.0.1:{port}/"
     server = LocalHTTPServer(("127.0.0.1", port), Handler)
     print("=" * 58)
-    print("  账号登录界面已启动")
-    print(f"  地址：{url}")
-    print("  按 Ctrl+C 结束")
+    print("  游戏日常提醒 · 控制台已启动")
+    print(f"  控制台  ：{url}")
+    if TOOLS_SERVER:
+        print(f"  APK 下载：{TOOLS_SERVER['url']}（手机连同一 WiFi 可访问）")
+    print("  关闭本窗口只停控制台，定时提醒由守护进程负责")
     print("=" * 58)
 
     if not args.no_browser:

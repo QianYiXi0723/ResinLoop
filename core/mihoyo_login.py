@@ -39,7 +39,9 @@ from .mihoyo_api import (
     _import_requests,
     _proxies,
     bind_device,
+    build_user_agent,
     generate_fake_fp,
+    on_device_profile_change,
 )
 
 logger = logging.getLogger("dailycheck.mihoyologin")
@@ -64,6 +66,18 @@ QR_HEADERS: Dict[str, str] = {
     "x-rpc-game_biz": "bbs_cn",
     "User-Agent": USER_AGENT,
 }
+
+
+def _refresh_ua_after_profile_change(profile: Dict[str, str]) -> None:
+    """设备档案被替换后，扫码请求头里的 UA 也要跟着换。
+
+    UA 里写着机型和系统版本，必须与 getFp 报上去的 ext_fields 一致，
+    否则会被判定"环境不一致"。
+    """
+    QR_HEADERS["User-Agent"] = build_user_agent(profile)
+
+
+on_device_profile_change(_refresh_ua_after_profile_change)
 
 #: 扫码阶段设备指纹缓存（同一 device_id 只签一次，避免每次轮询都打 getFp）
 _QR_FP_CACHE: Dict[str, str] = {}
