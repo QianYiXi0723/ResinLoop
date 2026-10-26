@@ -502,7 +502,7 @@ def _run_tray(stop_event: threading.Event, on_ready: Any = None) -> None:
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("退出程序", on_quit),
     )
-    icon = pystray.Icon("gamedaily", _tray_image(), "游戏日常提醒", menu)
+    icon = pystray.Icon("resinloop", _tray_image(), "ResinLoop · 游戏日常巡查", menu)
     logger.info("托盘图标已创建")
     if on_ready is not None:
         on_ready(icon)
@@ -716,7 +716,7 @@ def run_daemon(use_tray: bool = True) -> int:
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="daemon.py",
-        description="游戏日常提醒 · 常驻守护进程（托盘 + 定时检查）",
+        description="ResinLoop · 常驻守护进程（托盘 + 定时检查）",
     )
     parser.add_argument("--once", action="store_true", help="只执行一次检查后退出")
     parser.add_argument(

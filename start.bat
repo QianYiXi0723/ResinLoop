@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 chcp 936 >nul 2>&1
-title 游戏日常提醒
+title ResinLoop 游戏日常巡查
 
 rem ============================================================
 rem  一键启动：守护进程 + 独立桌面窗口（不弹浏览器、不留黑框）

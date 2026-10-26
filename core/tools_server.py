@@ -60,7 +60,7 @@ def _human_size(size: int) -> str:
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = "GameDailyTools/1.0"
+    server_version = "ResinLoopTools/1.0"
 
     def log_message(self, fmt: str, *args: Any) -> None:  # 静音
         logger.debug("%s - %s", self.address_string(), fmt % args)

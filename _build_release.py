@@ -2,8 +2,8 @@
 """构建可外发的发布包：剔除全部本机凭据 / 缓存 / 日志，并生成通用启动脚本。
 
 产物：
-  release/gamedaily/          可直接发给别人的目录
-  dist/游戏日常提醒_v1.zip
+  release/resinloop/          可直接发给别人的目录
+  dist/ResinLoop_v1.zip
 
 注意：本文件会被提交到仓库，因此**不得硬编码任何真实 key**。
 自检用的敏感值全部在运行时从本地 config.json / logs 里动态提取。
@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import List
 
 ROOT = Path(__file__).resolve().parent
-OUT = ROOT / "release" / "gamedaily"
+OUT = ROOT / "release" / "resinloop"
 ZIP_DIR = ROOT / "dist"
-ZIP_NAME = "游戏日常提醒_v1"
+ZIP_NAME = "ResinLoop_v1"
 
 
 def collect_secrets() -> List[str]:
@@ -148,7 +148,7 @@ exit /b 1
 """
 
 # ---------------------------------------------------------------- 上手说明
-README_TXT = """游戏日常提醒 —— 三步搞定
+README_TXT = """ResinLoop · 游戏日常巡查 —— 三步搞定
 ================================================
 
 每天定时查一次游戏日常进度，没做完就推送到手机（微信 / QQ）。
@@ -171,7 +171,7 @@ README_TXT = """游戏日常提醒 —— 三步搞定
   2. 后台启动守护进程（右下角出现托盘图标）
   3. 弹出一个独立的控制台窗口（不是浏览器，是真正的应用窗口）
 
-窗口标题是「游戏日常提醒控制台」，关掉它不影响定时提醒。
+窗口标题是「ResinLoop · 游戏日常巡查」，关掉它不影响定时提醒。
 那个黑框框显示"已启动"之后就可以关了。
 
 

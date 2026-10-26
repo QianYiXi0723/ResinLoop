@@ -41,7 +41,7 @@ if str(BASE_DIR) not in sys.path:
 LOGS_DIR = BASE_DIR / "logs"
 LOG_FILE = LOGS_DIR / "desktop.log"
 
-WINDOW_TITLE = "游戏日常提醒控制台"
+WINDOW_TITLE = "ResinLoop · 游戏日常巡查"
 WINDOW_WIDTH = 980
 WINDOW_HEIGHT = 800
 WINDOW_MIN = (820, 620)
@@ -237,7 +237,7 @@ def _keep_alive(console: Dict[str, Any]) -> None:
 def main(argv: Optional[list] = None) -> int:
     _silence_std_streams()
 
-    parser = argparse.ArgumentParser(description="游戏日常提醒 · 桌面控制台")
+    parser = argparse.ArgumentParser(description="ResinLoop · 桌面控制台")
     parser.add_argument("--port", type=int, default=8765, help="控制台端口，默认 8765")
     parser.add_argument(
         "--browser",

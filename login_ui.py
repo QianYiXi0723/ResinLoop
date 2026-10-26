@@ -455,7 +455,7 @@ def run_test_push(payload: Dict[str, Any]) -> Dict[str, Any]:
         f"发送时间：{now}\n"
         "来源：登录界面 · 通知绑定 · 测试推送"
     )
-    results = push_all(ready, "游戏日常提醒 · 测试推送", body)
+    results = push_all(ready, "ResinLoop · 测试推送", body)
     rows = [
         {
             "channel": r.channel,
@@ -856,7 +856,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>游戏日常提醒 · 控制台</title>
+<title>ResinLoop · 控制台</title>
 <style>
   :root{
     --bg:#f6f7f9; --card:#fff; --fg:#1a1c1f; --muted:#6b7280;
@@ -1029,7 +1029,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <body>
 <div class="wrap">
   <header>
-    <h1>游戏日常提醒 · 控制台</h1>
+    <h1>ResinLoop · 控制台</h1>
     <p class="sub">账号绑定解决「查得到」，通知绑定解决「收得到」，定时与状态负责「一直跑」</p>
   </header>
 
@@ -2071,7 +2071,7 @@ def console_alive(port: int = 8765, timeout: float = 1.5) -> bool:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="游戏日常提醒 · 本地控制台")
+    parser = argparse.ArgumentParser(description="ResinLoop · 本地控制台")
     parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument(
@@ -2094,7 +2094,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     print("=" * 58)
-    print("  游戏日常提醒 · 控制台已启动")
+    print("  ResinLoop · 控制台已启动")
     print(f"  控制台  ：{info['url']}")
     if info["tools"]:
         print(f"  APK 下载：{info['tools']['url']}（手机连同一 WiFi 可访问）")
