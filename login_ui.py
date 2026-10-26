@@ -497,6 +497,9 @@ _DEVICE_CACHE_PATH = BASE_DIR / "logs" / "device_fp.json"
 #: APK 下载服务信息（main() 启动后填充）
 TOOLS_SERVER: Optional[Dict[str, Any]] = None
 
+#: 启动失败的原因。空串表示没失败（要么没试过，要么成功了）
+TOOLS_ERROR: str = ""
+
 _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
 
@@ -516,21 +519,41 @@ def _mask_oaid(value: str) -> str:
     return f"{text[:4]}****{text[-4:]}"
 
 
-def apk_info() -> Dict[str, Any]:
-    """tools/ 里的 APK 信息 + 手机扫码下载地址。"""
+def apk_info(*, retry: bool = True) -> Dict[str, Any]:
+    """tools/ 里的 APK 信息 + 手机扫码下载地址。
+
+    ``retry=True``（默认）：服务没起来就**现在再试一次**。
+    这样即使启动时端口被占 / tools 目录当时还是空的，等页面加载、
+    用户把 APK 放进来或关掉占端口的程序之后，刷一下就能出来二维码，
+    不用重启整个控制台。
+    """
+    global TOOLS_SERVER
+
     from core import tools_server
 
+    if not TOOLS_SERVER and retry:
+        start_tools_service()
+
     if not TOOLS_SERVER:
-        return {"available": False, "message": "下载服务未启动"}
+        return {
+            "available": False,
+            "message": TOOLS_ERROR or "下载服务未启动",
+            "retryable": True,
+        }
+
     files = [
         item for item in tools_server.list_files() if item["name"].lower().endswith(".apk")
     ]
     if not files:
-        return {"available": False, "message": "tools/ 目录里没有 APK"}
+        return {
+            "available": False,
+            "message": f"tools/ 目录里没有 APK（{tools_server.TOOLS_DIR}）",
+            "retryable": True,
+        }
 
     apk = files[0]
     url = TOOLS_SERVER["url"] + quote(apk["name"])
-    return {
+    info = {
         "available": True,
         "name": apk["name"],
         "size": apk["size"],
@@ -540,6 +563,10 @@ def apk_info() -> Dict[str, Any]:
         "port": TOOLS_SERVER["port"],
         "qr": qr_png_base64(url),
     }
+    if TOOLS_SERVER["ip"] in ("127.0.0.1", "::1"):
+        # 没拿到局域网地址：服务起来了，但手机扫了也下载不了
+        info["warning"] = "没检测到局域网地址（可能没连 WiFi），手机扫码可能打不开"
+    return info
 
 
 def device_status() -> Dict[str, Any]:
@@ -1046,6 +1073,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .apk-qr{display:inline-block;padding:8px;background:#fff;border:1px solid var(--line);
           border-radius:10px}
   .apk-qr img{width:126px;height:126px;display:block}
+  .apk-qr button{width:auto;padding:6px 12px;font-size:12px;border-radius:7px}
   .apk-meta{font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.4;
             word-break:break-all}
   .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;
@@ -1508,10 +1536,43 @@ function renderDevice(d){
     qrBox.querySelector('img').src = 'data:image/png;base64,' + apk.qr;
     let shown = apk.url;
     try { shown = decodeURIComponent(apk.url); } catch (e) {}
-    meta.innerHTML = apk.name + '（' + apk.size_text + '）<br>' + shown;
+    meta.innerHTML = apk.name + '（' + apk.size_text + '）<br>' + shown +
+      (apk.warning ? '<br><span style="color:#b45309">⚠ ' + apk.warning + '</span>' : '');
   } else {
-    qrBox.innerHTML = '<span style="font-size:12px;color:#9aa3af">二维码不可用</span>';
-    meta.textContent = apk.message || '未找到 APK';
+    // 失败时把真实原因显示出来，并给一个「换个端口重试」的按钮
+    qrBox.innerHTML =
+      '<div style="padding:10px 8px;text-align:center">' +
+      '<div style="font-size:12px;color:#9aa3af;line-height:1.5">二维码不可用</div>' +
+      '<button class="alt" id="btn-apk-retry">换个端口重试</button>' +
+      '</div>';
+    meta.innerHTML = '<span style="color:#b45309">' + (apk.message || '未找到 APK') + '</span>';
+    const btn = document.getElementById('btn-apk-retry');
+    if (btn) btn.addEventListener('click', restartApkService);
+  }
+}
+
+async function restartApkService(){
+  const btn = document.getElementById('btn-apk-retry');
+  if (btn) { btn.disabled = true; btn.textContent = '重试中…'; }
+  try {
+    const d = await postJSON('/api/apk/restart', {});
+    const box = document.getElementById('apk-qr');
+    const meta = document.getElementById('apk-meta');
+    if (d.available && d.qr) {
+      box.innerHTML = '<img alt="APK 下载二维码">';
+      box.querySelector('img').src = 'data:image/png;base64,' + d.qr;
+      let shown = d.url;
+      try { shown = decodeURIComponent(d.url); } catch (e) {}
+      meta.innerHTML = d.name + '（' + d.size_text + '）<br>' + shown;
+      toast('下载服务已重启，端口 ' + d.port);
+    } else {
+      if (btn) { btn.disabled = false; btn.textContent = '换个端口重试'; }
+      meta.innerHTML = '<span style="color:#b45309">' + (d.message || '仍然不可用') + '</span>';
+      toast('仍然不可用：' + (d.message || ''), true);
+    }
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '换个端口重试'; }
+    toast('重启失败：' + e.message, true);
   }
 }
 
@@ -2015,6 +2076,16 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)
             return
 
+        if path == "/api/apk/restart":
+            payload = self._read_json_body()
+            if payload is not None:
+                try:
+                    self._json(restart_tools_service())
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("重启 APK 下载服务失败")
+                    self._json({"ok": False, "message": f"重启失败：{exc}"}, 500)
+            return
+
         if path in ("/api/daemon/start", "/api/daemon/stop"):
             payload = self._read_json_body()
             if payload is None:
@@ -2124,8 +2195,11 @@ def start_tools_service() -> Optional[Dict[str, Any]]:
 
     它监听 0.0.0.0 的独立端口，只读地暴露 tools/ 一层文件；
     主控制台始终只听 127.0.0.1，避免 /api/* 被同一 WiFi 的人调用。
+
+    失败时**不抛异常**，而是把原因写进 :data:`TOOLS_ERROR`——界面要把它
+    显示出来，否则用户只看到一句"下载服务未启动"，根本没法自己排查。
     """
-    global TOOLS_SERVER
+    global TOOLS_SERVER, TOOLS_ERROR
 
     if TOOLS_SERVER is not None:
         return TOOLS_SERVER
@@ -2133,10 +2207,31 @@ def start_tools_service() -> Optional[Dict[str, Any]]:
         from core import tools_server
 
         TOOLS_SERVER = tools_server.start()
+        TOOLS_ERROR = "" if TOOLS_SERVER else (tools_server.LAST_ERROR or "下载服务未启动")
     except Exception as exc:  # noqa: BLE001
-        logger.warning("APK 下载服务启动失败：%s", exc)
+        TOOLS_ERROR = f"启动异常：{type(exc).__name__}: {exc}"
+        logger.warning("APK 下载服务启动失败：%s", TOOLS_ERROR)
         TOOLS_SERVER = None
+    if TOOLS_SERVER is None and TOOLS_ERROR:
+        logger.warning("APK 下载服务不可用：%s", TOOLS_ERROR)
     return TOOLS_SERVER
+
+
+def restart_tools_service() -> Dict[str, Any]:
+    """关掉现有下载服务、换端口重新起一个，并把新的二维码信息一并返回。
+
+    用于界面上的「换个端口重试」：比如 8790 被别的程序占了、或者用户刚把
+    APK 拷进 tools/，点一下就能刷新，不用重启控制台。
+    """
+    global TOOLS_SERVER, TOOLS_ERROR
+
+    from core import tools_server as ts
+
+    ts.stop(TOOLS_SERVER)
+    TOOLS_SERVER = None
+    TOOLS_ERROR = ""
+    start_tools_service()
+    return apk_info(retry=False)
 
 
 def serve(

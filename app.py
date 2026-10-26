@@ -267,6 +267,20 @@ def main(argv: Optional[list] = None) -> int:
     if not wait_until_ready(console["port"]):
         logger.error("控制台端口 %s 在 10 秒内没有就绪", console["port"])
 
+    # APK 局域网下载服务：它的端口和控制台是分开的（默认 8790），
+    # 起不来时把原因写进日志，界面上也会显示并给一个「换个端口重试」按钮。
+    try:
+        import login_ui
+
+        if console.get("tools"):
+            logger.info("APK 下载服务：%s", console["tools"]["url"])
+        elif console.get("owned"):
+            logger.warning("APK 下载服务未启动：%s", login_ui.TOOLS_ERROR or "未知原因")
+        else:
+            logger.info("复用已有控制台，下载服务由对方进程负责")
+    except Exception:  # noqa: BLE001
+        logger.debug("记录下载服务状态时出错（已忽略）", exc_info=True)
+
     ok = False
     if not args.browser:
         ok = run_window(url, debug=args.debug)

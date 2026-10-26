@@ -156,23 +156,88 @@ class ToolsServer(ThreadingHTTPServer):
     allow_reuse_address = False  # Windows 上必须关掉，否则会重复绑定
 
 
-def start(port: int = DEFAULT_PORT, tries: int = 6) -> Optional[Dict[str, Any]]:
-    """在 0.0.0.0 上起一个只读文件服务；全部端口被占用时返回 None。"""
-    if not TOOLS_DIR.is_dir():
+#: 首选端口被占时，往后最多试几个（8790、8791、…）
+PORT_TRIES = 6
+
+#: 最近一次启动失败的原因；成功时清空。界面拿它显示给用户，别再只说"未启动"
+LAST_ERROR: str = ""
+
+
+def _bind(candidate: int) -> Optional[ToolsServer]:
+    """尝试绑定一个端口；失败返回 None（不抛异常）。"""
+    try:
+        server = ToolsServer(("0.0.0.0", candidate), _Handler)
+    except OSError as exc:
+        logger.debug("绑定 0.0.0.0:%d 失败：%s", candidate, exc)
         return None
+    return server
+
+
+def _launch(server: ToolsServer, port: int) -> Dict[str, Any]:
+    thread = threading.Thread(
+        target=server.serve_forever, name=f"tools-http-{port}", daemon=True
+    )
+    thread.start()
+    ip = lan_ip()
+    logger.info("APK 下载服务已启动：http://%s:%d/", ip, port)
+    return {"server": server, "port": port, "ip": ip,
+            "url": f"http://{ip}:{port}/"}
+
+
+def start(port: int = DEFAULT_PORT, tries: int = PORT_TRIES) -> Optional[Dict[str, Any]]:
+    """在 0.0.0.0 上起一个只读文件服务；失败时把原因写进 :data:`LAST_ERROR`。
+
+    端口策略（不会再因为 8790~8795 全被占就彻底放弃）：
+
+    1. 先按 ``port`` 往后试 ``tries`` 个，方便用户记住固定端口；
+    2. 全被占用则让操作系统分配一个空闲端口（``port=0``）—— 二维码里的
+       地址会自动跟着变，手机扫码下载不受影响；
+    3. 连系统端口都绑不上（防火墙 / 权限），才返回 None 并记下原因。
+    """
+    global LAST_ERROR
+
+    if not TOOLS_DIR.is_dir():
+        # 目录不存在就建一个，这样用户把 APK 丢进去、点一下重试就能用
+        try:
+            TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+            logger.info("已创建 %s（原来不存在）", TOOLS_DIR)
+        except OSError as exc:
+            LAST_ERROR = f"无法创建 tools/ 目录：{exc}"
+            logger.warning("APK 下载服务启动失败：%s", LAST_ERROR)
+            return None
 
     for offset in range(tries):
         candidate = port + offset
-        try:
-            server = ToolsServer(("0.0.0.0", candidate), _Handler)
-        except OSError:
-            continue
-        thread = threading.Thread(
-            target=server.serve_forever, name=f"tools-http-{candidate}", daemon=True
-        )
-        thread.start()
-        ip = lan_ip()
-        logger.info("APK 下载服务已启动：http://%s:%d/", ip, candidate)
-        return {"server": server, "port": candidate, "ip": ip,
-                "url": f"http://{ip}:{candidate}/"}
+        server = _bind(candidate)
+        if server is not None:
+            LAST_ERROR = ""
+            return _launch(server, candidate)
+
+    # 固定端口段全被占 —— 改用系统分配的空闲端口
+    fallback = _bind(0)
+    if fallback is not None:
+        actual = fallback.server_address[1]
+        LAST_ERROR = ""
+        logger.info("首选端口 %d~%d 都被占用，改用系统分配的 %d",
+                    port, port + tries - 1, actual)
+        return _launch(fallback, actual)
+
+    LAST_ERROR = (f"端口 {port}~{port + tries - 1} 都被占用，"
+                  f"且无法让系统分配空闲端口（可能被防火墙/安全软件拦截）")
+    logger.warning("APK 下载服务启动失败：%s", LAST_ERROR)
     return None
+
+
+def stop(info: Optional[Dict[str, Any]]) -> None:
+    """关掉 :func:`start` 起出来的服务（幂等，可重复调用）。"""
+    server = (info or {}).get("server")
+    if server is None:
+        return
+    try:
+        server.shutdown()
+    except Exception:  # noqa: BLE001
+        logger.debug("关闭 APK 下载服务时出错（已忽略）", exc_info=True)
+    try:
+        server.server_close()
+    except Exception:  # noqa: BLE001
+        logger.debug("释放 APK 下载服务端口时出错（已忽略）", exc_info=True)
