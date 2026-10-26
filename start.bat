@@ -5,6 +5,10 @@ title 游戏日常提醒
 
 rem ============================================================
 rem  一键启动：守护进程 + 独立桌面窗口（不弹浏览器、不留黑框）
+rem
+rem  做法：先在本窗口里把依赖检查完，然后以「最小化」方式重启自己，
+rem        原窗口立刻退出。桌面上不会出现黑框，最多任务栏闪一下。
+rem        首次运行要装依赖，那一次保持窗口可见（否则用户看不到进度）。
 rem ============================================================
 
 set "DIR=%~dp0"
@@ -32,31 +36,34 @@ if not exist "%PYW%" set "PYW=%PYEXE%"
 
 rem ---------- 2. 依赖自检 ----------
 "%PYEXE%" -c "import requests, qrcode, PIL, pystray, webview" >nul 2>&1
-if errorlevel 1 (
-    echo [1/3] 首次运行，正在安装依赖，请稍候...
-    "%PYEXE%" -m pip install -r requirements.txt --disable-pip-version-check
-    if errorlevel 1 goto :pip_fail
-) else (
-    echo [1/3] 依赖检查通过
-)
+if errorlevel 1 goto :install
 
-rem ---------- 3. 先起守护进程（托盘图标、定时提醒） ----------
+rem 依赖齐全 -> 切最小化窗口继续，本窗口立即关闭
+if /i "%~1"=="quiet" goto :launch
+start "" /min "%~f0" quiet
+exit /b 0
+
+:install
+echo [1/3] 首次运行，正在安装依赖，请稍候...
+"%PYEXE%" -m pip install -r requirements.txt --disable-pip-version-check
+if errorlevel 1 goto :pip_fail
+echo.
+echo 依赖安装完成，正在启动...
+if /i "%~1"=="quiet" goto :launch
+start "" /min "%~f0" quiet
+exit /b 0
+
+rem ---------- 3. 守护进程 + 桌面窗口 ----------
+:launch
 echo [2/3] 启动守护进程...
 start "" "%PYW%" daemon.py
 
 rem 给守护进程一点时间写 pid / 心跳，控制台一打开就能看到"运行中"
 timeout /t 2 /nobreak >nul 2>&1
 
-rem ---------- 4. 再起桌面窗口 ----------
 echo [3/3] 启动控制台窗口...
 start "" "%PYW%" app.py
 
-echo.
-echo 已启动。
-echo   - 桌面窗口：游戏日常提醒控制台（关掉窗口不影响定时提醒）
-echo   - 右下角托盘：右键可"打开控制台 / 立即执行一次 / 退出程序"
-echo.
-echo 本窗口可以关闭。
 timeout /t 3 /nobreak >nul 2>&1
 exit /b 0
 
