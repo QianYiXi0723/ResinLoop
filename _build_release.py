@@ -18,7 +18,7 @@ from typing import List
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "release" / "resinloop"
 ZIP_DIR = ROOT / "dist"
-ZIP_NAME = "ResinLoop_v1"
+ZIP_NAME = "ResinLoop_v1.1.0"
 
 
 def collect_secrets() -> List[str]:
@@ -196,6 +196,8 @@ README_TXT = """ResinLoop · 日常巡查 —— 三步搞定
 
 【定时与状态】
   添加提醒时间点（例如 08:30、20:30）
+  体力溢出警告：五款游戏的体力/树脂/理智阈值都在这里改，
+                填 0 就关掉那一款，改完下次检查自动生效
   点"启动守护进程"，状态变成"运行中"就齐了。
 
 
