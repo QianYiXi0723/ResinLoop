@@ -428,7 +428,26 @@ def collect_statuses(config: AppConfig) -> List[GameStatus]:
     logger = logging.getLogger("dailycheck.main")
     accounts = config.enabled_accounts
 
-    # 米游社整体禁用开关：跳过原神/崩铁/绝区零（不算失败，不触发"全部查询失败"退出码）
+    # 排查"某个游戏完全没动静"的第一现场：先说清楚这一轮到底查谁、跳过了谁。
+    if config.disabled_accounts:
+        names = "、".join(a.game_name for a in config.disabled_accounts)
+        logger.warning(
+            "%d 个账号 enabled=false，本轮不查询：%s"
+            "（要参与检查就把 config.json 里该账号的 enabled 改回 true）",
+            len(config.disabled_accounts), names,
+        )
+        _safe_console(f"[已停用] {names}：enabled=false，本轮跳过")
+
+    if not accounts:
+        logger.warning("没有任何可查询的账号（accounts 全部被禁用、为空或被米游社开关跳过）")
+        return []
+
+    enabled_line = "、".join(
+        f"{a.game_name}({a.game})" if a.game != a.game_name else a.game_name
+        for a in accounts
+    )
+    logger.info("启用账号 %d 个：%s", len(accounts), enabled_line)
+    _safe_console(f"启用游戏（{len(accounts)}）：{enabled_line}")
     if config.query.provider == "miyoushe" and not config.query.mihoyo_enabled:
         skipped = [a for a in accounts if a.game in MIHOYO_GAMES]
         accounts = [a for a in accounts if a.game not in MIHOYO_GAMES]
@@ -450,9 +469,19 @@ def collect_statuses(config: AppConfig) -> List[GameStatus]:
     )
 
     statuses: List[GameStatus] = []
-    for account in accounts:
+    total = len(accounts)
+    for index, account in enumerate(accounts, start=1):
+        logger.debug(
+            "[%d/%d] 准备查询 %s（game=%s，凭证字段=%s）",
+            index, total, account.game_name, account.game,
+            sorted((account.credential or {}).keys()),
+        )
         try:
             querier = get_querier(account.game, provider=config.query.provider)
+            logger.debug(
+                "%s -> 数据源 %s（%s）",
+                account.game_name, type(querier).__name__, getattr(querier, "source", "?"),
+            )
             status = querier.fetch(account)
         except UnknownProviderError as exc:
             logger.error("查询器不可用：%s", exc)
@@ -469,6 +498,11 @@ def collect_statuses(config: AppConfig) -> List[GameStatus]:
                 game_name=account.game_name,
                 nickname=account.nickname,
                 error=f"查询异常：{exc}",
+            )
+
+        if status.ok and not getattr(status, "tasks", None):
+            logger.warning(
+                "%s 查询成功但没返回任何日常项（数据源可能改版），明细为空", status.game_name
             )
 
         level = logging.INFO if status.ok else logging.WARNING

@@ -597,6 +597,19 @@ class AppConfig:
         return [account for account in self.accounts if account.enabled]
 
     @property
+    def disabled_accounts(self) -> List[AccountConfig]:
+        """被 enabled=false 关掉的账号 —— 它们不会被查询，也不会进报表。"""
+        return [account for account in self.accounts if not account.enabled]
+
+    @property
+    def enabled_game_ids(self) -> List[str]:
+        """当前启用的游戏标识列表（保持配置里的顺序）。
+
+        报表、日志、界面要列游戏时一律从这里取，**不要在别处写死游戏清单**。
+        """
+        return [account.game for account in self.accounts if account.enabled]
+
+    @property
     def test_mode_label(self) -> str:
         return TEST_MODE_LABELS.get(self.test_mode, self.test_mode)
 

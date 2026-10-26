@@ -26,6 +26,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.config import KNOWN_GAMES
+
 logger = logging.getLogger("dailycheck.history")
 
 #: 存档根目录：<项目>/data/history.json
@@ -164,22 +166,45 @@ def record(report: Any, *, at: Optional[datetime] = None) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def _game_meta(days: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
-    """扫全表，拿到每个游戏最新的中文名与昵称（报表列头用）。"""
+def _game_meta(
+    days: Dict[str, Any], extra: Optional[List[str]] = None
+) -> Dict[str, Dict[str, str]]:
+    """每个游戏的中文名与昵称（报表列头用）。
+
+    来源有两部分，缺一不可：
+        1. ``days`` 里已经写过的历史记录（老数据、曾经启用过的游戏也要能看）；
+        2. ``extra`` —— **当前配置里启用的游戏**，这样刚启用、还没来得及
+           跑一轮检查的游戏也能立刻出现在报表里（显示为 –，而不是压根没列）。
+    名字兜底到 ``config.KNOWN_GAMES``，认不出来就用 game id 本身。
+    """
     meta: Dict[str, Dict[str, str]] = {}
+
+    def put(game: str, name: str = "", nickname: str = "") -> None:
+        item = meta.setdefault(
+            game, {"game_name": KNOWN_GAMES.get(game, game), "nickname": ""}
+        )
+        if name:
+            item["game_name"] = name
+        if nickname:
+            item["nickname"] = nickname
+
+    for game in extra or []:
+        put(game)
+
     for date_key in sorted(days.keys()):
         for game, node in (days[date_key] or {}).items():
             if not isinstance(node, dict):
                 continue
-            item = meta.setdefault(game, {"game_name": game, "nickname": ""})
-            if node.get("game_name"):
-                item["game_name"] = node["game_name"]
-            if node.get("nickname"):
-                item["nickname"] = node["nickname"]
+            put(game, str(node.get("game_name") or ""), str(node.get("nickname") or ""))
     return meta
 
 
 def _ordered_games(meta: Dict[str, Dict[str, str]]) -> List[str]:
+    """列顺序：先按内置 GAME_ORDER，没登记过的新游戏排在后面（按 id 排序）。
+
+    注意 GAME_ORDER 只决定"先画哪一列"，**不决定有没有这一列** ——
+    会不会出现完全由上一步的 meta 决定，所以删掉某款游戏也不会漏列。
+    """
     known = set(GAME_ORDER)
     ordered = [g for g in GAME_ORDER if g in meta]
     ordered += sorted(g for g in meta if g not in known)
@@ -228,8 +253,18 @@ def _month_stats(days: Dict[str, Any], game: str, month: str) -> Dict[str, int]:
     return {"done": done, "missed": missed}
 
 
-def summary(days: int = DEFAULT_DAYS, *, today: Optional[datetime] = None) -> Dict[str, Any]:
-    """给 /api/history 用的汇总：最近 N 天明细 + 每个游戏的连胜 / 本月统计。"""
+def summary(
+    days: int = DEFAULT_DAYS,
+    *,
+    today: Optional[datetime] = None,
+    enabled_games: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """给 /api/history 用的汇总：最近 N 天明细 + 每个游戏的连胜 / 本月统计。
+
+    Args:
+        enabled_games: 当前配置里启用的游戏 id 列表。报表会**一定给它们留一列**，
+            哪怕今天还没跑到（显示 –）；不传就退化成"写过什么显示什么"。
+    """
     days = max(1, min(int(days or DEFAULT_DAYS), 60))
     now = today or datetime.now()
     today_key = now.strftime("%Y-%m-%d")
@@ -237,7 +272,7 @@ def summary(days: int = DEFAULT_DAYS, *, today: Optional[datetime] = None) -> Di
 
     data = load()
     store = data.get("days") or {}
-    meta = _game_meta(store)
+    meta = _game_meta(store, enabled_games)
     games = _ordered_games(meta)
 
     # --- 最近 N 天明细（今天在最上面）---

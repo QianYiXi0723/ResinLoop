@@ -198,6 +198,27 @@ def load_raw_config() -> Dict[str, Any]:
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
+def _enabled_game_ids() -> List[str]:
+    """当前 config.json 里 enabled=true 的游戏 id（页面要列游戏的唯一来源）。
+
+    报表、日志的"有哪些游戏"全部从这里派生，**任何地方都不再写死游戏清单**，
+    这样将来加第七款游戏时只要注册一次就到处可见。读不到配置就返回空列表，
+    不让一个坏配置把整个页面拖垮。
+    """
+    try:
+        raw = load_raw_config()
+    except Exception:  # noqa: BLE001 - 同上
+        return []
+    games: List[str] = []
+    for item in (raw.get("accounts") or []):
+        if not isinstance(item, dict):
+            continue
+        game = str(item.get("game") or "").strip()
+        if game and item.get("enabled", True) and game not in games:
+            games.append(game)
+    return games
+
+
 def push_status() -> Dict[str, Any]:
     """当前推送通道的配置状态。
 
@@ -230,6 +251,42 @@ def push_status() -> Dict[str, Any]:
         "configured": bool(ready),
         "always_notify": bool(push.get("always_notify", False)),
     }
+
+
+def _game_display_map() -> Dict[str, str]:
+    """游戏 id -> 中文名，唯一来源是 core.config.KNOWN_GAMES。"""
+    try:
+        from core.config import KNOWN_GAMES
+
+        return dict(KNOWN_GAMES)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _enabled_account_info() -> List[Dict[str, str]]:
+    """当前参与检查的账号：id / 中文名 / 昵称（页面展示用）。"""
+    try:
+        raw = load_raw_config()
+    except Exception:  # noqa: BLE001
+        return []
+    names = _game_display_map()
+    items: List[Dict[str, str]] = []
+    seen: set = set()
+    for node in (raw.get("accounts") or []):
+        if not isinstance(node, dict):
+            continue
+        game = str(node.get("game") or "").strip()
+        if not game or game in seen:
+            continue
+        seen.add(game)
+        if not node.get("enabled", True):
+            continue
+        items.append({
+            "id": game,
+            "name": names.get(game, game),
+            "nickname": str(node.get("nickname") or ""),
+        })
+    return items
 
 
 def save_raw_config(raw: Dict[str, Any]) -> None:
@@ -690,6 +747,9 @@ def schedule_status() -> Dict[str, Any]:
         "catch_up_minutes": _normalize_catch_up(app.get("catch_up_minutes")),
         "next_run": target.strftime("%Y-%m-%d %H:%M") if target else "",
         "daemon": daemon_status(),
+        # 页面上要列账号就取这里，避免把游戏清单写死在多份 HTML / JS 里
+        "enabled_games": _enabled_game_ids(),
+        "accounts_info": _enabled_account_info(),
     }
 
 
@@ -1286,6 +1346,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </div>
       <p class="desc">常驻后台，到点自动检查并推送。托盘图标在右下角。</p>
       <div class="kv2">
+        <div><span>参与检查</span><b id="d-games">-</b></div>
         <div><span>进程 PID</span><b id="d-pid">-</b></div>
         <div><span>启动时间</span><b id="d-since">-</b></div>
         <div><span>下次提醒</span><b id="d-next">-</b></div>
@@ -1807,6 +1868,25 @@ function renderSchedule(d){
   }
   document.getElementById('d-count').textContent = times.length + ' 个';
   document.getElementById('d-next').textContent = d.next_run || '-';
+
+  // 参与检查的账号：列表来自后端当前配置，页面里不写死任何游戏
+  const gamesBox = document.getElementById('d-games');
+  if (gamesBox) {
+    const infos = d.accounts_info || [];
+    if (!infos.length) {
+      gamesBox.textContent = '没有启用的账号';
+      gamesBox.title = 'config.json 里 accounts 的 enabled 全为 false';
+    } else {
+      const short = infos.map(function(it){
+        return it.id === 'arknights' ? '方舟' : (it.name || it.id);
+      });
+      gamesBox.textContent = infos.length + ' 个 · ' + short.join('、');
+      gamesBox.title = infos.map(function(it){
+        return (it.name || it.id) + (it.nickname ? '（' + it.nickname + '）' : '');
+      }).join('\n');
+    }
+  }
+
   renderCatchUp(d.catch_up_minutes);
   renderDaemon(d.daemon || {});
 }
@@ -1945,10 +2025,10 @@ function renderHistory(d){
   const tableBox = document.getElementById('h-table');
   if (!tableBox) return;
   const tracked = d.tracked || [];
-  if (!d.has_data || !tracked.length) {
+  if (!tracked.length) {
     tableBox.innerHTML =
-      '<div class="emptybox">还没有历史记录。<br>' +
-      '等一次定时检查跑完（或在「定时与状态」页点一次「立即检查」）就会出现。</div>';
+      '<div class="emptybox">没有启用任何游戏账号（config.json 里 accounts 的 enabled 都为 false？）。<br>' +
+      '需要参与检查就把对应账号的 enabled 改回 true。</div>';
     return;
   }
 
@@ -2086,7 +2166,14 @@ class Handler(BaseHTTPRequestHandler):
                 days = 7
             from core import history
 
-            self._json(history.summary(days=days))
+            # 列 = 当前启用账号 ∪ 历史里出现过的游戏：刚启用、还没跑过一轮的
+            # 游戏也会立刻出现在报表里（显示为 –），不会被当成"从未存在"。
+            enabled_games = _enabled_game_ids()
+            try:
+                payload = history.summary(days=days, enabled_games=enabled_games)
+            except TypeError:  # 兼容旧签名（理论上不会发生）
+                payload = history.summary(days=days)
+            self._json(payload)
             return
 
         if parsed.path == "/api/state":
