@@ -24,7 +24,7 @@ import string
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 from urllib.parse import urlencode as _urlencode
 
 from .config import AccountConfig
@@ -537,16 +537,23 @@ def _device_env_tag() -> Dict[str, str]:
     }
 
 
-def bind_device(device_id: str) -> Dict[str, str]:
-    """把"扫码登录用的设备 ID"绑定到三款游戏（解决 5003 的关键一步）。
+def bind_device(
+    device_id: str, games: Optional[Sequence[str]] = None
+) -> Dict[str, str]:
+    """把"扫码登录用的设备 ID"绑定到指定游戏（默认三款）。
 
-    扫码登录时米游社服务端看到的设备就是 device_id；之后 dailyNote 三款游戏
-    统一用同一个 device_id + 为其新签发的 device_fp，做到"登录设备 = 查询设备"。
+    扫码登录时米游社服务端看到的设备就是 device_id；之后 dailyNote 用同一个
+    device_id + 为其新签发的 device_fp，做到"登录设备 = 查询设备"。
+
+    games 传子集时**只重签这几款**，其余游戏的 device_id / device_fp 原样保留。
+    「只登录某一款」时很关键：若把三款一起重签，那些仍挂在另一个米游社账号
+    下的游戏会平白换一次设备身份，反而可能触发风控。
     """
+    targets = tuple(games) if games else ("genshin", "starrail", "zzz")
     cache = _load_fp_cache()
     fps: Dict[str, str] = {}
     env_tag = _device_env_tag()
-    for game_id in ("genshin", "starrail", "zzz"):
+    for game_id in targets:
         device_fp = generate_fake_fp(device_id)
         cache[game_id] = {
             "device_id": device_id,
@@ -555,7 +562,9 @@ def bind_device(device_id: str) -> Dict[str, str]:
         }
         fps[game_id] = device_fp
     _save_fp_cache(cache)
-    logger.info("已将扫码设备 %s… 绑定到三款游戏并重签指纹", device_id[:8])
+    logger.info(
+        "已将扫码设备 %s… 绑定到 %s 并重签指纹", device_id[:8], "、".join(targets)
+    )
     return fps
 
 

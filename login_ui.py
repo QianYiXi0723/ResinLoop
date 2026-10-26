@@ -2,6 +2,10 @@
 # -*- coding: utf-8 -*-
 """图形化扫码登录界面（本地 Web 服务，只监听 127.0.0.1）。
 
+选哪些游戏就登录哪些：
+  - 米游社：一次扫码，勾选的游戏同时更新（当然可以只勾一款）
+  - 森空岛：每款需要单独扫码，勾几款就依次扫几次
+
 为什么用网页而不是 tkinter：
   - 二维码要足够大才能扫得稳，浏览器缩放/居中天然合适；
   - 只需要标准库 + 已有的 qrcode / pillow，不新增任何依赖；
@@ -12,9 +16,7 @@
     python login_ui.py --port 8800      # 指定端口
     python login_ui.py --no-browser     # 不自动开浏览器
 
-登录成功后直接写 config.json：
-    - 米游社：三款游戏共用同一 Cookie，并顺手绑定设备指纹（登录设备 = 查询设备）
-    - 森空岛：只更新所选游戏的 token，不碰另一款
+登录成功后直接写 config.json，只动被勾选的游戏。
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -41,8 +43,18 @@ CONFIG_PATH = BASE_DIR / "config.json"
 
 logger = logging.getLogger("dailycheck.loginui")
 
-MIHOYO_GAMES = ("genshin", "starrail", "zzz")
-SKLAND_TARGETS = {"arknights": "明日方舟", "endfield": "明日方舟：终末地"}
+#: 米游社三款游戏：id -> 显示名
+MIHOYO_GAMES: Dict[str, str] = {
+    "genshin": "原神",
+    "starrail": "崩坏：星穹铁道",
+    "zzz": "绝区零",
+}
+
+#: 森空岛两款游戏：id -> 显示名
+SKLAND_TARGETS: Dict[str, str] = {
+    "arknights": "明日方舟",
+    "endfield": "明日方舟：终末地",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -51,21 +63,30 @@ SKLAND_TARGETS = {"arknights": "明日方舟", "endfield": "明日方舟：终�
 
 
 class Session:
-    """一次扫码登录的完整状态。
+    """一次登录任务的完整状态。
 
     state 取值：creating / waiting / scanned / writing / done / error
+    森空岛是多步的（每款一次扫码），用 step / total / current 表示进度。
     """
 
-    def __init__(self, provider: str, target: str = "") -> None:
+    def __init__(self, provider: str, targets: List[str]) -> None:
         self.sid = uuid.uuid4().hex
         self.provider = provider
-        self.target = target
+        self.targets = list(targets)
+        self.total = len(self.targets)
+        self.step = 0            # 已完成的款数
+        self.current = ""        # 正在登录的那一款
         self.state = "creating"
         self.message = "正在准备…"
         self.qr = ""
         self.detail: Dict[str, Any] = {}
+        self.results: List[Dict[str, Any]] = []
         self.created_at = time.time()
         self._lock = threading.Lock()
+
+    def labels(self) -> List[str]:
+        table = MIHOYO_GAMES if self.provider == "mihoyo" else SKLAND_TARGETS
+        return [table.get(t, t) for t in self.targets]
 
     def update(self, state: Optional[str] = None, message: Optional[str] = None,
                **detail: Any) -> None:
@@ -77,16 +98,31 @@ class Session:
             if detail:
                 self.detail.update(detail)
 
+    def set_qr(self, png_b64: str) -> None:
+        with self._lock:
+            self.qr = png_b64
+
+    def add_result(self, game: str, label: str, ok: bool, note: str = "") -> None:
+        with self._lock:
+            self.results.append({"game": game, "label": label, "ok": ok, "note": note})
+
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
+            table = MIHOYO_GAMES if self.provider == "mihoyo" else SKLAND_TARGETS
             return {
                 "sid": self.sid,
                 "provider": self.provider,
-                "target": self.target,
+                "targets": list(self.targets),
+                "labels": [table.get(t, t) for t in self.targets],
+                "step": self.step,
+                "total": self.total,
+                "current": self.current,
+                "currentLabel": table.get(self.current, self.current),
                 "state": self.state,
                 "message": self.message,
                 "qr": self.qr,
                 "detail": dict(self.detail),
+                "results": list(self.results),
             }
 
 
@@ -96,7 +132,6 @@ SESSIONS_LOCK = threading.Lock()
 
 def _put(session: Session) -> None:
     with SESSIONS_LOCK:
-        # 顺手清掉 10 分钟前的旧会话，避免长时间开着页面堆积
         cutoff = time.time() - 600
         for sid in [k for k, v in SESSIONS.items() if v.created_at < cutoff]:
             SESSIONS.pop(sid, None)
@@ -114,7 +149,7 @@ def _get(sid: str) -> Optional[Session]:
 
 
 def qr_png_base64(text: str) -> str:
-    """把文本渲染成 PNG 二维码并转 base64；缺依赖时返回空串（前端会降级展示原文）。"""
+    """把文本渲染成 PNG 二维码并转 base64；缺依赖时返回空串（前端会降级提示）。"""
     try:
         import qrcode  # noqa: PLC0415 - 可选依赖
     except ImportError:
@@ -150,20 +185,26 @@ def save_raw_config(raw: Dict[str, Any]) -> None:
     )
 
 
-def write_mihoyo(cookie: str) -> list[str]:
-    """把 Cookie 写进三款米家游戏，并确保查询走真实数据源。"""
+def write_mihoyo(cookie: str, games: List[str]) -> List[str]:
+    """把 Cookie 写进**选中的**游戏节点，其余游戏原样不动。"""
     raw = load_raw_config()
-    updated: list[str] = []
+    wanted = set(games)
+    updated: List[str] = []
     for account in raw.get("accounts", []):
-        if account.get("game") in MIHOYO_GAMES:
+        game = account.get("game")
+        if game in wanted:
             cred = account.setdefault("credential", {})
             cred["cookie"] = cookie
             # 清掉可能残留的分字段，避免覆盖整串 cookie
             cred.pop("ltuid", None)
             cred.pop("ltoken", None)
-            updated.append(str(account.get("nickname") or account.get("game")))
+            updated.append(str(account.get("nickname") or MIHOYO_GAMES.get(game, game)))
+    present = {a.get("game") for a in raw.get("accounts", [])}
+    missing = wanted - present
+    if missing:
+        raise RuntimeError(f"config.json 里找不到这些游戏节点：{', '.join(sorted(missing))}")
     if not updated:
-        raise RuntimeError("config.json 里没有米游社三款游戏的账号节点")
+        raise RuntimeError("没有写入任何游戏，请检查 config.json 的 accounts")
 
     query = raw.setdefault("query", {})
     query["mihoyo_enabled"] = True
@@ -201,6 +242,7 @@ def write_skland(target: str, token: str) -> str:
 
 
 def run_mihoyo(session: Session) -> None:
+    """一次扫码，更新所有被勾选的米游社游戏。"""
     from core.mihoyo_api import bind_device
     from core.mihoyo_login import (
         MiyousheLoginError,
@@ -209,32 +251,37 @@ def run_mihoyo(session: Session) -> None:
         poll_confirm,
     )
 
+    games = list(session.targets)
+
     def on_status(status: str) -> None:
         if status == "Scanned":
             session.update("scanned", "已扫码，请在手机上点击「确认登录」")
 
     try:
         device_id = str(uuid.uuid4()).lower()
-        session.update("creating", "正在向米游社申请二维码…")
+        session.update("creating", f"正在申请二维码（将更新 {len(games)} 款游戏）…")
         qr = create_qr(device_id)
-        session.qr = qr_png_base64(qr["url"])
+        session.set_qr(qr_png_base64(qr["url"]))
         session.update("waiting", "请用手机「米游社」App 扫码")
 
         result = poll_confirm(device_id, qr["ticket"], timeout=180, on_status=on_status)
 
-        session.update("writing", "扫码成功，正在整理登录态并绑定设备…")
+        session.update("writing", "扫码成功，正在绑定设备并写入配置…")
         cookie, creds = build_cookie_string(result["cookies"])
-        bind_device(device_id)
-        games = write_mihoyo(cookie)
+        # 只重签被勾选游戏的指纹，其余游戏保持原设备身份
+        bind_device(device_id, games)
+        updated = write_mihoyo(cookie, games)
 
+        for game in games:
+            session.add_result(game, MIHOYO_GAMES.get(game, game), True)
         session.update(
             "done",
-            "登录成功，已写入 config.json",
+            f"登录成功，已更新 {len(updated)} 款游戏",
             ltuid=creds["ltuid"],
-            games=games,
-            note="三款游戏共用同一设备指纹，可直接运行 python main.py 验证",
+            games=updated,
+            note="设备指纹已绑定到这些游戏，可直接运行 python main.py 验证",
         )
-        logger.info("米游社登录成功，ltuid=%s，写入 %s", creds["ltuid"], "、".join(games))
+        logger.info("米游社登录成功，ltuid=%s，写入 %s", creds["ltuid"], "、".join(updated))
     except MiyousheLoginError as exc:
         session.update("error", str(exc))
         logger.warning("米游社登录失败：%s", exc)
@@ -244,6 +291,7 @@ def run_mihoyo(session: Session) -> None:
 
 
 def run_skland(session: Session) -> None:
+    """逐款扫码：勾了几款就依次扫几次，每款单独写自己的 token。"""
     from core.hypergryph_login import (
         HypergryphLoginError,
         create_qr,
@@ -252,40 +300,66 @@ def run_skland(session: Session) -> None:
     )
     from core.skland_api import verify_ark_token
 
-    label = SKLAND_TARGETS.get(session.target, session.target)
+    total = session.total
+    finished: List[str] = []
 
-    def on_status(status: Any) -> None:
-        if status == 101:
-            session.update("scanned", "已扫码，请在手机上点击「确认」")
+    for index, target in enumerate(session.targets, 1):
+        label = SKLAND_TARGETS.get(target, target)
+        session.current = target
 
-    try:
-        session.update("creating", "正在向鹰角通行证申请二维码…")
-        qr = create_qr()
-        session.qr = qr_png_base64(qr["scan_url"])
-        session.update("waiting", "请用手机「森空岛」App 扫码（明日方舟 / 终末地通用）")
+        def on_status(status: Any) -> None:
+            if status == 101:
+                session.update(
+                    "scanned", f"第 {index}/{total} 步 · 已扫码，请在手机上点击「确认」"
+                )
 
-        scan_code = poll_confirm(qr["scan_id"], timeout=180, on_status=on_status)
+        try:
+            session.set_qr("")
+            session.update("creating", f"第 {index}/{total} 步 · {label}：正在申请二维码…")
+            qr = create_qr()
+            session.set_qr(qr_png_base64(qr["scan_url"]))
+            session.update(
+                "waiting",
+                f"第 {index}/{total} 步 · 请用「森空岛」App 扫描{label}的二维码",
+            )
 
-        session.update("writing", "扫码成功，正在验证 Token…")
-        token = exchange_short_token(scan_code)
-        check = verify_ark_token(token)
-        if not check.get("ok"):
-            raise HypergryphLoginError(f"Token 校验未通过：{check.get('message') or check}")
+            scan_code = poll_confirm(qr["scan_id"], timeout=180, on_status=on_status)
 
-        name = write_skland(session.target, token)
-        session.update(
-            "done",
-            f"{name} 登录成功，已写入 config.json",
-            token_prefix=token[:10] + "…",
-            note="该游戏的 cred 缓存已清除，下次运行自动换新",
-        )
-        logger.info("%s 登录成功", name)
-    except HypergryphLoginError as exc:
-        session.update("error", str(exc))
-        logger.warning("森空岛登录失败：%s", exc)
-    except Exception as exc:  # noqa: BLE001
-        session.update("error", f"登录异常：{exc}")
-        logger.exception("森空岛登录未预期异常")
+            session.update("writing", f"第 {index}/{total} 步 · 正在验证 {label} 的 Token…")
+            token = exchange_short_token(scan_code)
+            check = verify_ark_token(token)
+            if not check.get("ok"):
+                raise HypergryphLoginError(
+                    f"Token 校验未通过：{check.get('message') or check}"
+                )
+
+            name = write_skland(target, token)
+            session.add_result(target, name, True)
+            finished.append(name)
+            session.step = index
+            logger.info("%s 登录成功（第 %d/%d 款）", name, index, total)
+        except HypergryphLoginError as exc:
+            session.add_result(target, label, False, str(exc))
+            session.update(
+                "error",
+                f"第 {index}/{total} 步 · {label} 登录失败：{exc}"
+                + (f"（已完成：{'、'.join(finished)}）" if finished else ""),
+                finished=finished,
+            )
+            logger.warning("%s 登录失败：%s", label, exc)
+            return
+        except Exception as exc:  # noqa: BLE001
+            session.add_result(target, label, False, f"登录异常：{exc}")
+            session.update("error", f"第 {index}/{total} 步 · {label} 登录异常：{exc}")
+            logger.exception("%s 登录未预期异常", label)
+            return
+
+    session.update(
+        "done",
+        f"全部完成，{len(finished)} 款游戏已更新",
+        games=finished,
+        note="各游戏的 cred 缓存已清除，下次运行自动换新",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -313,19 +387,25 @@ HTML_PAGE = r"""<!DOCTYPE html>
   body{margin:0;background:var(--bg);color:var(--fg);
        font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
        padding:32px 16px 64px}
-  .wrap{max-width:720px;margin:0 auto}
-  header{margin-bottom:24px}
+  .wrap{max-width:760px;margin:0 auto}
+  header{margin-bottom:22px}
   h1{font-size:22px;margin:0 0 6px;letter-spacing:-.01em}
   .sub{margin:0;color:var(--muted);font-size:14px}
   .cards{display:grid;gap:14px;grid-template-columns:1fr 1fr}
-  @media (max-width:560px){ .cards{grid-template-columns:1fr} }
+  @media (max-width:640px){ .cards{grid-template-columns:1fr} }
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
         padding:18px;box-shadow:var(--shadow)}
-  .card-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+  .card-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
   .card h2{font-size:15px;margin:0}
-  .desc{color:var(--muted);font-size:13px;margin:0 0 14px;min-height:38px}
   .dot{width:8px;height:8px;border-radius:50%;flex:none}
   .dot.m{background:#4f9cf9}.dot.s{background:#f0a04b}
+  .desc{color:var(--muted);font-size:12.5px;margin:0 0 12px}
+  .checks{display:flex;flex-direction:column;gap:7px;margin-bottom:14px}
+  .checks label{display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+                padding:2px 0}
+  .checks input{width:15px;height:15px;accent-color:var(--brand);cursor:pointer;margin:0}
+  .all{color:var(--muted);font-size:13px;border-bottom:1px dashed var(--line);
+       padding-bottom:8px;margin-bottom:2px}
   button{width:100%;padding:10px 14px;border-radius:9px;border:1px solid transparent;
          background:var(--brand);color:#fff;font-size:14px;font-weight:500;cursor:pointer;
          transition:opacity .15s}
@@ -333,14 +413,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   button:disabled{opacity:.45;cursor:not-allowed}
   button.ghost{background:transparent;border-color:var(--line);color:var(--muted);
                width:auto;padding:8px 14px;margin-top:14px}
-  select{width:100%;margin-bottom:10px;padding:8px 10px;border-radius:8px;
-         border:1px solid var(--line);background:var(--card);color:var(--fg);font-size:14px}
   .stage{margin-top:22px;background:var(--card);border:1px solid var(--line);
          border-radius:14px;padding:22px;box-shadow:var(--shadow);text-align:center}
   .qrbox{display:inline-flex;padding:12px;background:#fff;border-radius:12px;
-         border:1px solid var(--line);min-height:220px;min-width:220px;
+         border:1px solid var(--line);min-height:224px;min-width:224px;
          align-items:center;justify-content:center}
-  .qrbox img{width:220px;height:220px;display:block;image-rendering:pixelated}
+  .qrbox img{width:224px;height:224px;display:block;image-rendering:pixelated}
   .qrbox .ph{color:#9aa3af;font-size:13px;padding:0 20px}
   .status{margin-top:16px;display:flex;align-items:center;justify-content:center;gap:8px;
           flex-wrap:wrap}
@@ -353,6 +431,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .kv{margin-top:14px;font-size:13px;color:var(--muted);text-align:left;
       border-top:1px solid var(--line);padding-top:12px}
   .kv code{background:var(--bg);padding:1px 6px;border-radius:5px;font-size:12px}
+  .res{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+  .res div{display:flex;align-items:center;gap:6px}
+  .res .i-ok{color:var(--ok)}.res .i-no{color:var(--err)}
   .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--line);
         border-top-color:var(--brand);border-radius:50%;animation:s .8s linear infinite}
   @keyframes s{to{transform:rotate(360deg)}}
@@ -362,23 +443,33 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <div class="wrap">
   <header>
     <h1>账号登录</h1>
-    <p class="sub">手机扫码后自动写入 config.json，不用手动复制 Cookie</p>
+    <p class="sub">选哪几款就登录哪几款 —— 只勾一款就是单独登录，全勾就是一起登录</p>
   </header>
 
   <div class="cards">
     <section class="card">
       <div class="card-head"><span class="dot m"></span><h2>米游社</h2></div>
-      <p class="desc">原神 · 崩坏：星穹铁道 · 绝区零<br>一次扫码，三款同时更新</p>
-      <button id="btn-m" onclick="start('mihoyo')">开始扫码</button>
+      <p class="desc">一次扫码，勾选的游戏同时更新</p>
+      <div class="checks">
+        <label class="all"><input type="checkbox" id="m-all" checked
+               onchange="toggleAll('m', this.checked)"> 全选</label>
+        <label><input type="checkbox" name="m" value="genshin" checked> 原神</label>
+        <label><input type="checkbox" name="m" value="starrail" checked> 崩坏：星穹铁道</label>
+        <label><input type="checkbox" name="m" value="zzz" checked> 绝区零</label>
+      </div>
+      <button id="btn-m" onclick="startMihoyo()">登录所选</button>
     </section>
+
     <section class="card">
       <div class="card-head"><span class="dot s"></span><h2>森空岛</h2></div>
-      <p class="desc">明日方舟 · 明日方舟：终末地<br>一款一款登录，互不覆盖</p>
-      <select id="target">
-        <option value="endfield">明日方舟：终末地</option>
-        <option value="arknights">明日方舟</option>
-      </select>
-      <button id="btn-s" onclick="startSkland()">开始扫码</button>
+      <p class="desc">每款单独扫码，勾几款就扫几次</p>
+      <div class="checks">
+        <label class="all"><input type="checkbox" id="s-all" checked
+               onchange="toggleAll('s', this.checked)"> 全选</label>
+        <label><input type="checkbox" name="s" value="arknights" checked> 明日方舟</label>
+        <label><input type="checkbox" name="s" value="endfield" checked> 明日方舟：终末地</label>
+      </div>
+      <button id="btn-s" onclick="startSkland()">登录所选</button>
     </section>
   </div>
 
@@ -395,6 +486,27 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
 <script>
 let sid = null, timer = null;
+
+function toggleAll(group, checked){
+  document.querySelectorAll('input[name="' + group + '"]').forEach(i => i.checked = checked);
+}
+
+function selected(group){
+  return [...document.querySelectorAll('input[name="' + group + '"]:checked')]
+           .map(i => i.value);
+}
+
+function syncAllBox(group){
+  const boxes = [...document.querySelectorAll('input[name="' + group + '"]')];
+  const all = document.getElementById(group + '-all');
+  const on = boxes.filter(b => b.checked).length;
+  all.checked = on === boxes.length;
+  all.indeterminate = on > 0 && on < boxes.length;
+}
+
+document.querySelectorAll('input[name="m"], input[name="s"]').forEach(box => {
+  box.addEventListener('change', () => syncAllBox(box.name));
+});
 
 function badgeFor(state){
   return {
@@ -430,20 +542,26 @@ function render(d){
   if (d.detail) {
     if (d.detail.ltuid) items.push('米游社 ID：<code>' + d.detail.ltuid + '</code>');
     if (d.detail.games) items.push('已更新：' + d.detail.games.join('、'));
-    if (d.detail.token_prefix) items.push('Token：<code>' + d.detail.token_prefix + '</code>');
     if (d.detail.note) items.push(d.detail.note);
+  }
+  if (d.results && d.results.length && (d.results.length > 1 || d.state === 'error')) {
+    const rows = d.results.map(r =>
+      '<div><span class="' + (r.ok ? 'i-ok' : 'i-no') + '">' +
+      (r.ok ? '✓' : '✗') + '</span>' + r.label +
+      (r.note ? ' — ' + r.note : '') + '</div>').join('');
+    items.push('<div class="res">' + rows + '</div>');
   }
   kv.innerHTML = items.join('<br>');
   kv.hidden = items.length === 0;
 }
 
-async function start(provider, target){
+async function start(provider, targets){
   reset();
   setBusy(true);
-  const q = '/api/start?provider=' + encodeURIComponent(provider)
-          + (target ? '&target=' + encodeURIComponent(target) : '');
+  const url = '/api/start?provider=' + encodeURIComponent(provider)
+            + '&targets=' + encodeURIComponent(targets.join(','));
   try {
-    const r = await fetch(q);
+    const r = await fetch(url);
     const d = await r.json();
     if (!d.ok) { showError(d.message); setBusy(false); return; }
     sid = d.sid;
@@ -454,9 +572,16 @@ async function start(provider, target){
   }
 }
 
+function startMihoyo(){
+  const list = selected('m');
+  if (!list.length) { alert('请至少勾选一款游戏'); return; }
+  start('mihoyo', list);
+}
+
 function startSkland(){
-  const t = document.getElementById('target').value;
-  start('skland', t);
+  const list = selected('s');
+  if (!list.length) { alert('请至少勾选一款游戏'); return; }
+  start('skland', list);
 }
 
 function showError(msg){
@@ -473,10 +598,7 @@ function poll(){
     .then(r => r.json())
     .then(d => {
       render(d);
-      if (d.state === 'done' || d.state === 'error') {
-        setBusy(false);
-        return;
-      }
+      if (d.state === 'done' || d.state === 'error') { setBusy(false); return; }
       timer = setTimeout(poll, 1000);
     })
     .catch(() => { timer = setTimeout(poll, 2000); });
@@ -502,7 +624,7 @@ function reset(){
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "DailyCheckLogin/1.0"
+    server_version = "DailyCheckLogin/1.1"
 
     def log_message(self, fmt: str, *args: Any) -> None:  # 静音默认访问日志
         logger.debug("%s - %s", self.address_string(), fmt % args)
@@ -512,7 +634,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        # 只服务本机，禁止被外站嵌入
         self.send_header("X-Frame-Options", "DENY")
         self.end_headers()
         try:
@@ -534,22 +655,37 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/start":
             provider = (query.get("provider") or [""])[0]
-            target = (query.get("target") or [""])[0]
+            raw = (query.get("targets") or [""])[0]
+            targets = [t.strip() for t in raw.split(",") if t.strip()]
+
             if provider == "mihoyo":
-                session = Session("mihoyo")
+                bad = [t for t in targets if t not in MIHOYO_GAMES]
+                if not targets or bad:
+                    self._json(
+                        {"ok": False, "message": f"无效的游戏参数：{', '.join(bad) or '空'}"},
+                        400,
+                    )
+                    return
+                session = Session("mihoyo", targets)
                 _put(session)
                 threading.Thread(target=run_mihoyo, args=(session,), daemon=True).start()
-                self._json({"ok": True, "sid": session.sid})
+                self._json({"ok": True, "sid": session.sid, "labels": session.labels()})
                 return
+
             if provider == "skland":
-                if target not in SKLAND_TARGETS:
-                    self._json({"ok": False, "message": "请选择要登录的游戏"}, 400)
+                bad = [t for t in targets if t not in SKLAND_TARGETS]
+                if not targets or bad:
+                    self._json(
+                        {"ok": False, "message": f"无效的游戏参数：{', '.join(bad) or '空'}"},
+                        400,
+                    )
                     return
-                session = Session("skland", target)
+                session = Session("skland", targets)
                 _put(session)
                 threading.Thread(target=run_skland, args=(session,), daemon=True).start()
-                self._json({"ok": True, "sid": session.sid})
+                self._json({"ok": True, "sid": session.sid, "labels": session.labels()})
                 return
+
             self._json({"ok": False, "message": "未知的 provider"}, 400)
             return
 
@@ -590,7 +726,7 @@ class LocalHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = os.name != "nt"
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="图形化扫码登录（本地网页）")
     parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
