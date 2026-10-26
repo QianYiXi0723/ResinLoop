@@ -897,7 +897,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
         padding:18px;box-shadow:var(--shadow)}
   .card + .card{margin-top:14px}
-  .card-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+  .card-head{display:flex;align-items:center;gap:8px;margin-bottom:14px}
   .card h2{font-size:15px;margin:0}
   .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--muted)}
   .dot.m{background:#4f9cf9}.dot.s{background:#f0a04b}
@@ -1046,7 +1046,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <div class="cards">
       <section class="card">
         <div class="card-head"><span class="dot m"></span><h2>米游社</h2></div>
-        <p class="desc">一次扫码，勾选的游戏同时更新</p>
         <div class="checks">
           <label class="all"><input type="checkbox" id="m-all" checked
                  onchange="toggleAll('m', this.checked)"> 全选</label>
@@ -1059,7 +1058,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
       <section class="card">
         <div class="card-head"><span class="dot s"></span><h2>森空岛</h2></div>
-        <p class="desc">每款单独扫码，勾几款就扫几次</p>
         <div class="checks">
           <label class="all"><input type="checkbox" id="s-all" checked
                  onchange="toggleAll('s', this.checked)"> 全选</label>
