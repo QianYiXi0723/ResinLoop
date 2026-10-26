@@ -1992,9 +1992,87 @@ class LocalHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = os.name != "nt"
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def start_tools_service() -> Optional[Dict[str, Any]]:
+    """启动 APK 局域网下载服务（进程内只起一次，重复调用返回同一实例）。
+
+    它监听 0.0.0.0 的独立端口，只读地暴露 tools/ 一层文件；
+    主控制台始终只听 127.0.0.1，避免 /api/* 被同一 WiFi 的人调用。
+    """
     global TOOLS_SERVER
 
+    if TOOLS_SERVER is not None:
+        return TOOLS_SERVER
+    try:
+        from core import tools_server
+
+        TOOLS_SERVER = tools_server.start()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("APK 下载服务启动失败：%s", exc)
+        TOOLS_SERVER = None
+    return TOOLS_SERVER
+
+
+def serve(
+    port: int = 8765,
+    *,
+    lan_tools: bool = True,
+    tries: int = 12,
+) -> Dict[str, Any]:
+    """启动控制台 HTTP 服务并立刻返回（服务跑在后台线程，不阻塞调用方）。
+
+    桌面窗口（app.py）和命令行入口共用这一份实现，避免两处端口 / 初始化
+    逻辑漂移。返回 ``{"server", "port", "url", "thread", "tools"}``，
+    关闭时调用 :func:`stop_server`。
+    """
+    ensure_config()
+    if lan_tools:
+        start_tools_service()
+
+    actual = pick_port(port, tries)
+    server = LocalHTTPServer(("127.0.0.1", actual), Handler)
+    thread = threading.Thread(
+        target=server.serve_forever, name="console-http", daemon=True
+    )
+    thread.start()
+    logger.info("控制台已监听 127.0.0.1:%d", actual)
+    return {
+        "server": server,
+        "port": actual,
+        "url": f"http://127.0.0.1:{actual}/",
+        "thread": thread,
+        "tools": TOOLS_SERVER,
+    }
+
+
+def stop_server(info: Optional[Dict[str, Any]]) -> None:
+    """关闭 :func:`serve` 起出来的服务（幂等，可重复调用）。"""
+    server = (info or {}).get("server")
+    if server is None:
+        return
+    try:
+        server.shutdown()
+    except Exception:  # noqa: BLE001
+        logger.debug("关闭 HTTP 服务时出错（已忽略）", exc_info=True)
+    try:
+        server.server_close()
+    except Exception:  # noqa: BLE001
+        logger.debug("释放监听端口时出错（已忽略）", exc_info=True)
+
+
+def console_alive(port: int = 8765, timeout: float = 1.5) -> bool:
+    """探测本机某端口上是否已经跑着本控制台（用于复用已开着的实例）。"""
+    import urllib.request
+
+    url = f"http://127.0.0.1:{port}/api/env"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        return isinstance(data, dict) and "channels" in data
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="游戏日常提醒 · 本地控制台")
     parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
@@ -2012,48 +2090,35 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     try:
-        ensure_config()
+        info = serve(args.port, lan_tools=not args.no_lan_tools)
     except Exception as exc:  # noqa: BLE001
-        print(f"[错误] 无法生成 config.json：{exc}")
+        print(f"[错误] 控制台启动失败：{exc}")
         return 1
 
-    # APK 下载服务：只读、只暴露 tools/，与主控制台分端口
-    if not args.no_lan_tools:
-        try:
-            from core import tools_server
-
-            TOOLS_SERVER = tools_server.start()
-            if not TOOLS_SERVER:
-                print("[提示] tools/ 为空或端口被占用，手机扫码下载不可用")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("APK 下载服务启动失败：%s", exc)
-
-    try:
-        port = pick_port(args.port)
-    except RuntimeError as exc:
-        print(f"[错误] {exc}")
-        return 1
-
-    url = f"http://127.0.0.1:{port}/"
-    server = LocalHTTPServer(("127.0.0.1", port), Handler)
     print("=" * 58)
     print("  游戏日常提醒 · 控制台已启动")
-    print(f"  控制台  ：{url}")
-    if TOOLS_SERVER:
-        print(f"  APK 下载：{TOOLS_SERVER['url']}（手机连同一 WiFi 可访问）")
+    print(f"  控制台  ：{info['url']}")
+    if info["tools"]:
+        print(f"  APK 下载：{info['tools']['url']}（手机连同一 WiFi 可访问）")
+    else:
+        print("  [提示] tools/ 为空或端口被占用，手机扫码下载不可用")
     print("  关闭本窗口只停控制台，定时提醒由守护进程负责")
     print("=" * 58)
 
     if not args.no_browser:
-        threading.Thread(target=lambda: (time.sleep(0.6), webbrowser.open(url)),
-                         daemon=True).start()
+        threading.Thread(
+            target=lambda: (time.sleep(0.6), webbrowser.open(info["url"])),
+            daemon=True,
+        ).start()
 
+    waiter = threading.Event()
     try:
-        server.serve_forever()
+        while info["thread"].is_alive():
+            waiter.wait(0.5)
     except KeyboardInterrupt:
         print("\n已停止")
     finally:
-        server.server_close()
+        stop_server(info)
     return 0
 
 

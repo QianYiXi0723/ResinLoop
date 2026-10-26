@@ -6,3 +6,5 @@ qrcode>=7.4
 pillow>=10.0
 # 系统托盘（守护进程右下角图标 + 右键菜单）
 pystray>=0.19
+# 桌面窗口（Windows 走系统自带 WebView2，无需 Electron）
+pywebview>=5.0

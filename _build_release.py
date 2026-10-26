@@ -168,14 +168,14 @@ README_TXT = """游戏日常提醒 —— 三步搞定
 它会自动做完这些事：
 
   1. 检查依赖，缺了自动 pip install
-  2. 后台启动控制台（网页服务）
-  3. 后台启动守护进程（右下角出现托盘图标）
-  4. 自动打开浏览器 http://127.0.0.1:8765
+  2. 后台启动守护进程（右下角出现托盘图标）
+  3. 弹出一个独立的控制台窗口（不是浏览器，是真正的应用窗口）
 
-窗口里显示"已启动"就可以关掉它了。
+窗口标题是「游戏日常提醒控制台」，关掉它不影响定时提醒。
+那个黑框框显示"已启动"之后就可以关了。
 
 
-第二步：在网页里配三个页签
+第二步：在窗口里配三个页签
 ------------------------------------------------
 【账号绑定】
   设备伪装（推荐，但不强制）
@@ -244,6 +244,7 @@ def main() -> None:
     # 1) 源码与文档（README 里的真实指纹 / 出口 IP 就地脱敏，本地原件不动）
     shutil.copy2(ROOT / "main.py", OUT / "main.py")
     shutil.copy2(ROOT / "daemon.py", OUT / "daemon.py")
+    shutil.copy2(ROOT / "app.py", OUT / "app.py")
     shutil.copy2(ROOT / "login_ui.py", OUT / "login_ui.py")
     shutil.copy2(ROOT / "login_ui.bat", OUT / "login_ui.bat")
     shutil.copy2(ROOT / "start.bat", OUT / "start.bat")

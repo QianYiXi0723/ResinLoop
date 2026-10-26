@@ -452,9 +452,20 @@ def _console_running() -> bool:
 
 
 def _open_console() -> None:
+    """托盘「打开控制台」：优先拉起桌面窗口（app.py），失败才退回浏览器。
+
+    以前是起 login_ui.py + 开浏览器；现在双击/托盘都统一到独立窗口，
+    免得用户每次还要在浏览器里找标签页。
+    """
     try:
+        desktop = BASE_DIR / "app.py"
+        if desktop.exists():
+            logger.info("拉起桌面控制台 app.py")
+            spawn([str(pythonw_exe()), str(desktop)], gui=True)
+            return
+
         if not _console_running():
-            logger.info("控制台没在运行，顺手拉起 login_ui.py")
+            logger.info("桌面入口不存在，退回拉起 login_ui.py")
             spawn([str(pythonw_exe()), str(BASE_DIR / "login_ui.py")])
             time.sleep(2.0)
         import webbrowser
@@ -510,11 +521,18 @@ def pythonw_exe() -> Path:
     return candidate if candidate.exists() else exe
 
 
-def spawn(args: List[str]) -> subprocess.Popen:
-    """脱离父进程地拉起一个后台进程。"""
+def spawn(args: List[str], *, gui: bool = False) -> subprocess.Popen:
+    """脱离父进程地拉起一个后台进程。
+
+    ``gui=True`` 用于有窗口的程序（app.py）：**不能**带 ``CREATE_NO_WINDOW``。
+    那个标志会往 STARTUPINFO 里塞 ``SW_HIDE``，导致 GUI 的首个窗口被隐藏 ——
+    表现为进程起来了、端口也在听，但屏幕上看不到窗口（实测踩过）。
+    """
     flags = 0
     if os.name == "nt":
-        flags = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
+        flags = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP
+        if not gui:
+            flags |= _CREATE_NO_WINDOW
     return subprocess.Popen(
         args,
         cwd=str(BASE_DIR),

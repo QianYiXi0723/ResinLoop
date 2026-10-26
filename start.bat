@@ -4,8 +4,7 @@ chcp 936 >nul 2>&1
 title 游戏日常提醒
 
 rem ============================================================
-rem  一键启动：拉起控制台与守护进程，然后打开浏览器
-rem  用 pythonw.exe 后台运行，不弹黑窗口
+rem  一键启动：守护进程 + 独立桌面窗口（不弹浏览器、不留黑框）
 rem ============================================================
 
 set "DIR=%~dp0"
@@ -26,13 +25,13 @@ if not defined PYEXE (
 )
 if not defined PYEXE goto :no_python
 
-rem pythonw.exe：后台运行不显示黑窗口
+rem pythonw.exe：后台运行，不显示黑窗口
 set "PYW="
 for %%d in ("%PYEXE%") do set "PYW=%%~dpdpythonw.exe"
 if not exist "%PYW%" set "PYW=%PYEXE%"
 
 rem ---------- 2. 依赖自检 ----------
-"%PYEXE%" -c "import requests, qrcode, PIL, pystray" >nul 2>&1
+"%PYEXE%" -c "import requests, qrcode, PIL, pystray, webview" >nul 2>&1
 if errorlevel 1 (
     echo [1/3] 首次运行，正在安装依赖，请稍候...
     "%PYEXE%" -m pip install -r requirements.txt --disable-pip-version-check
@@ -41,33 +40,24 @@ if errorlevel 1 (
     echo [1/3] 依赖检查通过
 )
 
-rem ---------- 3. 拉起控制台与守护进程 ----------
-echo [2/3] 启动控制台...
-start "" "%PYW%" login_ui.py
-
-echo [3/3] 启动守护进程...
+rem ---------- 3. 先起守护进程（托盘图标、定时提醒） ----------
+echo [2/3] 启动守护进程...
 start "" "%PYW%" daemon.py
 
-rem ---------- 4. 等端口就绪再开浏览器 ----------
-set /a WAIT=0
-:wait_loop
-timeout /t 1 /nobreak >nul 2>&1
-set /a WAIT+=1
-netstat -ano | findstr /C:"127.0.0.1:8765" | findstr /C:"LISTENING" >nul 2>&1
-if not errorlevel 1 goto :open
-if %WAIT% lss 12 goto :wait_loop
+rem 给守护进程一点时间写 pid / 心跳，控制台一打开就能看到"运行中"
+timeout /t 2 /nobreak >nul 2>&1
 
-:open
-start "" http://127.0.0.1:8765/
+rem ---------- 4. 再起桌面窗口 ----------
+echo [3/3] 启动控制台窗口...
+start "" "%PYW%" app.py
+
 echo.
-echo 已启动，浏览器里完成三步：
-echo   1) 账号绑定 -^> 贴设备指纹（可选）+ 扫码登录
-echo   2) 通知绑定 -^> 填 Server酱 / Qmsg 的 Key
-echo   3) 定时与状态 -^> 设置提醒时间，确认守护进程在运行
+echo 已启动。
+echo   - 桌面窗口：游戏日常提醒控制台（关掉窗口不影响定时提醒）
+echo   - 右下角托盘：右键可"打开控制台 / 立即执行一次 / 退出程序"
 echo.
-echo 右下角托盘有图标，右键可"立即执行一次"或"退出程序"。
-echo 本窗口可以关闭，不影响后台运行。
-timeout /t 4 /nobreak >nul 2>&1
+echo 本窗口可以关闭。
+timeout /t 3 /nobreak >nul 2>&1
 exit /b 0
 
 :no_dir

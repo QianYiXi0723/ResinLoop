@@ -12,18 +12,19 @@
 
 ```
 1. 双击 start.bat
-     → 自动装依赖 → 后台拉起控制台和守护进程 → 自动开浏览器
+     → 自动装依赖 → 后台拉起守护进程 → 弹出独立的控制台窗口
 
-2. 浏览器里配三个页签
+2. 窗口里配三个页签
      账号绑定  ：贴设备指纹（推荐）→ 扫码登录
      通知绑定  ：填 Server酱 / Qmsg 的 Key → 发送测试推送
      定时与状态：加提醒时间点 → 启动守护进程
 
 3. 挂机
-     右下角托盘常驻，关掉网页不影响；到点自动检查并推送
+     右下角托盘常驻，关掉窗口不影响；到点自动检查并推送
 ```
 
 托盘图标右键：**打开控制台 / 立即执行一次 / 退出程序**。
+其中「打开控制台」会重新拉起那个独立窗口，不需要再去浏览器里找标签页。
 
 ---
 
@@ -31,18 +32,19 @@
 
 ```
 check in/
-├── start.bat               # 一键启动：装依赖 + 拉起控制台与守护进程 + 开浏览器
+├── start.bat               # 一键启动：装依赖 + 守护进程 + 独立控制台窗口
 ├── daemon.py               # 常驻守护进程：30 秒轮询 check_times、托盘、防重复触发
+├── app.py                  # 桌面入口：pywebview 独立窗口，内嵌本地控制台
 ├── main.py                 # 命令行入口：run_once 编排（查询→判断→推送→退出码）
-├── login_ui.py             # 网页控制台：账号绑定 / 通知绑定 / 定时与状态
-├── login_ui.bat            # 只开控制台（调试用）
+├── login_ui.py             # 网页控制台本体：账号绑定 / 通知绑定 / 定时与状态
+├── login_ui.bat            # 只开网页版控制台（调试用，会走浏览器）
 ├── run.bat                 # 手动跑一次检查（不涉及调度）
 ├── tools/设备信息.apk       # 手机端「设备信息」App，供扫码下载
 ├── config.json             # 本地私有配置（含凭据）。首次运行自动生成，.gitignore 已排除
 ├── config.example.json     # 配置示例，字段与默认值同源（core/config.py 的 DEFAULT_CONFIG）
-├── requirements.txt        # 依赖清单（requests / qrcode / pillow / pystray）
+├── requirements.txt        # 依赖清单（requests / qrcode / pillow / pystray / pywebview）
 ├── .gitignore              # 排除 config.json / logs / 缓存 / APK
-├── logs/                   # 运行时创建：dailycheck.log、device_fp.json、daemon.pid 等
+├── logs/                   # 运行时创建：dailycheck.log、desktop.log、device_fp.json、daemon.pid 等
 └── core/
     ├── __init__.py         # 包声明与分层说明
     ├── models.py           # 数据模型：TaskItem / GameStatus / PushResult
@@ -70,11 +72,15 @@ source .venv/Scripts/activate      # Windows
 
 pip install -r requirements.txt
 # 或者直接：
-pip install "requests>=2.28.0" "qrcode>=7.4" "pillow>=10.0" "pystray>=0.19"
-# （qrcode/pillow 用于二维码与托盘图标，pystray 提供托盘菜单）
+pip install "requests>=2.28.0" "qrcode>=7.4" "pillow>=10.0" "pystray>=0.19" "pywebview>=5.0"
+# （qrcode/pillow 用于二维码与托盘图标，pystray 提供托盘菜单，
+#   pywebview 提供独立桌面窗口，Windows 上复用系统自带 WebView2）
 ```
 
 > 用 `start.bat` 启动的话，这一节可以跳过 —— 它会先 `import` 试一遍，缺依赖自动装上。
+>
+> **`pywebview` 没装也能用**：`app.py` 会捕获导入失败，弹一句提示后自动退回默认浏览器，
+> 控制台功能不受影响。想彻底退回浏览器版也可以 `python login_ui.py`。
 >
 > `requests` 采用惰性导入：即使没装，脚本仍能完成查询、判断、控制台输出和日志，只在真正推送时报「缺少依赖 requests」并以退出码 3 结束。
 >
@@ -568,7 +574,7 @@ Bark 请求形态：`GET {server}/{device_key}/{quote(标题)}/{quote(正文)}?g
 启动方式（任选）：
 
 ```bat
-:: 1. 一键（同时拉起控制台 + 守护进程 + 开浏览器）
+:: 1. 一键（守护进程 + 独立控制台窗口）
 start.bat
 
 :: 2. 只起守护进程（后台，无窗口）
@@ -576,6 +582,9 @@ pythonw daemon.py
 
 :: 3. 前台带托盘（能看到日志输出，调试用）
 python daemon.py
+
+:: 4. 只开控制台窗口（守护进程已经在跑的时候用）
+python app.py
 ```
 
 网页「定时与状态」页也能启停，背后调的是同一套逻辑（`pythonw.exe` 拉起、`taskkill` 兜底）。
@@ -621,9 +630,29 @@ python daemon.py
 
 ---
 
-### 5.6 图形化登录界面（不想在终端里看二维码时用）
+### 5.6 桌面控制台（独立窗口）
 
-会自动打开浏览器（默认 `http://127.0.0.1:8765`）。页面顶部有三个导航按钮，点哪个就只显示哪个：
+双击 `start.bat`，或命令行 `python app.py`，会弹出一个**独立的应用窗口**——
+标题「游戏日常提醒控制台」，初始 980×800，可自由缩放（最小 820×620），
+没有地址栏、没有标签页，跟原生软件一样。
+
+技术上是两层：`login_ui.py` 继续提供网页控制台（`http.server`，只监听 127.0.0.1），
+`app.py` 在**后台线程**里把它跑起来，再用 pywebview 开一个窗口加载
+`http://127.0.0.1:8765`。所以前端一行没改，只是换了个"外壳"。
+
+| 场景 | 行为 |
+| --- | --- |
+| 关窗口（×） | 控制台服务随之关闭、端口释放；**守护进程不受影响**，定时提醒照常 |
+| 已有控制台在跑 | 直接复用那个实例，不会另起一个抢端口 |
+| 想看浏览器版 | `python login_ui.py` 或双击 `login_ui.bat` |
+| 缺少 WebView2 运行时 | 弹窗提示并自动退回默认浏览器，功能不受影响 |
+| 托盘「打开控制台」 | 优先拉起 `app.py` 这个窗口；`app.py` 不存在时才退回浏览器 |
+
+> Windows 上 pywebview 用的是系统自带的 **WebView2**（Win11 与绝大多数 Win10 都预装了），
+> 不打包 Chromium，所以启动快、占用低 —— 实测窗口起来后整个进程约 150 MB，
+> 关掉窗口进程即退出。
+
+页面顶部有三个导航按钮，点哪个就只显示哪个：
 
 | 导航 | 作用 |
 | --- | --- |
@@ -727,7 +756,9 @@ python daemon.py
 | 参数 | 说明 |
 | --- | --- |
 | `--port 8800` | 换端口（默认 8765，被占用会自动往后找空闲端口） |
-| `--no-browser` | 不自动打开浏览器 |
+| `--no-browser` | 不自动打开浏览器（只对 `login_ui.py` 命令行版有效） |
+| `--browser` | 仅 `app.py`：不开独立窗口，改用默认浏览器 |
+| `--debug` | 仅 `app.py`：打开开发者工具并写 DEBUG 日志 |
 
 服务只监听 `127.0.0.1`，不对局域网/外网开放；登录态只写本机 `config.json`。用完按 `Ctrl+C` 结束即可。
 
