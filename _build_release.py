@@ -217,8 +217,7 @@ pause
 README_TXT = """游戏日常任务提醒 —— 开始使用
 ================================================
 
-这是一个本地小脚本：每天定时查一次你的游戏日常进度，
-没做完就推送到手机（微信 / QQ）。
+每天定时查一次游戏日常进度，没做完就推送到手机（微信 / QQ）。
 
 支持：原神、崩坏：星穹铁道、绝区零、明日方舟、明日方舟：终末地
 
@@ -229,9 +228,9 @@ README_TXT = """游戏日常任务提醒 —— 开始使用
    下载：https://www.python.org/downloads/
    安装时务必勾选  "Add python.exe to PATH"
 
-2. 把本文件夹放到一个固定的位置，比如
-       D:\\Tools\\gamedaily
-   （路径里有空格没关系，但别放在压缩包里直接运行）
+2. 把本文件夹放到一个固定位置，比如
+       D:\Tools\gamedaily
+   （路径里有空格没关系，但别在压缩包里直接运行）
 
 
 二、装依赖
@@ -241,38 +240,44 @@ README_TXT = """游戏日常任务提醒 —— 开始使用
     pip install -r requirements.txt
 
 
-三、填配置
+三、登录游戏账号（扫码，不用手抄 Cookie）
 ------------------------------------------------
-用记事本打开 config.json，至少改这两块：
+双击本文件夹里的  login_ui.bat
 
-1) 游戏账号凭据 —— 两种方式选一种
+浏览器会自动打开登录页面，上面有两块：
 
-   方式 A（推荐，扫码登录，自动写配置）
-       python main.py --login-mihoyo
-       用手机米游社 App 扫码，三款米家游戏的凭据会自动写好。
+    米游社   ☑ 原神  ☑ 崩铁  ☑ 绝区零     → 扫 1 次码，勾选的都更新
+    森空岛   ☑ 明日方舟  ☑ 终末地         → 勾几款就依次扫几次
 
-       python main.py --login-skland
-       用手机森空岛 App 扫码（鹰角的两款游戏）。
+只登录一款就只勾那一款；全勾就是全部一起登录。
+登录成功后页面会显示写入结果，config.json 自动更新，不用手工改。
 
-   方式 B（手动填）
-       自己从浏览器 Cookie 里复制 ltuid / ltoken 填进 accounts。
-
-2) 推送通道 —— 选一个填就行
-
-   Server酱（微信，最简单）
-       打开 https://sct.ftqq.com 微信扫码登录，
-       复制 SendKey，填到 push.serverchan.sendkey，
-       并把 "channels" 改成 ["serverchan"]。
-
-   Qmsg酱（QQ）
-       打开 https://qmsg.zendee.cn 登录并添加机器人好友，
-       复制 key，填到 push.qmsg.key，
-       并把 "channels" 改成 ["qmsg"]。
-
-   想两个都收就写 ["serverchan", "qmsg"]，互不影响。
+（也可以用命令行：python login_ui.py）
 
 
-四、先手动跑一次
+四、配置推送通道（不配就收不到提醒）
+------------------------------------------------
+扫码只解决"查得到"，收不收得到提醒取决于这一步。
+
+选一个填就行，都在 config.json 里：
+
+  Server酱（微信，最简单）
+      打开 https://sct.ftqq.com 微信扫码登录
+      复制 SendKey → 填到 push.serverchan.sendkey
+      把 push.channels 改成  ["serverchan"]
+
+  Qmsg酱（QQ）
+      打开 https://qmsg.zendee.cn 登录并添加机器人好友
+      复制 key → 填到 push.qmsg.key
+      把 push.channels 改成  ["qmsg"]
+
+  两个都想要就写  ["serverchan", "qmsg"]，互不影响，
+  一个挂了另一个照常收到。
+
+页面上如果出现"还没配置推送通道"的黄色提示，就是这一步没做。
+
+
+五、先手动跑一次
 ------------------------------------------------
     python main.py
 
@@ -280,12 +285,12 @@ README_TXT = """游戏日常任务提醒 —— 开始使用
 想强制发一条测试：python main.py --force-alert
 
 
-五、设置每天定时
+六、设置每天定时
 ------------------------------------------------
 右键"以管理员身份运行"  setup_task.bat
 
-它会建一个名为 GameDailyCheck 的计划任务，每天 22:00 自动跑。
-想改时间，重新运行它之前改一下里面的 /ST 22:00。
+会建一个名为 GameDailyCheck 的计划任务，每天 22:00 自动跑。
+想改时间，改它里面的 /ST 22:00 再跑一次。
 
 默认是"仅当用户登录时运行"，会闪一下黑窗口。
 想完全后台静默，执行：
@@ -295,19 +300,21 @@ README_TXT = """游戏日常任务提醒 —— 开始使用
 然后输入你的 Windows 登录密码。
 
 
-六、排错
+七、排错
 ------------------------------------------------
-- 日志文件：logs\\dailycheck.log（详细）、logs\\cron_run.log（定时任务输出）
-- 查询报 1034 / 5003：米游社风控，换网络（手机热点）重试
+- 日志文件：logs\dailycheck.log（详细）、logs\cron_run.log（定时任务输出）
+- 扫码后报 1034 / 5003：米游社风控，换个网络（手机热点）重试
 - 提示"没有找到 Python"：重装 Python 并勾选 Add to PATH
+- 页面提示"还没配置推送通道"：照第四节填一下
 - 详细说明见 README.md
 
 
-七、说明
+八、说明
 ------------------------------------------------
-- 本文件夹里的 config.json 是空白模板，需要你自己填。
+- 首次运行会自动生成 config.json，登录后自动填充账号。
 - 不要把自己填好的 config.json 发给别人，里面有账号 Cookie。
-- 脚本只读查询，不会代打游戏、不会做任何签到操作。
+- 脚本只读查询，不会代打游戏、不会自动签到。
+- 本项目使用 MIT 许可证，可自由修改分发。
 """
 
 
@@ -326,6 +333,9 @@ def main() -> None:
 
     # 1) 源码与文档（README 里的真实指纹 / 出口 IP 就地脱敏，本地原件不动）
     shutil.copy2(ROOT / "main.py", OUT / "main.py")
+    shutil.copy2(ROOT / "login_ui.py", OUT / "login_ui.py")
+    shutil.copy2(ROOT / "login_ui.bat", OUT / "login_ui.bat")
+    shutil.copy2(ROOT / "LICENSE", OUT / "LICENSE")
     for py in sorted((ROOT / "core").glob("*.py")):
         shutil.copy2(py, OUT / "core" / py.name)
     shutil.copy2(ROOT / "requirements.txt", OUT / "requirements.txt")

@@ -173,10 +173,51 @@ def qr_png_base64(text: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
+def ensure_config() -> None:
+    """没有 config.json 就按默认值生成一份（幂等）。
+
+    只为让「下载后直接扫码」少一步：不用先手动跑 python main.py --init。
+    """
+    if CONFIG_PATH.exists():
+        return
+    from core.config import create_default_config  # 复用同一份默认值，避免两处漂移
+
+    create_default_config(CONFIG_PATH)
+    logger.info("未找到 config.json，已按默认值生成：%s", CONFIG_PATH)
+
+
 def load_raw_config() -> Dict[str, Any]:
-    if not CONFIG_PATH.exists():
-        raise RuntimeError(f"找不到 {CONFIG_PATH.name}，请先运行 python main.py --init")
+    ensure_config()
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+
+
+def push_status() -> Dict[str, Any]:
+    """当前推送通道的配置状态。
+
+    扫码只解决「能查到数据」，收不收得到通知取决于推送通道是否填了 key。
+    页面据此提示，避免出现「扫码成功却始终收不到提醒」的困惑。
+    """
+    try:
+        raw = load_raw_config()
+    except Exception:  # noqa: BLE001 - 读不到配置也要能开页面
+        return {"channels": [], "ready": [], "configured": False}
+
+    push = raw.get("push") or {}
+    channels = [str(c).lower() for c in (push.get("channels") or [])]
+    ready: List[str] = []
+    for name in channels:
+        node = push.get(name) or {}
+        if not isinstance(node, dict):
+            continue
+        if name == "bark" and str(node.get("device_key") or "").strip():
+            ready.append(name)
+        elif name == "serverchan" and str(node.get("sendkey") or "").strip():
+            ready.append(name)
+        elif name == "qmsg" and str(node.get("key") or "").strip():
+            ready.append(name)
+        elif name in ("feishu", "dingtalk") and str(node.get("webhook") or "").strip():
+            ready.append(name)
+    return {"channels": channels, "ready": ready, "configured": bool(ready)}
 
 
 def save_raw_config(raw: Dict[str, Any]) -> None:
@@ -437,6 +478,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--line);
         border-top-color:var(--brand);border-radius:50%;animation:s .8s linear infinite}
   @keyframes s{to{transform:rotate(360deg)}}
+  .notice{margin:0 0 18px;padding:12px 14px;border-radius:10px;font-size:13px;
+          line-height:1.6;border:1px solid var(--warn);background:rgba(217,119,6,.08);
+          color:var(--fg)}
+  .notice b{color:var(--warn)}
+  .notice code{background:var(--card);padding:1px 5px;border-radius:4px;font-size:12px;
+               border:1px solid var(--line)}
 </style>
 </head>
 <body>
@@ -445,6 +492,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <h1>账号登录</h1>
     <p class="sub">选哪几款就登录哪几款 —— 只勾一款就是单独登录，全勾就是一起登录</p>
   </header>
+
+  <div class="notice" id="notice" hidden></div>
 
   <div class="cards">
     <section class="card">
@@ -612,6 +661,18 @@ function reset(){
   document.getElementById('qrbox').innerHTML = '<span class="ph">二维码准备中…</span>';
   document.getElementById('detail').hidden = true;
 }
+
+/* 推送通道没配时给一条明确提示：扫码只解决"查得到"，不解决"收得到" */
+fetch('/api/env').then(r => r.json()).then(d => {
+  if (d.configured) return;
+  const box = document.getElementById('notice');
+  box.hidden = false;
+  box.innerHTML =
+    '<b>还没配置推送通道</b> —— 扫码登录只负责拿到账号，<b>手机上不会收到任何提醒</b>。' +
+    '<br>去 <code>config.json</code> 填其中一个：' +
+    '<code>push.serverchan.sendkey</code>（微信，最简单）或 <code>push.qmsg.key</code>（QQ），' +
+    '再把 <code>push.channels</code> 改成对应的通道名。详见 README 5.4。';
+}).catch(() => {});
 </script>
 </body>
 </html>
@@ -689,6 +750,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "message": "未知的 provider"}, 400)
             return
 
+        if parsed.path == "/api/env":
+            self._json(push_status())
+            return
+
         if parsed.path == "/api/state":
             sid = (query.get("sid") or [""])[0]
             session = _get(sid)
@@ -738,9 +803,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         datefmt="%H:%M:%S",
     )
 
-    if not CONFIG_PATH.exists():
-        print(f"找不到 {CONFIG_PATH}")
-        print("请先运行：python main.py --init")
+    try:
+        ensure_config()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[错误] 无法生成 config.json：{exc}")
         return 1
 
     try:
