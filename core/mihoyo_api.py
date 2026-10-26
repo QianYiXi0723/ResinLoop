@@ -79,13 +79,30 @@ USER_AGENT = (
     f"126.0.6478.133 Mobile Safari/537.36 miHoYoBBS/{APP_VERSION}"
 )
 
-#: 设备档案 —— 由用户手机上的「设备信息」App 实测导出（2026-10-26）：
+#: OAID 默认值：随机生成的示例串，不是任何真机标识，仅参与 ext_fields 拼装。
+_DEFAULT_OAID = "4e8a1c73b95f2d06"
+
+#: 真机 OAID 的本地覆盖文件。放在 logs/ 下（该目录已被 .gitignore 排除），
+#: 这样源码可以公开，而本机仍沿用原来那台设备的身份，不必重签指纹。
+_OAID_OVERRIDE_PATH = Path(__file__).resolve().parent.parent / "logs" / "device_oaid.txt"
+
+
+def _load_oaid() -> str:
+    """OAID：优先读本地私有覆盖文件，缺省返回示例值。"""
+    try:
+        value = _OAID_OVERRIDE_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return _DEFAULT_OAID
+    return value or _DEFAULT_OAID
+
+
+#: 设备档案 —— 按 Redmi K80（24122RKC7C）的公开机型参数填写：
 #:   {"deviceModel":"24122RKC7C","androidVersion":"16",
 #:    "deviceFingerprint":"Redmi/miro/miro:16/BP2A.250605.031.A3/OS3.0.305.0.WOMCNXM:user/release-keys",
-#:    "deviceName":"miro","deviceBoard":"sun","deviceProduct":"miro",
-#:    "oaid":"a9cb56661a712573"}
+#:    "deviceName":"miro","deviceBoard":"sun","deviceProduct":"miro"}
 #: 字段含义与 GsCore `generate_fake_fp` 的七个入参一一对应；screen_size / display
 #: 是按 Redmi K80（2K 屏）与 HyperOS 版本号补的，如与你手机实际不符可直接改这里。
+#: oaid 走 _load_oaid()：本机可在 logs/device_oaid.txt 填真实值，源码里只留示例值。
 DEVICE_MODEL: Dict[str, str] = {
     "brand": "Redmi",
     "manufacturer": "Xiaomi",
@@ -93,7 +110,7 @@ DEVICE_MODEL: Dict[str, str] = {
     "device": "miro",
     "device_type": "24122RKC7C",
     "board": "sun",
-    "oaid": "a9cb56661a712573",
+    "oaid": _load_oaid(),
     "device_info": "Redmi/miro/miro:16/BP2A.250605.031.A3/OS3.0.305.0.WOMCNXM:user/release-keys",
     "os_version": "16",
     "sdk_version": "36",
