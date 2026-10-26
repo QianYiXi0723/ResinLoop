@@ -32,7 +32,7 @@ import time
 from http.cookies import SimpleCookie
 from typing import Any, Dict, List, Optional, Tuple
 
-from .hypergryph_login import render_qr
+from .hypergryph_login import notify_status, render_qr
 from .mihoyo_api import (
     APP_VERSION,
     USER_AGENT,
@@ -234,8 +234,18 @@ def _fetch_ltoken_by_stoken(stoken: str, mid: str, uid: str) -> str:
     return token
 
 
-def poll_confirm(device_id: str, ticket: str, timeout: int = DEFAULT_TIMEOUT) -> Dict[str, Any]:
-    """轮询扫码状态，确认后返回 {"cookies": {...}, "raw_fields": [...]}。"""
+def poll_confirm(
+    device_id: str,
+    ticket: str,
+    timeout: int = DEFAULT_TIMEOUT,
+    on_status: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """轮询扫码状态，确认后返回 {"cookies": {...}, "raw_fields": [...]}。
+
+    on_status: 可选回调，每次拿到新状态时以 status 字符串调用，
+               供图形界面显示"已扫码待确认"等中间态。异常会被吞掉，
+               不影响登录主流程（命令行版不传即可）。
+    """
     requests = _import_requests()
     headers = _qr_headers(device_id)
     start = time.time()
@@ -281,6 +291,7 @@ def poll_confirm(device_id: str, ticket: str, timeout: int = DEFAULT_TIMEOUT) ->
         if status in ("Expired", "Canceled"):
             raise MiyousheLoginError("二维码已过期或被取消，请重新运行登录")
         # Created / Scanned 继续等
+        notify_status(on_status, status)
         time.sleep(POLL_INTERVAL)
 
     raise MiyousheLoginError(f"等待扫码超时（{timeout} 秒）")

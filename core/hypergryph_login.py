@@ -80,6 +80,20 @@ class HypergryphLoginError(Exception):
 # --------------------------------------------------------------------------- #
 
 
+def notify_status(callback: Optional[Any], value: Any) -> None:
+    """安全调用扫码状态回调。
+
+    图形界面用它刷新"已扫码待确认"等中间态；回调属于外部代码，
+    抛错不应中断登录流程，这里一律吞掉并记到 debug 日志。
+    """
+    if callback is None:
+        return
+    try:
+        callback(value)
+    except Exception:  # noqa: BLE001 - 外部回调
+        logging.getLogger("dailycheck.hglogin").debug("状态回调异常（已忽略）", exc_info=True)
+
+
 def dump_raw(label: str, payload: Any) -> None:
     """把服务端原始返回（完整 JSON）打印到控制台。
 
@@ -148,8 +162,14 @@ def create_qr() -> Dict[str, Any]:
     return {"scan_id": scan_id, "scan_url": scan_url, "app_names": [n for n in app_names if n]}
 
 
-def poll_confirm(scan_id: str, timeout: int = DEFAULT_TIMEOUT) -> str:
+def poll_confirm(
+    scan_id: str,
+    timeout: int = DEFAULT_TIMEOUT,
+    on_status: Optional[Any] = None,
+) -> str:
     """第 2 步：轮询扫码状态直到用户确认，返回 scanCode。
+
+    on_status: 可选回调，状态变化时调用一次（供图形界面显示中间态）。
 
     Raises:
         HypergryphLoginError: 超时 / 用户取消 / 二维码过期 / 连续网络错误。
@@ -195,6 +215,7 @@ def poll_confirm(scan_id: str, timeout: int = DEFAULT_TIMEOUT) -> str:
                 SCAN_EXPIRED: "已过期",
             }.get(status, f"未知状态({status})")
             print(f"[scan_status] 状态变为 {status}（{label}）")
+            notify_status(on_status, status)
 
         if status == SCAN_CONFIRMED:
             scan_code = str(data.get("scanCode") or "")
