@@ -56,6 +56,9 @@ CONSOLE_URL = f"http://127.0.0.1:{CONSOLE_PORT}/"
 TICK_SECONDS = 30
 #: 时间点容错（秒）：±1 分钟
 SLOT_TOLERANCE = 60
+#: 错过时间点后的补发窗口（分钟）：0 = 关闭补发
+CATCH_UP_MINUTES_DEFAULT = 180
+CATCH_UP_MINUTES_MAX = 720
 #: 心跳超过这个秒数没更新，就认为进程已经不在了
 HEARTBEAT_STALE = 120
 #: .last_run 里最多保留多少条历史
@@ -190,18 +193,20 @@ def heartbeat_age() -> Optional[float]:
 # --------------------------------------------------------------------------- #
 
 
-def read_check_times() -> List[str]:
-    """直接读 config.json 的时间点，改完无需重启即生效。"""
+def _read_app_section() -> Dict[str, Any]:
+    """直接读 config.json 的 app 段（不经过完整解析，避免 30 秒一次的开销）。"""
     try:
         raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return []
+        return {}
     app = raw.get("app") if isinstance(raw, dict) else None
-    if not isinstance(app, dict):
-        return []
+    return app if isinstance(app, dict) else {}
 
+
+def read_check_times() -> List[str]:
+    """直接读 config.json 的时间点，改完无需重启即生效。"""
     result: List[str] = []
-    for item in app.get("check_times") or []:
+    for item in _read_app_section().get("check_times") or []:
         text = str(item).strip()
         try:
             hour, minute = (int(part) for part in text.split(":"))
@@ -210,6 +215,20 @@ def read_check_times() -> List[str]:
         if 0 <= hour <= 23 and 0 <= minute <= 59 and text not in result:
             result.append(text)
     return sorted(result)
+
+
+def read_catch_up_minutes() -> int:
+    """补发窗口（分钟）：休眠 / 关机错过时间点后，醒来立刻补跑一次。
+
+    0 或负数 = 关闭补发；没配这个字段时按默认 180 分钟处理。
+    """
+    try:
+        value = int(_read_app_section().get("catch_up_minutes"))
+    except (TypeError, ValueError):
+        return CATCH_UP_MINUTES_DEFAULT
+    if value < 0:
+        return 0
+    return min(value, CATCH_UP_MINUTES_MAX)
 
 
 def next_run_text(check_times: Optional[List[str]] = None) -> str:
@@ -238,6 +257,7 @@ def status() -> Dict[str, Any]:
         "started_at": info.get("started_at", ""),
         "heartbeat_age": round(age, 1) if age is not None else None,
         "check_times": times,
+        "catch_up_minutes": read_catch_up_minutes(),
         "next_run": next_run_text(times) if times else "",
         "last_run": {
             "slot": state.get("last_slot", ""),
@@ -279,33 +299,69 @@ def save_last_run(state: Dict[str, Any]) -> None:
         logger.warning("写 %s 失败，本轮防重复记录可能丢失", LAST_RUN_FILE.name)
 
 
-def due_slots(
+def pending_slots(
     now: Optional[datetime] = None,
     check_times: Optional[List[str]] = None,
     state: Optional[Dict[str, Any]] = None,
     tolerance: int = SLOT_TOLERANCE,
-) -> List[str]:
-    """返回当前应当触发、且今天还没触发过的时间点（形如 ``2026-10-26 08:30``）。"""
+    catch_up_minutes: Optional[int] = None,
+) -> List[Tuple[str, int]]:
+    """列出该触发的时间点，返回 ``[(slot_key, 迟到秒数), ...]``。
+
+    迟到秒数 = 当前时间 - 目标时间：
+      * 落在 ±``tolerance`` 内 → 正常到点（迟到约 0）
+      * 超出容差但仍在 ``catch_up_minutes`` 窗口内 → 补发（合盖睡过去醒来的情况）
+      * 超过补发窗口 → 当天不再触发
+    """
     current = now or datetime.now()
     times = check_times if check_times is not None else read_check_times()
     book = state if state is not None else load_last_run()
     fired = book.get("fired") or {}
     today = current.strftime("%Y-%m-%d")
 
-    due: List[str] = []
+    if catch_up_minutes is None:
+        catch_up_minutes = read_catch_up_minutes()
+    catch_up_seconds = max(int(catch_up_minutes), 0) * 60
+
+    pending: List[Tuple[str, int]] = []
     for text in times:
         try:
             hour, minute = (int(part) for part in text.split(":"))
         except ValueError:
             continue
         target = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if abs((current - target).total_seconds()) > tolerance:
-            continue
+        delta = int((current - target).total_seconds())
+
+        if abs(delta) > tolerance:
+            # 睡过头了：只在补发窗口内、且还没跑过时才补一次
+            if delta <= 0 or delta > catch_up_seconds:
+                continue
+
         key = f"{today} {text}"
         if key in fired:
             continue
-        due.append(key)
-    return due
+        pending.append((key, delta))
+    return pending
+
+
+def due_slots(
+    now: Optional[datetime] = None,
+    check_times: Optional[List[str]] = None,
+    state: Optional[Dict[str, Any]] = None,
+    tolerance: int = SLOT_TOLERANCE,
+    catch_up_minutes: Optional[int] = None,
+) -> List[str]:
+    """返回当前应当触发、且今天还没触发过的时间点（形如 ``2026-10-26 08:30``）。"""
+    return [
+        key
+        for key, _delta in pending_slots(
+            now=now,
+            check_times=check_times,
+            state=state,
+            tolerance=tolerance,
+            catch_up_minutes=catch_up_minutes,
+        )
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -393,17 +449,24 @@ def _tick(stop_event: threading.Event) -> None:
         return
 
     state = load_last_run()
-    due = due_slots(check_times=check_times, state=state)
-    if not due:
+    pending = pending_slots(check_times=check_times, state=state)
+    if not pending:
         return
 
-    for slot in due:
+    for slot, late_seconds in pending:
         # 先记账、后执行：即便执行途中进程被杀，也不会在下一轮重复推送
         state.setdefault("fired", {})[slot] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         save_last_run(state)
-        logger.info("命中时间点 %s，开始检查", slot)
+        if abs(late_seconds) > SLOT_TOLERANCE:
+            logger.info(
+                "错过了时间点 %s（迟到 %.0f 分钟），现在补发一次检查",
+                slot,
+                late_seconds / 60.0,
+            )
+        else:
+            logger.info("命中时间点 %s，开始检查", slot)
 
-        code = run_check(f"定时 {slot}")
+        code = run_check(f"补发 {slot}" if abs(late_seconds) > SLOT_TOLERANCE else f"定时 {slot}")
         state = load_last_run()
         state["last_slot"] = slot
         state["last_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -656,6 +719,10 @@ def run_daemon(use_tray: bool = True) -> int:
     logger.info("守护进程启动｜PID=%s｜间隔=%ds", os.getpid(), TICK_SECONDS)
     logger.info("时间点：%s｜下次：%s", "、".join(read_check_times()) or "(未配置)",
                 next_run_text() or "-")
+    catch_up = read_catch_up_minutes()
+    logger.info(
+        "补发窗口：%s", f"{catch_up} 分钟" if catch_up > 0 else "已关闭（错过就不再补）"
+    )
     logger.info("日志：%s", LOGS_DIR / "dailycheck.log")
 
     stop_event = threading.Event()

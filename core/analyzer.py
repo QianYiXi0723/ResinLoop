@@ -94,7 +94,13 @@ class DailyReport:
     def to_push_payload(self) -> Tuple[str, str]:
         """生成 (标题, 正文)。标题短、正文按游戏分行，适配 Bark 的小卡片。"""
         total = len(self.statuses)
-        title = f"游戏日常：{len(self.unfinished)}/{total} 个未完成"
+        all_done = not self.unfinished and not self.failed
+
+        # 全部完成时换一套说法：0/4 个未完成 听起来像坏消息，改成 4/4 全部完成
+        if all_done:
+            title = f"游戏日常：{total}/{total} 全部完成"
+        else:
+            title = f"游戏日常：{len(self.unfinished)}/{total} 个未完成"
 
         lines: List[str] = []
         lines.append(self.generated_at.strftime("%m-%d %H:%M"))
@@ -110,10 +116,10 @@ class DailyReport:
             names = "、".join(item.game_name for item in self.failed)
             lines.append(f"[查询失败] {names}")
 
-        if not self.unfinished and not self.failed:
-            lines.append("今天的日常全部完成，本条为测试推送。")
-
-        lines.append(f"共漏 {self.unfinished_task_count} 项，别拖到 23:59。")
+        if all_done:
+            lines.append("今天的日常全部完成，可以放心摆烂了。")
+        else:
+            lines.append(f"共漏 {self.unfinished_task_count} 项，别拖到 23:59。")
         return title, "\n".join(lines)
 
     def to_dict(self) -> Dict[str, Any]:

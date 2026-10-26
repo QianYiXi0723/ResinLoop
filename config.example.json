@@ -4,7 +4,8 @@
     "check_times": [
       "08:30",
       "20:30"
-    ]
+    ],
+    "catch_up_minutes": 180
   },
   "accounts": [
     {
@@ -58,6 +59,7 @@
     "channels": [
       "bark"
     ],
+    "always_notify": false,
     "bark": {
       "enabled": true,
       "server": "https://api.day.app",

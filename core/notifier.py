@@ -67,14 +67,25 @@ def mask_secret(value: str, keep: int = 4) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def should_push(test_mode: str, need_alert: bool, unfinished_count: int = 0) -> Tuple[bool, str]:
-    """根据测试模式与检查结论决定是否推送，返回 (是否推送, 原因)。"""
+def should_push(
+    test_mode: str,
+    need_alert: bool,
+    unfinished_count: int = 0,
+    always_notify: bool = False,
+) -> Tuple[bool, str]:
+    """根据测试模式与检查结论决定是否推送，返回 (是否推送, 原因)。
+
+    ``always_notify`` 打开后，全部完成也发一条「今日全部完成」的平安通知，
+    免得用户以为守护进程坏了 —— 默认关闭，保持原来的安静行为。
+    """
     if test_mode == TEST_MODE_FORCE_SILENT:
         return False, "测试模式=强制静默，本次只写日志"
     if test_mode == TEST_MODE_FORCE_ALERT:
         return True, "测试模式=强制提醒，无论结果都推送"
     if need_alert:
         return True, f"自动模式：{unfinished_count} 个游戏存在未完成项"
+    if always_notify:
+        return True, "自动模式：全部完成，按设置发送平安通知"
     return False, "自动模式：全部日常已完成，保持安静"
 
 

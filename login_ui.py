@@ -59,6 +59,10 @@ SKLAND_TARGETS: Dict[str, str] = {
     "endfield": "明日方舟：终末地",
 }
 
+#: 错过时间点后的补发窗口（分钟）：0 = 关闭补发
+CATCH_UP_MINUTES_DEFAULT = 180
+CATCH_UP_MINUTES_MAX = 720
+
 
 # --------------------------------------------------------------------------- #
 # 会话状态
@@ -220,7 +224,12 @@ def push_status() -> Dict[str, Any]:
             ready.append(name)
         elif name in ("feishu", "dingtalk") and str(node.get("webhook") or "").strip():
             ready.append(name)
-    return {"channels": channels, "ready": ready, "configured": bool(ready)}
+    return {
+        "channels": channels,
+        "ready": ready,
+        "configured": bool(ready),
+        "always_notify": bool(push.get("always_notify", False)),
+    }
 
 
 def save_raw_config(raw: Dict[str, Any]) -> None:
@@ -310,6 +319,7 @@ def push_detail() -> Dict[str, Any]:
         "ok": True,
         "channels": channels,
         "items": items,
+        "always_notify": bool(push.get("always_notify", False)),
         "configured": any(i["has_key"] and i["in_channels"] for i in items.values()),
     }
 
@@ -345,6 +355,10 @@ def update_push_config(raw: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str
         raw["push"] = push
 
     before = json.loads(json.dumps(push))  # 深拷贝一份，用于判断到底改没改
+
+    # 平安通知：全部日常完成时是否也发一条（默认关闭 = 无事不打扰）
+    if "always_notify" in payload:
+        push["always_notify"] = bool(payload.get("always_notify"))
 
     old_channels = [
         str(c).strip().lower() for c in (push.get("channels") or []) if str(c).strip()
@@ -646,9 +660,46 @@ def schedule_status() -> Dict[str, Any]:
     return {
         "ok": True,
         "times": times,
+        "catch_up_minutes": _normalize_catch_up(app.get("catch_up_minutes")),
         "next_run": target.strftime("%Y-%m-%d %H:%M") if target else "",
         "daemon": daemon_status(),
     }
+
+
+def _normalize_catch_up(raw: Any) -> int:
+    """补发窗口（分钟）：0 = 关闭；没配这个字段时按 180 分钟处理。
+
+    非数字会直接报错（交给接口返回 400），不静默吞掉——避免用户以为保存成功了。
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return CATCH_UP_MINUTES_DEFAULT
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"补发窗口必须是 0（关闭）~ {CATCH_UP_MINUTES_MAX} 之间的整数，收到：{raw!r}"
+        )
+    if value < 0:
+        return 0
+    return min(value, CATCH_UP_MINUTES_MAX)
+
+
+def save_catch_up(raw_minutes: Any) -> Dict[str, Any]:
+    """保存补发窗口。时间点是即时生效的，改这个也不用重启守护进程。"""
+    value = _normalize_catch_up(raw_minutes)
+    raw = load_raw_config()
+    if not isinstance(raw.get("app"), dict):
+        raw["app"] = {}
+    raw["app"]["catch_up_minutes"] = value
+
+    from core.config import parse_config
+
+    parse_config(raw, source=CONFIG_PATH)
+    save_raw_config(raw)
+    logger.info("补发窗口已更新：%d 分钟", value)
+    result = schedule_status()
+    result["message"] = "已关闭补发" if value == 0 else f"错过时间点后 {value} 分钟内会补发"
+    return result
 
 
 def save_schedule(times: Any) -> Dict[str, Any]:
@@ -1154,6 +1205,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </section>
     </div>
 
+    <section class="card" style="margin-top:14px">
+      <div class="chan-head">
+        <h2><span class="dot" style="background:var(--brand)"></span>平安通知</h2>
+        <label class="switch"><input type="checkbox" id="always-notify"> 启用</label>
+      </div>
+      <p class="desc">
+        默认只在「有未完成项」时推送。勾上之后，日常<b>全部做完也发一条</b>
+        「今日全部完成」——方便确认它真的在跑，不会误以为坏了。
+      </p>
+    </section>
+
     <div class="row">
       <button type="button" id="btn-save">保存配置</button>
       <button type="button" id="btn-test" class="alt">发送测试推送</button>
@@ -1200,6 +1262,24 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button id="btn-add-time">添加</button>
       </div>
       <p class="hint">改完立即生效，<b>不用重启守护进程</b>。</p>
+    </section>
+
+    <section class="card">
+      <div class="chan-head">
+        <h2><span class="dot" style="background:var(--warn)"></span>睡过头补发</h2>
+        <span class="badge" id="cu-state">-</span>
+      </div>
+      <p class="desc">
+        合盖休眠、关机、断网都可能让那个整点悄悄过去。开着的<b>补发窗口</b>内一旦醒来，
+        守护进程会立刻补跑一次（同一天同一个时间点只会补一次）。
+      </p>
+      <div class="row3">
+        <input type="number" id="catch-up-minutes" min="0" max="720" step="30">
+        <button id="btn-catch-up">保存</button>
+      </div>
+      <p class="hint">
+        单位分钟，<b>0 = 关闭补发</b>（错过就当天不再提醒），最大 720。
+      </p>
     </section>
   </section>
 </div>
@@ -1497,6 +1577,8 @@ function renderPush(d){
     en.checked = !!it.enabled;
     hint.innerHTML = hintText(it);
   });
+  const an = document.getElementById('always-notify');
+  if (an) an.checked = !!d.always_notify;
   refreshNotice();
 }
 
@@ -1514,6 +1596,8 @@ function collectPush(){
     const en = document.getElementById(name + '-enabled');
     out[name] = { enabled: en.checked, key: box.value };
   });
+  const an = document.getElementById('always-notify');
+  if (an) out.always_notify = an.checked;
   return out;
 }
 
@@ -1606,7 +1690,39 @@ function renderSchedule(d){
   }
   document.getElementById('d-count').textContent = times.length + ' 个';
   document.getElementById('d-next').textContent = d.next_run || '-';
+  renderCatchUp(d.catch_up_minutes);
   renderDaemon(d.daemon || {});
+}
+
+function renderCatchUp(minutes){
+  const num = parseInt(minutes, 10);
+  const input = document.getElementById('catch-up-minutes');
+  if (!input) return;
+  if (document.activeElement !== input) {
+    input.value = isNaN(num) ? 180 : num;
+  }
+  const badge = document.getElementById('cu-state');
+  if (badge) badge.textContent = (!num ? '已关闭' : num + ' 分钟内补发');
+}
+
+async function saveCatchUp(){
+  const btn = document.getElementById('btn-catch-up');
+  const input = document.getElementById('catch-up-minutes');
+  const raw = parseInt(input.value, 10);
+  let minutes = isNaN(raw) ? 0 : raw;
+  if (minutes < 0) minutes = 0;
+  if (minutes > 720) minutes = 720;
+  btn.disabled = true;
+  try {
+    const d = await postJSON('/api/catch_up', { minutes: minutes });
+    if (!d.ok) { toast(d.message || '保存失败', true); return; }
+    renderCatchUp(d.catch_up_minutes);
+    toast(d.message || '已保存');
+  } catch (e) {
+    toast('保存失败：' + e, true);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function loadSchedule(){
@@ -1653,6 +1769,7 @@ document.getElementById('d-times').addEventListener('click', async function(e){
 });
 
 document.getElementById('btn-add-time').addEventListener('click', addTime);
+document.getElementById('btn-catch-up').addEventListener('click', saveCatchUp);
 
 async function controlDaemon(action){
   const btn = document.getElementById(action === 'start' ? 'btn-daemon-start' : 'btn-daemon-stop');
@@ -1883,6 +2000,18 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "message": str(exc)}, 400)
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("保存时间点失败")
+                    self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)
+            return
+
+        if path == "/api/catch_up":
+            payload = self._read_json_body()
+            if payload is not None:
+                try:
+                    self._json(save_catch_up(payload.get("minutes")))
+                except ValueError as exc:
+                    self._json({"ok": False, "message": str(exc)}, 400)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("保存补发窗口失败")
                     self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)
             return
 

@@ -51,6 +51,11 @@ KNOWN_GAMES: Dict[str, str] = {
 #: 米游社数据源覆盖的游戏（query.mihoyo_enabled=False 时跳过它们）
 MIHOYO_GAMES: Tuple[str, ...] = ("genshin", "starrail", "zzz")
 
+#: 错过时间点后的补发窗口（分钟）。0 = 关掉补发，最大 720 分钟（12 小时）。
+#: 例如 180：21:30 那轮因为休眠没跑到，只要在 23:59 前醒过来，就会立刻补跑一次。
+CATCH_UP_MINUTES_DEFAULT = 180
+CATCH_UP_MINUTES_MAX = 720
+
 
 class ConfigError(Exception):
     """配置文件缺失 / 字段非法时抛出，由 main 统一转成友好提示。"""
@@ -64,6 +69,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "app": {
         "test_mode": TEST_MODE_AUTO,
         "check_times": ["08:30", "20:30"],
+        "catch_up_minutes": CATCH_UP_MINUTES_DEFAULT,
     },
     "accounts": [
         {
@@ -116,6 +122,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     ],
     "push": {
         "channels": ["bark"],
+        "always_notify": False,
         "bark": {
             "enabled": True,
             "server": "https://api.day.app",
@@ -401,6 +408,8 @@ class PushConfig:
     """推送配置容器。按 push.channels 决定实际启用哪几个通道。"""
 
     channels: List[str] = field(default_factory=lambda: ["bark"])
+    #: 全部日常已完成时是否也发一条「今日全部完成」的平安通知
+    always_notify: bool = False
     bark: BarkConfig = field(default_factory=BarkConfig)
     serverchan: ServerChanConfig = field(default_factory=ServerChanConfig)
     qmsg: QmsgConfig = field(default_factory=QmsgConfig)
@@ -426,6 +435,7 @@ class PushConfig:
             qmsg_data = {"key": data.get("qmsg_key")}
         return cls(
             channels=[str(item).strip().lower() for item in channels if str(item).strip()],
+            always_notify=bool(data.get("always_notify", False)),
             bark=BarkConfig.from_dict(data.get("bark")),
             serverchan=ServerChanConfig.from_dict(data.get("serverchan")),
             qmsg=QmsgConfig.from_dict(qmsg_data),
@@ -436,6 +446,7 @@ class PushConfig:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "channels": list(self.channels),
+            "always_notify": bool(self.always_notify),
             "bark": self.bark.to_dict(),
             "serverchan": self.serverchan.to_dict(),
             "qmsg": self.qmsg.to_dict(),
@@ -547,6 +558,8 @@ class AppConfig:
 
     test_mode: str = TEST_MODE_AUTO
     check_times: List[str] = field(default_factory=lambda: ["08:30", "20:30"])
+    # 睡过头 / 关机错过时间点后，醒来立刻补跑一次；0 = 关闭补发
+    catch_up_minutes: int = CATCH_UP_MINUTES_DEFAULT
     accounts: List[AccountConfig] = field(default_factory=list)
     push: PushConfig = field(default_factory=PushConfig)
     query: QueryConfig = field(default_factory=QueryConfig)
@@ -566,6 +579,7 @@ class AppConfig:
             "app": {
                 "test_mode": self.test_mode,
                 "check_times": list(self.check_times),
+                "catch_up_minutes": int(self.catch_up_minutes),
             },
             "accounts": [account.to_dict() for account in self.accounts],
             "push": self.push.to_dict(),
@@ -590,6 +604,21 @@ def _parse_check_times(raw: Any) -> List[str]:
         if text not in result:
             result.append(text)
     return sorted(result)
+
+
+def _parse_catch_up_minutes(raw: Any) -> int:
+    """解析补发窗口（分钟）：留空/非法走默认值，0 或负数表示关闭补发。"""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return CATCH_UP_MINUTES_DEFAULT
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ConfigError(
+            f"app.catch_up_minutes = {raw!r} 非法，请填 0（关闭）~ {CATCH_UP_MINUTES_MAX} 之间的整数"
+        )
+    if value < 0:
+        return 0
+    return min(value, CATCH_UP_MINUTES_MAX)
 
 
 def parse_config(data: Dict[str, Any], source: Optional[Path] = None) -> AppConfig:
@@ -622,6 +651,7 @@ def parse_config(data: Dict[str, Any], source: Optional[Path] = None) -> AppConf
     return AppConfig(
         test_mode=test_mode,
         check_times=_parse_check_times(app_section.get("check_times")),
+        catch_up_minutes=_parse_catch_up_minutes(app_section.get("catch_up_minutes")),
         accounts=accounts,
         push=PushConfig.from_dict(merged.get("push")),
         query=QueryConfig.from_dict(merged.get("query")),

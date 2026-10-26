@@ -512,7 +512,10 @@ def run_once(config: AppConfig, dry_run: bool = False) -> int:
 
     # 3) 推送决策
     alert, reason = should_push(
-        config.test_mode, report.need_alert, len(report.unfinished)
+        config.test_mode,
+        report.need_alert,
+        len(report.unfinished),
+        always_notify=config.push.always_notify,
     )
     logger.info("推送决策：%s（%s）", "推送" if alert else "不推送", reason)
 
