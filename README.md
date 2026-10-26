@@ -106,7 +106,10 @@ python main.py --init
   "app": {
     "test_mode": "auto",
     "check_times": ["08:30", "20:30"],
-    "catch_up_minutes": 180
+    "catch_up_minutes": 180,
+    "genshin_resin_threshold": 160,
+    "starrail_stamina_threshold": 240,
+    "zzz_energy_threshold": 200
   },
   "accounts": [
     {
@@ -177,6 +180,9 @@ python main.py --init
 | `app.test_mode` | `auto` 自动判断 / `force_alert` 强制提醒 / `force_silent` 强制静默 |
 | `app.check_times` | 每日检查时间点（HH:MM，24 小时制），改完即时生效 |
 | `app.catch_up_minutes` | 睡过头补发窗口（分钟）。错过时间点后，在这个窗口内醒来会立刻补跑一次；`0` = 关闭补发。默认 180，上限 720 |
+| `app.genshin_resin_threshold` | 原神「原粹树脂」溢出预警阈值：当前值 ≥ 阈值就强制推一条（日常全做完也推）。`0` = 关闭。默认 160（上限 200） |
+| `app.starrail_stamina_threshold` | 崩铁「开拓力」溢出预警阈值，同上。默认 240 |
+| `app.zzz_energy_threshold` | 绝区零「电量」溢出预警阈值，同上。默认 200 |
 | `push.always_notify` | 平安通知：`true` 时日常**全部完成也发一条**「今日全部完成」，默认 `false`（无事不打扰） |
 | `accounts[].game` | 游戏标识：`genshin` / `starrail` / `zzz` / `arknights` / `endfield` |
 | `accounts[].enabled` | 是否参与检查，`false` 直接跳过 |
@@ -815,6 +821,42 @@ python main.py --force-alert   :: 强制发一条，验证推送通道本身通�
 服务只监听 `127.0.0.1`，不对局域网/外网开放；登录态只写本机 `config.json`。用完按 `Ctrl+C` 结束即可。
 
 > 两种方式写到配置文件里的结果完全一样，只是交互形式不同。日常用界面版，脚本/远程环境用命令行版。
+
+---
+
+### 5.7 体力溢出预警（阈值告警）
+
+树脂 / 开拓力 / 电量快满却没花掉，是另一种"损失"。在 `config.json` 的 `app` 段里设阈值：
+
+```json
+"app": {
+  "genshin_resin_threshold": 160,
+  "starrail_stamina_threshold": 240,
+  "zzz_energy_threshold": 200
+}
+```
+
+- 当前值 **≥ 阈值**就强制推一条（日常全做完也会推），`0` = 关闭该游戏的预警；
+- **不额外发请求**：数值来自本轮定时检查已经拿到的实时便笺，只是拿来比一下；
+- 推送标题会变成 `… · ⚠️ 体力将溢出（N）`，正文第一行就是
+  `⚠️ 警告：绝区零电量已达到 240/240，即将溢出！`；
+- 想立刻验证效果：把阈值临时调低（比如崩铁设 `30`），跑一次 `python main.py --dry-run`，
+  控制台会出现 `⚠️` 警告行；验完记得改回去。
+
+### 5.8 每日报表（完成统计）
+
+控制台第 4 个页签。每次定时检查结束会顺手把结果写进 `data/history.json`
+（原子写，坏了不影响主流程；dry-run 不写，免污染统计），**不额外发请求**。
+
+页面内容：
+
+- **连续完成**：每款游戏当前连续完成天数、本月完成 / 未完成天数；
+- **最近 7 天**：每天一行，✅ 完成 · ❌ 查过但没做完 · – 没运行/没查到；
+- 一天跑了多次检查（比如 08:30 没做完、20:30 补完）时，当天算 ✅；
+- 只在切到这个页签时拉一次数据，**不做后台轮询**。
+
+当天还没跑过检查时，连胜不会断（今天还没结束，不能算输）。想看接口直接拿 JSON：
+`curl http://127.0.0.1:8765/api/history?days=7`。
 
 ---
 

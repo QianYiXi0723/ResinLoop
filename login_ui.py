@@ -1052,6 +1052,27 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .hint b{color:var(--fg)}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
   @media (max-width:520px){ .row{grid-template-columns:1fr} }
+  /* ---------- 每日报表 ---------- */
+  .hstats{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(148px,1fr))}
+  .hstat{background:var(--bg);border:1px solid var(--line);border-radius:10px;
+         padding:10px 12px}
+  .hstat .name{font-size:12.5px;color:var(--muted);margin-bottom:3px;
+               overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hstat .big{font-size:20px;font-weight:600;line-height:1.25}
+  .hstat .big small{font-size:12px;font-weight:400;color:var(--muted);margin-left:2px}
+  .hstat .sub2{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .hstat .sub2 .bad{color:var(--err)}
+  .htable{width:100%;border-collapse:collapse;font-size:13px;margin-top:2px}
+  .htable th,.htable td{padding:7px 4px;border-bottom:1px solid var(--line);
+                        text-align:center}
+  .htable th{font-size:12px;color:var(--muted);font-weight:500;white-space:nowrap}
+  .htable td{font-size:15px}
+  .htable td.date{text-align:left;white-space:nowrap;font-size:12.5px}
+  .htable td.date .wd{color:var(--muted);font-size:11.5px;margin-left:4px}
+  .htable tr.today td{background:rgba(37,99,235,.06)}
+  .htable tr:last-child td{border-bottom:none}
+  .emptybox{padding:18px 0;text-align:center;color:var(--muted);font-size:13px;
+            line-height:1.7}
   #test-result{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
   #toast{position:fixed;left:50%;top:20px;transform:translate(-50%,-14px);
          background:var(--fg);color:var(--bg);padding:10px 18px;border-radius:10px;
@@ -1116,6 +1137,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <button type="button" data-tab="account" class="on">账号绑定</button>
     <button type="button" data-tab="notify">通知绑定</button>
     <button type="button" data-tab="schedule">定时与状态</button>
+    <button type="button" data-tab="history">每日报表</button>
   </nav>
 
   <!-- ======================= Tab 1：账号绑定 ======================= -->
@@ -1310,13 +1332,45 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </p>
     </section>
   </section>
+
+  <!-- ======================= Tab 4：每日报表 ======================= -->
+  <section class="tabpanel" id="tab-history">
+    <section class="card">
+      <div class="chan-head">
+        <h2><span class="dot" style="background:var(--ok)"></span>连续完成</h2>
+        <span class="badge" id="h-month">-</span>
+      </div>
+      <p class="desc">
+        每次定时检查的结果会记在 <code>data/history.json</code>；
+        判定用的就是那一轮查询的数据，<b>不额外发任何请求</b>。
+      </p>
+      <div class="hstats" id="h-stats"></div>
+      <p class="hint">
+        当天只要有<b>一次</b>检查到全部完成，这天就算 ✅（白天补完也算）；
+        查询失败不算未完成，避免网络抖动被记成漏做。
+      </p>
+    </section>
+
+    <section class="card">
+      <div class="chan-head">
+        <h2><span class="dot" style="background:var(--brand)"></span>最近 7 天</h2>
+        <button class="alt" id="btn-history-refresh" style="width:auto;padding:6px 12px;
+               font-size:12px">刷新</button>
+      </div>
+      <div id="h-table"></div>
+      <p class="hint">
+        ✅ 完成 · ❌ 查过但没做完 · <span style="color:#9aa3af">–</span> 那天没运行或没查到。
+        切到本页才会拉一次数据，不会后台轮询。
+      </p>
+    </section>
+  </section>
 </div>
 
 <div id="toast"></div>
 
 <script>
 /* =========================== Tab 切换 =========================== */
-const PANEL_NAMES = ['account', 'notify', 'schedule'];
+const PANEL_NAMES = ['account', 'notify', 'schedule', 'history'];
 let schedTimer = null;
 
 function switchTab(name){
@@ -1333,6 +1387,7 @@ function switchTab(name){
   if (name === 'notify') loadPush();
   if (name === 'schedule') { loadSchedule(); startSchedPoll(); } else { stopSchedPoll(); }
   if (name === 'account') { loadDevice(); refreshNotice(); }
+  if (name === 'history') loadHistory();
 }
 
 function startSchedPoll(){
@@ -1854,6 +1909,76 @@ document.getElementById('btn-daemon-stop').addEventListener('click', function(){
 document.getElementById('btn-dev-save').addEventListener('click', saveDevice);
 document.getElementById('btn-dev-reset').addEventListener('click', resetDevice);
 
+/* =========================== Tab 4：每日报表 =========================== */
+function markOf(cell){
+  if (!cell || !cell.known) return '<span style="color:#9aa3af">–</span>';
+  return cell.finished ? '✅' : '❌';
+}
+
+function renderHistory(d){
+  const monthBadge = document.getElementById('h-month');
+  if (monthBadge) monthBadge.textContent = (d.month || '-') + ' 本月';
+
+  // --- 统计卡片：连续完成天数 / 本月未完成天数 ---
+  const statsBox = document.getElementById('h-stats');
+  if (statsBox) {
+    const games = d.games || [];
+    if (!games.length) {
+      statsBox.innerHTML = '';
+    } else {
+      statsBox.innerHTML = games.map(function(g){
+        const missed = g.month_missed;
+        return '<div class="hstat">' +
+          '<div class="name">' + (g.game_name || g.game) +
+            (g.nickname ? ' · ' + g.nickname : '') + '</div>' +
+          '<div class="big">' + g.streak + '<small> 天连续</small></div>' +
+          '<div class="sub2">本月完成 ' + g.month_done + ' 天 · ' +
+            (missed ? '<span class="bad">未完成 ' + missed + ' 天</span>' : '未完成 0 天') +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+  }
+
+  // --- 7 天明细表 ---
+  const tableBox = document.getElementById('h-table');
+  if (!tableBox) return;
+  const tracked = d.tracked || [];
+  if (!d.has_data || !tracked.length) {
+    tableBox.innerHTML =
+      '<div class="emptybox">还没有历史记录。<br>' +
+      '等一次定时检查跑完（或在「定时与状态」页点一次「立即检查」）就会出现。</div>';
+    return;
+  }
+
+  const days = d.days || [];
+  let html = '<table class="htable"><thead><tr><th style="text-align:left">日期</th>';
+  tracked.forEach(function(gid){
+    const meta = (d.games || []).find(function(x){ return x.game === gid; });
+    html += '<th>' + ((meta && meta.game_name) || gid) + '</th>';
+  });
+  html += '</tr></thead><tbody>';
+  days.forEach(function(row){
+    html += '<tr' + (row.is_today ? ' class="today"' : '') + '>' +
+      '<td class="date">' + row.label +
+        '<span class="wd">' + row.weekday + (row.is_today ? ' · 今天' : '') + '</span></td>';
+    tracked.forEach(function(gid){
+      html += '<td>' + markOf((row.games || {})[gid]) + '</td>';
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  tableBox.innerHTML = html;
+}
+
+function loadHistory(){
+  fetch('/api/history?days=7').then(function(r){ return r.json(); })
+    .then(renderHistory)
+    .catch(function(){ toast('无法读取历史记录', true); });
+}
+
+document.getElementById('btn-history-refresh').addEventListener('click', loadHistory);
+
 /* =========================== 启动 =========================== */
 const hash = (location.hash || '').replace('#', '');
 switchTab(PANEL_NAMES.indexOf(hash) >= 0 ? hash : 'account');
@@ -1951,6 +2076,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/schedule":
             self._json(schedule_status())
+            return
+
+        if parsed.path == "/api/history":
+            try:
+                days = int((query.get("days") or ["7"])[0])
+            except (TypeError, ValueError):
+                days = 7
+            from core import history
+
+            self._json(history.summary(days=days))
             return
 
         if parsed.path == "/api/state":

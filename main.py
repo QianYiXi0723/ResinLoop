@@ -498,17 +498,30 @@ def run_once(config: AppConfig, dry_run: bool = False) -> int:
     # 1) 查询
     statuses = collect_statuses(config)
 
-    # 2) 判断
-    report = build_report(statuses)
+    # 2) 判断（体力溢出预警复用本轮查询结果，不额外发请求）
+    report = build_report(statuses, config.resource_thresholds)
     _safe_console(report.to_console_text())
     logger.info(
-        "汇总：总数=%d 已完成=%d 未完成=%d 失败=%d 漏做任务=%d",
+        "汇总：总数=%d 已完成=%d 未完成=%d 失败=%d 漏做任务=%d 体力预警=%d",
         len(report.statuses),
         len(report.finished),
         len(report.unfinished),
         len(report.failed),
         report.unfinished_task_count,
+        len(report.resource_alerts),
     )
+    for alert in report.resource_alerts:
+        logger.info("体力预警：%s", alert.warn_line())
+
+    # 2.5) 落一份历史（dry-run 不算，免得污染统计）
+    if not dry_run:
+        try:
+            from core import history
+
+            history.record(report)
+        except Exception as exc:  # noqa: BLE001
+            # 存档失败绝不能影响主流程：日志里说一声就好
+            logger.warning("写入历史记录失败（不影响本轮检查）：%s", exc)
 
     # 3) 推送决策
     alert, reason = should_push(
@@ -516,6 +529,7 @@ def run_once(config: AppConfig, dry_run: bool = False) -> int:
         report.need_alert,
         len(report.unfinished),
         always_notify=config.push.always_notify,
+        overflow_count=len(report.resource_alerts),
     )
     logger.info("推送决策：%s（%s）", "推送" if alert else "不推送", reason)
 

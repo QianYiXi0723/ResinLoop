@@ -5,7 +5,10 @@
       "08:30",
       "20:30"
     ],
-    "catch_up_minutes": 180
+    "catch_up_minutes": 180,
+    "genshin_resin_threshold": 160,
+    "starrail_stamina_threshold": 240,
+    "zzz_energy_threshold": 200
   },
   "accounts": [
     {

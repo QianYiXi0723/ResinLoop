@@ -130,6 +130,55 @@ class GameStatus:
 
 
 @dataclass
+class ResourceAlert:
+    """一条"体力要溢出了"的预警。
+
+    只在定时检查顺带判定，**不产生任何额外请求**：数值来自本轮已经拿到的
+    实时便笺（树脂 / 开拓力 / 电量），与阈值比一下即可。
+
+    Attributes:
+        game_id: 游戏标识。
+        game_name: 游戏中文名。
+        nickname: 账号昵称。
+        resource: 资源显示名，如"原粹树脂"。
+        current: 当前值。
+        maximum: 上限值。
+        threshold: 触发预警的阈值（>0）。
+    """
+
+    game_id: str
+    game_name: str
+    nickname: str
+    resource: str
+    current: int
+    maximum: int
+    threshold: int
+
+    @property
+    def who(self) -> str:
+        return self.nickname or self.game_name
+
+    def warn_line(self) -> str:
+        """推送正文里那一行醒目警告。"""
+        return (
+            f"⚠️ 警告：{self.game_name}{self.resource}已达到 "
+            f"{self.current}/{self.maximum}，即将溢出！"
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "game_id": self.game_id,
+            "game_name": self.game_name,
+            "nickname": self.nickname,
+            "resource": self.resource,
+            "current": self.current,
+            "maximum": self.maximum,
+            "threshold": self.threshold,
+            "warn": self.warn_line(),
+        }
+
+
+@dataclass
 class PushResult:
     """一次推送尝试的结果，用于日志与退出码判定。"""
 

@@ -7,6 +7,9 @@ config.json
 # 运行日志 + 设备指纹 + 森空岛 cred 缓存，全部含隐私
 logs/
 
+# 每日完成情况存档（本机数据，不属于代码）
+data/
+
 # 扫码登录落盘的二维码（含 ticket）
 qr_login.png
 

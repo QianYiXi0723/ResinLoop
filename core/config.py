@@ -56,6 +56,25 @@ MIHOYO_GAMES: Tuple[str, ...] = ("genshin", "starrail", "zzz")
 CATCH_UP_MINUTES_DEFAULT = 180
 CATCH_UP_MINUTES_MAX = 720
 
+#: 体力溢出预警阈值：当前值 >= 阈值就强制推一条（0 = 关闭该游戏的预警）。
+#: 判定完全复用定时检查那一次查询的结果，**不额外发任何请求**。
+RESOURCE_THRESHOLD_DEFAULT: Dict[str, int] = {
+    "genshin": 160,    # 原粹树脂，上限 200
+    "starrail": 240,   # 开拓力，上限 240
+    "zzz": 200,        # 电量，上限 240
+}
+
+#: 各游戏"体力/树脂/电量"在任务列表里的显示名，用于从查询结果里认出那一项。
+#: 值与 core/querier.py 里 TaskItem 的 name 必须一致。
+RESOURCE_TASK_NAMES: Dict[str, str] = {
+    "genshin": "原粹树脂",
+    "starrail": "开拓力",
+    "zzz": "电量",
+}
+
+#: 阈值允许的最大值（体力上限普遍在 200~240 之间，留点余量）
+RESOURCE_THRESHOLD_MAX = 1000
+
 
 class ConfigError(Exception):
     """配置文件缺失 / 字段非法时抛出，由 main 统一转成友好提示。"""
@@ -70,6 +89,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "test_mode": TEST_MODE_AUTO,
         "check_times": ["08:30", "20:30"],
         "catch_up_minutes": CATCH_UP_MINUTES_DEFAULT,
+        "genshin_resin_threshold": RESOURCE_THRESHOLD_DEFAULT["genshin"],
+        "starrail_stamina_threshold": RESOURCE_THRESHOLD_DEFAULT["starrail"],
+        "zzz_energy_threshold": RESOURCE_THRESHOLD_DEFAULT["zzz"],
     },
     "accounts": [
         {
@@ -560,6 +582,10 @@ class AppConfig:
     check_times: List[str] = field(default_factory=lambda: ["08:30", "20:30"])
     # 睡过头 / 关机错过时间点后，醒来立刻补跑一次；0 = 关闭补发
     catch_up_minutes: int = CATCH_UP_MINUTES_DEFAULT
+    # 体力溢出预警：当前值 >= 阈值则强制推送（0 = 关闭）。只看已有查询结果，不额外请求。
+    genshin_resin_threshold: int = RESOURCE_THRESHOLD_DEFAULT["genshin"]
+    starrail_stamina_threshold: int = RESOURCE_THRESHOLD_DEFAULT["starrail"]
+    zzz_energy_threshold: int = RESOURCE_THRESHOLD_DEFAULT["zzz"]
     accounts: List[AccountConfig] = field(default_factory=list)
     push: PushConfig = field(default_factory=PushConfig)
     query: QueryConfig = field(default_factory=QueryConfig)
@@ -574,12 +600,24 @@ class AppConfig:
     def test_mode_label(self) -> str:
         return TEST_MODE_LABELS.get(self.test_mode, self.test_mode)
 
+    @property
+    def resource_thresholds(self) -> Dict[str, int]:
+        """{game_id: 阈值}，交给 analyzer 判定体力溢出。"""
+        return {
+            "genshin": self.genshin_resin_threshold,
+            "starrail": self.starrail_stamina_threshold,
+            "zzz": self.zzz_energy_threshold,
+        }
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "app": {
                 "test_mode": self.test_mode,
                 "check_times": list(self.check_times),
                 "catch_up_minutes": int(self.catch_up_minutes),
+                "genshin_resin_threshold": int(self.genshin_resin_threshold),
+                "starrail_stamina_threshold": int(self.starrail_stamina_threshold),
+                "zzz_energy_threshold": int(self.zzz_energy_threshold),
             },
             "accounts": [account.to_dict() for account in self.accounts],
             "push": self.push.to_dict(),
@@ -621,6 +659,20 @@ def _parse_catch_up_minutes(raw: Any) -> int:
     return min(value, CATCH_UP_MINUTES_MAX)
 
 
+def _parse_threshold(raw: Any, label: str, game: str) -> int:
+    """解析体力溢出阈值：留空 -> 该游戏的默认值；0 或负数 -> 关闭；非法 -> 报错。"""
+    default = RESOURCE_THRESHOLD_DEFAULT.get(game, 0)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ConfigError(f"app.{label} = {raw!r} 非法，请填 0（关闭）或正整数")
+    if value < 0:
+        return 0
+    return min(value, RESOURCE_THRESHOLD_MAX)
+
+
 def parse_config(data: Dict[str, Any], source: Optional[Path] = None) -> AppConfig:
     """把已解析的 dict 校验并转换成 AppConfig。缺省字段用默认值补齐。"""
     if not isinstance(data, dict):
@@ -652,6 +704,12 @@ def parse_config(data: Dict[str, Any], source: Optional[Path] = None) -> AppConf
         test_mode=test_mode,
         check_times=_parse_check_times(app_section.get("check_times")),
         catch_up_minutes=_parse_catch_up_minutes(app_section.get("catch_up_minutes")),
+        genshin_resin_threshold=_parse_threshold(
+            app_section.get("genshin_resin_threshold"), "genshin_resin_threshold", "genshin"),
+        starrail_stamina_threshold=_parse_threshold(
+            app_section.get("starrail_stamina_threshold"), "starrail_stamina_threshold", "starrail"),
+        zzz_energy_threshold=_parse_threshold(
+            app_section.get("zzz_energy_threshold"), "zzz_energy_threshold", "zzz"),
         accounts=accounts,
         push=PushConfig.from_dict(merged.get("push")),
         query=QueryConfig.from_dict(merged.get("query")),
