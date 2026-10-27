@@ -58,6 +58,31 @@ STATIC_TYPES: Dict[str, str] = {
     ".ico": "image/x-icon",
 }
 
+#: 页面里引用图标的游戏（顺序即 fallback 顺序）
+ICON_GAMES = ("genshin", "starrail", "zzz", "arknights")
+#: 图标目录（/static/icons/... 对应的真实路径）
+ICON_DIR = STATIC_DIR / "icons"
+
+
+def _icon_stamp() -> str:
+    """图标缓存戳：取四张图最新的 mtime。
+
+    换一张图，时间戳就变，页面里的 URL 变成 `...png?v=1793xxxx`，
+    浏览器/WebView2 当成新资源重新下载 —— 这是治「换了图还显示旧图」的唯一可靠办法。
+    """
+    stamp = 0
+    for game_id in ICON_GAMES:
+        try:
+            stamp = max(stamp, int((ICON_DIR / f"{game_id}.png").stat().st_mtime))
+        except OSError:
+            continue
+    return str(stamp)
+
+
+def _render_page() -> str:
+    """把模板里的 __ICON_STAMP__ 换成当前缓存戳。每次请求都算，不缓存。"""
+    return HTML_PAGE.replace("__ICON_STAMP__", _icon_stamp())
+
 logger = logging.getLogger("dailycheck.loginui")
 
 #: 米游社三款游戏：id -> 显示名
@@ -1675,7 +1700,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button type="button" data-tab="notify">通知绑定</button>
         <button type="button" data-tab="schedule">定时与状态</button>
       </nav>
-      <div class="side-foot">v1.1.6 · 本地运行</div>
+      <div class="side-foot">v1.1.7 · 本地运行</div>
     </aside>
 
     <main class="main">
@@ -3000,24 +3025,26 @@ function renderActHint(d){
   if (restore) restore.addEventListener('click', restoreActivities);
 }
 
-/* 游戏头像：按 game_id 硬绑定。接口给的 reward icon 太杂（原石、材料、纯文字），
-   这里统一换成官方代表人物头像，看起来才像一套 App 图标。 */
+/* 游戏头像：按 game_id 硬绑定官方图标。接口给的 reward icon 太杂（原石、材料、纯文字）。
+   ICON_STAMP 由后端按图片 mtime 注入，换图后 URL 必变，不会被 WebView2 缓存坑。 */
+const ICON_STAMP = '__ICON_STAMP__';
 const GAME_ICON = {
-  genshin: '/static/icons/genshin.png',
-  starrail: '/static/icons/starrail.png',
-  zzz: '/static/icons/zzz.png',
-  arknights: '/static/icons/arknights.png'
+  genshin: '/static/icons/genshin',
+  starrail: '/static/icons/starrail',
+  zzz: '/static/icons/zzz',
+  arknights: '/static/icons/arknights'
 };
 
 function actIconHtml(it){
-  const src = GAME_ICON[it.game];
-  if (!src) {
+  const base = GAME_ICON[it.game];
+  if (!base) {
     return '<span class="act-icon ph">' +
       escHtml(String(it.game_name || '?').slice(0, 1)) + '</span>';
   }
+  const v = ICON_STAMP.indexOf('__') === 0 ? '' : '?v=' + ICON_STAMP;
   return '<img class="act-icon" width="36" height="36" alt="' +
-    escHtml(it.game_name || '') + '" src="' + src +
-    '" srcset="' + src.replace(/\.png$/, '@2x.png') + ' 2x">';
+    escHtml(it.game_name || '') + '" src="' + base + '.png' + v +
+    '" srcset="' + base + '@2x.png' + v + ' 2x">';
 }
 
 function actRowHtml(it){
@@ -3330,7 +3357,8 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             self._send(404, b"not found", "text/plain; charset=utf-8")
             return
-        self._send(200, body, ctype, cache="public, max-age=86400")
+        # 不缓存：图标是本地文件，重下一遍的成本远低于「换了图还看旧图」的排查成本
+        self._send(200, body, ctype, cache="no-store")
 
     def _json(self, payload: Dict[str, Any], code: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -3341,7 +3369,7 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
 
         if parsed.path in ("/", "/index.html"):
-            self._send(200, HTML_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            self._send(200, _render_page().encode("utf-8"), "text/html; charset=utf-8")
             return
 
         if parsed.path == "/api/start":
