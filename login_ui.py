@@ -2298,7 +2298,22 @@ function markOf(cell){
   return cell.finished ? '✅' : '❌';
 }
 
+function renderHistoryEmpty(message, detail){
+  // 空状态：统计卡片清空，表格位置放一句人话（绝不弹红色错误条）
+  const statsBox = document.getElementById('h-stats');
+  if (statsBox) statsBox.innerHTML = '';
+  const monthBadge = document.getElementById('h-month');
+  if (monthBadge) monthBadge.textContent = '-';
+  const tableBox = document.getElementById('h-table');
+  if (!tableBox) return;
+  tableBox.innerHTML =
+    '<div class="emptybox">' + message +
+    (detail ? '<br><span style="font-size:12px;color:#9aa3af">' + detail + '</span>' : '') +
+    '</div>';
+}
+
 function renderHistory(d){
+  d = d || {};
   const monthBadge = document.getElementById('h-month');
   if (monthBadge) monthBadge.textContent = (d.month || '-') + ' 本月';
 
@@ -2327,10 +2342,18 @@ function renderHistory(d){
   const tableBox = document.getElementById('h-table');
   if (!tableBox) return;
   const tracked = d.tracked || [];
+
+  // 完全没有历史（data/history.json 还没生成 / 被清空）：给友好空状态，
+  // 而不是画一张全是「–」的表格让人以为坏了
+  if (!d.has_data) {
+    renderHistoryEmpty('暂无历史记录，请等待下一次定时检查写入。',
+                       '定时检查跑完一轮后会写入 data/history.json（也可以去「定时与状态」手动触发）。');
+    return;
+  }
+
   if (!tracked.length) {
-    tableBox.innerHTML =
-      '<div class="emptybox">没有启用任何游戏账号（config.json 里 accounts 的 enabled 都为 false？）。<br>' +
-      '需要参与检查就把对应账号的 enabled 改回 true。</div>';
+    renderHistoryEmpty('没有启用任何游戏账号。',
+                       'config.json 里 accounts 的 enabled 都为 false —— 需要参与检查就改回 true。');
     return;
   }
 
@@ -2355,9 +2378,29 @@ function renderHistory(d){
 }
 
 function loadHistory(){
-  fetch('/api/history?days=7').then(function(r){ return r.json(); })
-    .then(renderHistory)
-    .catch(function(){ toast('无法读取历史记录', true); });
+  // 分三层处理，别把"渲染出错"和"请求失败"混成同一句红字：
+  //   1) 请求/解析失败  -> 页面内空状态（不弹红色 toast）
+  //   2) 渲染抛异常     -> 页面内提示 + console 里留堆栈，同样是空状态而不是红条
+  //   3) 正常数据       -> 交给 renderHistory
+  fetch('/api/history?days=7')
+    .then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(d){
+      try {
+        renderHistory(d);
+      } catch (e) {
+        console.error('渲染历史报表失败', e);
+        renderHistoryEmpty('报表渲染出错，请点「刷新」重试。',
+                           '详细信息见浏览器控制台（F12）或 logs/dailycheck.log');
+      }
+    })
+    .catch(function(err){
+      console.error('读取历史记录失败', err);
+      renderHistoryEmpty('暂无历史记录，请等待下一次定时检查写入。',
+                         err && err.message ? '（' + err.message + '）' : '');
+    });
 }
 
 document.getElementById('btn-history-refresh').addEventListener('click', loadHistory);
@@ -2472,10 +2515,16 @@ class Handler(BaseHTTPRequestHandler):
             # 列 = 当前启用账号 ∪ 历史里出现过的游戏：刚启用、还没跑过一轮的
             # 游戏也会立刻出现在报表里（显示为 –），不会被当成"从未存在"。
             enabled_games = _enabled_game_ids()
+
+            # 任何异常都必须变成"200 + 空报表"，绝不能 500：
+            # 前端 fetch 拿到 500 时 r.json() 会失败，弹的是一句让人摸不着头脑的
+            # "无法读取历史记录"红字，而真实原因只是 data/history.json 还没生成。
             try:
                 payload = history.summary(days=days, enabled_games=enabled_games)
-            except TypeError:  # 兼容旧签名（理论上不会发生）
-                payload = history.summary(days=days)
+            except Exception:  # noqa: BLE001
+                logger.exception("读取历史记录失败，返回空报表")
+                payload = history.empty_payload(days=days)
+                payload["message"] = "读取历史记录失败，已显示空报表（详见 logs/dailycheck.log）"
             self._json(payload)
             return
 

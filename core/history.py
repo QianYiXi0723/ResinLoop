@@ -57,13 +57,32 @@ def _empty() -> Dict[str, Any]:
 
 
 def load() -> Dict[str, Any]:
-    """读存档；文件不存在 / 损坏都返回空结构（不让统计功能拖垮主流程）。"""
+    """读存档；**任何**异常都返回空结构，绝不向上抛。
+
+    这个函数被 /api/history（网页报表）和 record()（每轮检查）调用，
+    一旦抛异常：前者会让报表页弹「无法读取历史记录」，后者会拖垮整轮检查。
+    所以这里的策略是"宁可显示空报表，也不能挂"：
+
+        文件不存在        -> 空结构（首次运行，正常情况）
+        没有读权限 / 被占用 -> 空结构 + WARNING
+        不是 UTF-8 字节    -> 空结构 + WARNING（UnicodeDecodeError 不是 OSError！）
+        JSON 语法坏       -> 空结构 + WARNING
+        顶层结构不对       -> 空结构
+        单天/单游戏节点坏   -> 丢掉坏节点，其余照常展示（尽量救回可用数据）
+    """
     try:
         raw = HISTORY_PATH.read_text(encoding="utf-8")
     except FileNotFoundError:
         return _empty()
     except OSError as exc:
-        logger.warning("读取历史记录失败：%s", exc)
+        logger.warning("读取历史记录失败（%s），本次按空处理", exc)
+        return _empty()
+    except UnicodeDecodeError as exc:
+        # 文件被别的编辑器存成了 GBK / 二进制：解码就炸，读都读不到
+        logger.warning("历史记录不是 UTF-8 编码（%s），本次按空处理", exc)
+        return _empty()
+    except Exception as exc:  # noqa: BLE001 - 兜底，绝不把报表页搞挂
+        logger.warning("读取历史记录时出现未预期错误（%s），本次按空处理", exc)
         return _empty()
 
     try:
@@ -71,10 +90,67 @@ def load() -> Dict[str, Any]:
     except json.JSONDecodeError as exc:
         logger.warning("历史记录 JSON 损坏（%s），本次按空处理", exc)
         return _empty()
-
-    if not isinstance(data, dict) or not isinstance(data.get("days"), dict):
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("解析历史记录时出现未预期错误（%s），本次按空处理", exc)
         return _empty()
+
+    if not isinstance(data, dict):
+        logger.warning("历史记录顶层不是对象（%s），本次按空处理", type(data).__name__)
+        return _empty()
+
+    days = data.get("days")
+    if not isinstance(days, dict):
+        logger.warning("历史记录的 days 字段不是对象，本次按空处理")
+        return _empty()
+
+    # 清洗：某一天的值必须是 dict，某游戏节点也必须是 dict，
+    # 否则后面 .items() / .get() 会 AttributeError —— 那才是 500 的根源。
+    cleaned: Dict[str, Any] = {}
+    for date_key, day in days.items():
+        if not isinstance(date_key, str) or not isinstance(day, dict):
+            continue
+        cleaned[date_key] = {
+            game: node for game, node in day.items() if isinstance(node, dict)
+        }
+    data["days"] = cleaned
     return data
+
+
+def empty_payload(days: int = DEFAULT_DAYS, *, today: Optional[datetime] = None) -> Dict[str, Any]:
+    """与 :func:`summary` 返回结构完全一致的空报表。
+
+    /api/history 在异常兜底时用它 —— 前端不需要为"出错"写第二套渲染逻辑，
+    照常渲染就是一张全 `–` 的空表。
+    """
+    days = max(1, min(int(days or DEFAULT_DAYS), 60))
+    now = today or datetime.now()
+    today_key = now.strftime("%Y-%m-%d")
+    month = now.strftime("%Y-%m")
+
+    recent: List[Dict[str, Any]] = []
+    for offset in range(days - 1, -1, -1):
+        cursor = now - timedelta(days=offset)
+        key = cursor.strftime("%Y-%m-%d")
+        recent.append({
+            "date": key,
+            "label": f"{int(key[5:7])}/{int(key[8:10])}",
+            "weekday": _WEEKDAYS[cursor.weekday()],
+            "is_today": key == today_key,
+            "games": {},
+            "all_done": False,
+        })
+    return {
+        "ok": True,
+        "path": str(HISTORY_PATH),
+        "has_data": False,
+        "today": today_key,
+        "month": month,
+        "days_count": days,
+        "days": recent,
+        "games": [],
+        "tracked": [],
+        "empty_reason": "还没有任何历史记录",
+    }
 
 
 def _atomic_write(data: Dict[str, Any]) -> None:
@@ -189,10 +265,14 @@ def _game_meta(
             item["nickname"] = nickname
 
     for game in extra or []:
-        put(game)
+        if isinstance(game, str) and game:
+            put(game)
 
     for date_key in sorted(days.keys()):
-        for game, node in (days[date_key] or {}).items():
+        day = days[date_key]
+        if not isinstance(day, dict):   # 脏数据：跳过这一天，别让 .items() 炸掉
+            continue
+        for game, node in day.items():
             if not isinstance(node, dict):
                 continue
             put(game, str(node.get("game_name") or ""), str(node.get("nickname") or ""))
@@ -264,14 +344,32 @@ def summary(
     Args:
         enabled_games: 当前配置里启用的游戏 id 列表。报表会**一定给它们留一列**，
             哪怕今天还没跑到（显示 –）；不传就退化成"写过什么显示什么"。
+
+    任何内部异常都在最后兜底成 ``empty_payload()`` —— 报表页永远有东西可渲染，
+    不会因为一份坏存档变成 HTTP 500（前端那种"红字弹窗"正是 500 引起的）。
     """
     days = max(1, min(int(days or DEFAULT_DAYS), 60))
     now = today or datetime.now()
+    try:
+        return _summary_unsafe(days, now, enabled_games)
+    except Exception as exc:  # noqa: BLE001 - 统计永远不该让页面挂掉
+        logger.exception("生成历史报表失败，返回空报表：%s", exc)
+        return empty_payload(days, today=now)
+
+
+def _summary_unsafe(
+    days: int,
+    now: datetime,
+    enabled_games: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """真正干活的实现；由 :func:`summary` 包一层异常兜底后再调用。"""
     today_key = now.strftime("%Y-%m-%d")
     month = now.strftime("%Y-%m")
 
     data = load()
     store = data.get("days") or {}
+    if not isinstance(store, dict):
+        store = {}
     meta = _game_meta(store, enabled_games)
     games = _ordered_games(meta)
 
@@ -280,7 +378,9 @@ def summary(
     for offset in range(days - 1, -1, -1):
         cursor = now - timedelta(days=offset)
         key = cursor.strftime("%Y-%m-%d")
-        day = store.get(key) or {}
+        day = store.get(key)
+        if not isinstance(day, dict):   # 脏数据：这一天不是对象，当空处理
+            day = {}
         cells: Dict[str, Any] = {}
         known_any = False
         all_done = True
