@@ -1590,7 +1590,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .act-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
     padding:11px 0;border-bottom:1px dashed var(--line)}
   .act-row:last-child{border-bottom:none}
-  .act-main{min-width:0}
+  .act-main{min-width:0;flex:1 1 auto}
   .act-title{font-size:13.5px;line-height:1.45;overflow:hidden;
     display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
   .act-sub{font-size:11.5px;color:var(--muted);margin-top:2px}
@@ -1599,6 +1599,23 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .act-unsupported .au-title{font-size:12px;color:var(--muted);margin-bottom:6px}
   .au-chip{display:inline-block;font-size:11.5px;color:var(--muted);background:var(--bg);
     border:1px solid var(--line);border-radius:999px;padding:2px 9px;margin:0 6px 6px 0}
+  /* 活动行右侧：剩余时间 + 单条提醒开关 */
+  .act-side{display:flex;align-items:center;gap:10px;flex:none}
+  .act-mute{display:none;font-size:11px;color:var(--muted);border:1px solid var(--line);
+    border-radius:999px;padding:0 6px;margin-left:6px;white-space:nowrap}
+  .act-row.off .act-mute{display:inline-block}
+  .act-row.off .act-title{color:var(--muted);font-weight:400}
+  .act-row.off .badge{color:var(--muted);border-color:var(--line)}
+  .sw-wrap{display:inline-flex;align-items:center;gap:6px;flex:none;cursor:pointer}
+  .sw-wrap > span{font-size:11.5px;color:var(--muted);white-space:nowrap}
+  .toggle.sm{width:34px;height:19px}
+  .toggle.sm i::after{top:2.5px;left:2.5px;width:14px;height:14px}
+  .toggle.sm input:checked + i::after{transform:translateX(15px)}
+  @media (max-width:560px){
+    .act-row{flex-wrap:wrap;align-items:flex-start}
+    .act-main{flex:1 1 100%}
+    .act-side{width:100%;justify-content:flex-end}
+  }
   .resin-row input[type=number]{
     width:100%;margin-top:4px;padding:8px 10px;border-radius:9px;
     border:1px solid var(--line);background:var(--bg);color:var(--fg);
@@ -1627,7 +1644,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button type="button" data-tab="notify">通知绑定</button>
         <button type="button" data-tab="schedule">定时与状态</button>
       </nav>
-      <div class="side-foot">v1.1.2 · 本地运行</div>
+      <div class="side-foot">v1.1.3 · 本地运行</div>
     </aside>
 
     <main class="main">
@@ -1969,7 +1986,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </div>
       <p class="desc">
         来自官方公告接口的<b>真实起止时间</b>，每天最多拉一次（缓存
-        <code>data/activities.json</code>）。剩余 ≤72 小时会在推送末尾提醒。
+        <code>data/activities.json</code>）。剩余 ≤72 小时会在推送末尾提醒；
+        祈愿、刷素材类公告<b>默认静音</b>（只展示、不推送），右侧「提醒」开关可逐条改。
       </p>
       <div id="act-list"><div class="emptybox">读取中…</div></div>
       <p class="hint" id="act-hint"></p>
@@ -2772,6 +2790,13 @@ document.getElementById('btn-live-refresh')
   .addEventListener('click', function(){ loadLive(true); });
 document.getElementById('btn-act-refresh')
   .addEventListener('click', refreshActivities);
+/* 活动行是动态渲染的，单条开关用事件委托挂在容器上（重建列表也不用重新绑定） */
+document.getElementById('act-list').addEventListener('change', function(e){
+  const input = e.target;
+  if (input && input.matches && input.matches('input[data-act-id]')) {
+    toggleActAlert(input);
+  }
+});
 
 /* 折叠面板标题栏里的开关 / 小按钮：只做自己的事，不连带展开或收起面板。
    stopPropagation 拦住冒泡，summary 就不会收到这次点击（默认的展开动作也就不会发生）。 */
@@ -2916,9 +2941,51 @@ function loadLive(force){
     });
 }
 
+function renderActHint(d){
+  // 缓存状态 + 72 小时内的提醒数量，一行说清
+  const hint = document.getElementById('act-hint');
+  if (!hint) return;
+  d = d || {};
+  const parts = [];
+  if (d.last_error) {
+    parts.push('上次拉取失败（沿用旧数据）：' + d.last_error);
+  } else if (d.fetched_at) {
+    parts.push('数据更新于 ' + d.fetched_at + ' · 每 20 小时最多拉一次，也可以手动刷新');
+  }
+  if (typeof d.soon_count === 'number' && d.soon_count > 0) {
+    parts.push('72 小时内结束 ' + d.soon_count + ' 个，其中会提醒 ' +
+      (d.alerting_count || 0) + ' 个');
+  }
+  hint.textContent = parts.join(' · ');
+}
+
+function actRowHtml(it){
+  const on = it.alert_enabled !== false;
+  const soon = !!it.ending_soon;
+  // 静音的活动不再高亮「还剩 N 天」—— 它本来就不会推送，别制造紧迫感
+  const cls = 'act-row' + (soon && on ? ' soon' : '') + (on ? '' : ' off');
+  const badge = soon
+    ? '<span class="badge' + (on ? ' warn' : '') + '">还剩 ' + it.days_left + ' 天</span>'
+    : '<span class="badge">' + it.days_left + ' 天</span>';
+  const tip = it.muted_by
+    ? '默认静音：标题命中关键词「' + it.muted_by + '」，打开后仍会参与 72 小时提醒'
+    : '结束前 72 小时在推送末尾提醒';
+  const id = escHtml(it.id || '');
+  return '<div class="' + cls + '" data-soon="' + (soon ? '1' : '0') + '">' +
+    '<div class="act-main"><div class="act-title">' + escHtml(it.title) + '</div>' +
+    '<div class="act-sub">' + escHtml(it.game_name) + ' · ' +
+      escHtml(String(it.end || '').slice(0, 16)) + ' 结束' +
+      '<span class="act-mute">已静音</span></div></div>' +
+    '<div class="act-side">' + badge +
+      '<label class="sw-wrap" title="' + escHtml(tip) + '"><span>提醒</span>' +
+        '<span class="toggle sm"><input type="checkbox" data-act-id="' + id + '"' +
+          (on ? ' checked' : '') + '><i></i></span>' +
+      '</label>' +
+    '</div></div>';
+}
+
 function renderActivities(d){
   const list = document.getElementById('act-list');
-  const hint = document.getElementById('act-hint');
   const uns = document.getElementById('act-unsupported');
   if (!list) return;
   d = d || {};
@@ -2929,33 +2996,14 @@ function renderActivities(d){
       '</div>';
   } else {
     const shown = items.slice(0, 12);
-    let html = shown.map(function(it){
-      const soon = !!it.ending_soon;
-      const badge = soon
-        ? '<span class="badge warn">还剩 ' + it.days_left + ' 天</span>'
-        : '<span class="badge">' + it.days_left + ' 天</span>';
-      return '<div class="act-row' + (soon ? ' soon' : '') + '">' +
-        '<div class="act-main"><div class="act-title">' + escHtml(it.title) + '</div>' +
-        '<div class="act-sub">' + escHtml(it.game_name) + ' · ' +
-          escHtml(String(it.end || '').slice(0, 16)) + ' 结束</div></div>' +
-        badge + '</div>';
-    }).join('');
+    let html = shown.map(actRowHtml).join('');
     if (items.length > shown.length) {
       html += '<p class="hint">仅显示最近结束的 ' + shown.length +
         ' 个，共 ' + items.length + ' 个进行中。</p>';
     }
     list.innerHTML = html;
   }
-  if (hint) {
-    if (d.last_error) {
-      hint.textContent = '上次拉取失败（沿用旧数据）：' + d.last_error;
-    } else if (d.fetched_at) {
-      hint.textContent = '数据更新于 ' + d.fetched_at +
-        ' · 每 20 小时最多拉一次，也可以手动刷新';
-    } else {
-      hint.textContent = '';
-    }
-  }
+  renderActHint(d);
   if (uns) {
     const list2 = d.unsupported || [];
     uns.innerHTML = list2.length
@@ -2965,6 +3013,37 @@ function renderActivities(d){
             escHtml(u.game_name) + '</span>';
         }).join('')
       : '';
+  }
+}
+
+/* 单条活动的「提醒」开关：先乐观翻转，失败了再翻回来，绝不假装保存成功 */
+async function toggleActAlert(input){
+  const id = input.getAttribute('data-act-id');
+  const want = input.checked;
+  const row = input.closest('.act-row');
+  input.disabled = true;
+  try {
+    const d = await postJSON('/api/activities/toggle', { id: id, enabled: want });
+    if (!d || d.ok === false) {
+      input.checked = !want;
+      toast((d && d.message) || '保存失败', true);
+      return;
+    }
+    if (row) {
+      const soon = row.getAttribute('data-soon') === '1';
+      row.className = 'act-row' + (soon && want ? ' soon' : '') + (want ? '' : ' off');
+      const badge = row.querySelector('.badge');
+      if (badge) badge.className = 'badge' + (soon && want ? ' warn' : '');
+      const tip = row.querySelector('.sw-wrap');
+      if (tip && !want) tip.setAttribute('title', '已静音，不参与推送');
+    }
+    renderActHint(d);
+    toast(want ? '已开启这条活动的提醒' : '已静音，不再单独提醒');
+  } catch (e) {
+    input.checked = !want;
+    toast('保存失败：' + e, true);
+  } finally {
+    input.disabled = false;
   }
 }
 
@@ -3407,6 +3486,34 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(save_activity_alert(payload.get("enabled")))
                 except ValueError as exc:
                     self._json({"ok": False, "message": str(exc)}, 400)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("保存活动提醒开关失败")
+                    self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)
+            return
+
+        if path == "/api/activities/toggle":
+            from core import activities
+
+            payload = self._read_json_body()
+            if payload is not None:
+                try:
+                    enabled = payload.get("enabled")
+                    if not isinstance(enabled, bool):
+                        raise ValueError("enabled 必须是 true 或 false")
+                    self._json(
+                        activities.set_alert_enabled(str(payload.get("id") or ""), enabled)
+                    )
+                except ValueError as exc:
+                    self._json({"ok": False, "message": str(exc)}, 400)
+                except KeyError:
+                    self._json(
+                        {
+                            "ok": False,
+                            "message": "这个活动已经结束或已被新一批数据替换，"
+                                       "请点「刷新」后再试",
+                        },
+                        404,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("保存活动提醒开关失败")
                     self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)

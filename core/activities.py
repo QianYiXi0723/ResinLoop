@@ -8,6 +8,9 @@
   也不会真的发请求；界面另有「刷新」按钮可强制拉取。
 * **拿不到就明说**：星铁公告接口没有活动分组、绝区零公告接口异常、森空岛没有
   公开活动日历 —— 这些游戏在界面上标注「暂不支持」，绝不编造活动数据。
+* **单条可静音**：卡池祈愿、刷素材这类常驻公告默认不提醒（``MUTED_KEYWORDS``），
+  但照样展示、照样可以手动打开；开关状态存在 ``items[].alert_enabled``，
+  刷新时按活动 ID 继承，不会把用户的选择冲掉。
 * **绝不拖垮主流程**：网络失败只记日志，沿用旧缓存；任何异常都不外抛。
 """
 
@@ -18,6 +21,7 @@ import logging
 import math
 import os
 import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -36,6 +40,11 @@ ALERT_WINDOW_HOURS = 72
 REQUEST_TIMEOUT = 8
 #: 缓存文件里保留多少天的「已提醒」记录
 NOTIFIED_KEEP_DAYS = 7
+
+#: 默认静音关键词：这些公告不是「限时活动」，而是卡池祈愿 / 常规掉落加成 /
+#: 周期性挑战。天天催只会让人对提醒脱敏，所以命中即默认关掉提醒 ——
+#: 但活动列表里照常展示，右侧开关随时可以单独打开。
+MUTED_KEYWORDS: Tuple[str, ...] = ("祈愿", "砺行修远", "祝圣移涌", "幽境危战")
 
 #: 已确认没有可用公开活动接口的游戏：界面上明确标注「暂不支持」。
 UNSUPPORTED: Tuple[Dict[str, str], ...] = (
@@ -79,6 +88,36 @@ GENSHIN_ANN_PARAMS: Dict[str, Any] = {
 # --------------------------------------------------------------------------- #
 
 
+def muted_keyword(title: Any) -> str:
+    """标题命中的默认静音关键词；没命中返回空串。"""
+    text = str(title or "")
+    for keyword in MUTED_KEYWORDS:
+        if keyword and keyword in text:
+            return keyword
+    return ""
+
+
+def default_alert_enabled(title: Any) -> bool:
+    """新活动的默认开关：命中静音关键词的关掉，其余全开。"""
+    return not muted_keyword(title)
+
+
+def activity_uid(game_id: Any, ann_id: Any = 0, title: Any = "") -> str:
+    """活动的稳定标识（前端开关、缓存继承都用它）。
+
+    优先用官方公告 id —— 同一场活动每天重新拉取都是同一个值；
+    没有 id 的游戏退回「游戏 + 标题」，标题不变就还是同一个活动。
+    """
+    game = str(game_id or "")
+    try:
+        aid = int(ann_id or 0)
+    except (TypeError, ValueError):
+        aid = 0
+    if aid:
+        return f"{game}:{aid}"
+    return f"{game}:t:{str(title or '')}"
+
+
 @dataclass
 class Activity:
     """一个正在进行中的活动。"""
@@ -89,6 +128,12 @@ class Activity:
     start: datetime
     end: datetime
     ann_id: int = 0
+    alert_enabled: bool = True
+    muted_by: str = ""
+
+    @property
+    def uid(self) -> str:
+        return activity_uid(self.game_id, self.ann_id, self.title)
 
     @property
     def hours_left(self) -> float:
@@ -102,6 +147,7 @@ class Activity:
     def to_dict(self) -> Dict[str, Any]:
         hours = self.hours_left
         return {
+            "id": self.uid,
             "game": self.game_id,
             "game_name": self.game_name,
             "title": self.title,
@@ -111,6 +157,10 @@ class Activity:
             "hours_left": round(hours, 1),
             "days_left": self.days_left,
             "ending_soon": 0 < hours <= ALERT_WINDOW_HOURS,
+            # False = 单条已静音（不参与 72 小时推送），但列表里照常显示
+            "alert_enabled": bool(self.alert_enabled),
+            # 命中的默认静音关键词，界面上用作「为什么默认关掉」的解释
+            "muted_by": self.muted_by,
         }
 
 
@@ -148,7 +198,7 @@ class ActivityAlert:
 
 
 def _empty_cache() -> Dict[str, Any]:
-    return {"version": 1, "fetched_at": "", "last_attempt": "", "items": [], "notified": {}}
+    return {"version": 2, "fetched_at": "", "last_attempt": "", "items": [], "notified": {}}
 
 
 def load_cache() -> Dict[str, Any]:
@@ -275,13 +325,50 @@ def fetch_genshin_activities() -> List[Dict[str, Any]]:
 FETCHERS = {"genshin": fetch_genshin_activities}
 
 
+def _migrate_items(cache: Dict[str, Any]) -> bool:
+    """给老缓存补齐 ``alert_enabled`` 字段（按关键词默认值），只补不覆盖。"""
+    changed = False
+    for item in cache.get("items") or []:
+        if isinstance(item, dict) and not isinstance(item.get("alert_enabled"), bool):
+            item["alert_enabled"] = default_alert_enabled(item.get("title"))
+            changed = True
+    if changed:
+        cache["version"] = 2
+    return changed
+
+
+def _carry_over_switch(cache: Dict[str, Any]) -> Dict[str, bool]:
+    """把旧缓存里用户手动改过的开关状态按活动 ID 抽出来。
+
+    刷新只替换活动清单，**不动用户的选择**：老朋友原样继承，
+    新活动才按关键词给默认值。
+    """
+    previous: Dict[str, bool] = {}
+    for old in cache.get("items") or []:
+        if not isinstance(old, dict):
+            continue
+        flag = old.get("alert_enabled")
+        if not isinstance(flag, bool):
+            continue
+        previous[activity_uid(old.get("game"), old.get("ann_id"), old.get("title"))] = flag
+    return previous
+
+
 def refresh(force: bool = False) -> Dict[str, Any]:
     """刷新缓存（默认 20 小时内不重复请求）。失败保留旧数据，只记 last_error。"""
     cache = load_cache()
+    # 老版本缓存没有 alert_enabled：先补齐再判断要不要真的去拉，
+    # 这样即便这轮不刷新，磁盘上的结构也已经是新格式。
+    if _migrate_items(cache):
+        try:
+            save_cache(cache)
+        except OSError as exc:
+            logger.warning("补写活动开关字段失败（不影响使用）：%s", exc)
     age = _cache_age_hours(cache.get("fetched_at", ""))
     if not force and age is not None and age < CACHE_TTL_HOURS:
         return summary()
 
+    previous = _carry_over_switch(cache)
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     collected: List[Dict[str, Any]] = []
     errors: List[str] = []
@@ -299,13 +386,24 @@ def refresh(force: bool = False) -> Dict[str, Any]:
         logger.warning("活动缓存未更新（沿用旧数据）：%s", cache["last_error"])
         return summary()
 
+    # 老活动继承用户选择；新活动按默认静音关键词决定初始开关
+    for item in collected:
+        key = activity_uid(item.get("game"), item.get("ann_id"), item.get("title"))
+        if key in previous:
+            item["alert_enabled"] = previous[key]
+        else:
+            item["alert_enabled"] = default_alert_enabled(item.get("title"))
+
     cache["items"] = collected
     cache["fetched_at"] = now_text
     cache["source"] = {"genshin": "miyoushe-announcement"}
     cache.pop("last_error", None)
     cache["notified"] = _prune_notified(cache.get("notified") or {})
     save_cache(cache)
-    logger.info("活动缓存已更新：%d 个进行中的活动", len(collected))
+    muted = sum(1 for item in collected if not item.get("alert_enabled"))
+    logger.info(
+        "活动缓存已更新：%d 个进行中的活动（其中 %d 个静音）", len(collected), muted
+    )
     return summary()
 
 
@@ -335,13 +433,21 @@ def ongoing() -> List[Activity]:
         end = _parse_time(item.get("end"))
         if not start or not end or end <= now or start > now:
             continue
+        title = str(item.get("title") or "")
+        matched = muted_keyword(title)
+        flag = item.get("alert_enabled")
+        if not isinstance(flag, bool):
+            # 老缓存（v1.1.2 及以前）没有这个字段：按关键词默认值兜底，不写盘
+            flag = not matched
         result.append(Activity(
             game_id=str(item.get("game") or ""),
             game_name=str(item.get("game_name") or ""),
-            title=str(item.get("title") or ""),
+            title=title,
             start=start,
             end=end,
             ann_id=int(item.get("ann_id") or 0),
+            alert_enabled=flag,
+            muted_by=matched,
         ))
     result.sort(key=lambda act: act.end)
     return result
@@ -352,13 +458,16 @@ def pending_alerts(
     *,
     today: Optional[datetime] = None,
 ) -> List[ActivityAlert]:
-    """剩余 <= hours 的活动，且今天还没提醒过。"""
+    """剩余 <= hours 的活动，且「单条开关开着」+「今天还没提醒过」。"""
     day_key = (today or datetime.now()).strftime("%Y-%m-%d")
     cache = load_cache()
     raw_notified = cache.get("notified", {}).get(day_key, [])
     notified = set(raw_notified) if isinstance(raw_notified, list) else set()
     alerts: List[ActivityAlert] = []
     for act in ongoing():
+        if not act.alert_enabled:
+            logger.debug("活动提醒已静音，跳过：%s", act.title)
+            continue
         left = act.hours_left
         if not (0 < left <= hours):
             continue
@@ -371,27 +480,68 @@ def pending_alerts(
     return alerts
 
 
+#: activities.json 同样是「读 → 改 → 写」：界面连点几条开关时排队写，
+#: 避免后一次拿旧副本把前一次的选择覆盖掉（与 config.json 的锁各管各的文件）。
+_ACTIVITY_WRITE_LOCK = threading.Lock()
+
+
+def set_alert_enabled(uid: str, enabled: bool) -> Dict[str, Any]:
+    """切换单个活动的提醒开关，原子写回缓存。
+
+    uid 不存在（活动已结束 / 已被新一批数据替换）时抛 ``KeyError``，
+    前端提示用户刷新即可；写盘失败抛 ``OSError``。
+    """
+    target_uid = str(uid or "").strip()
+    if not target_uid:
+        raise ValueError("缺少活动 ID")
+    with _ACTIVITY_WRITE_LOCK:
+        cache = load_cache()
+        items = cache.get("items")
+        if not isinstance(items, list):
+            items = []
+        target: Optional[Dict[str, Any]] = None
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if activity_uid(item.get("game"), item.get("ann_id"), item.get("title")) == target_uid:
+                target = item
+                break
+        if target is None:
+            raise KeyError(target_uid)
+        target["alert_enabled"] = bool(enabled)
+        cache["items"] = items
+        cache["version"] = 2
+        save_cache(cache)
+        logger.info(
+            "活动提醒开关：%s -> %s", target.get("title"), "开" if enabled else "关"
+        )
+    return summary()
+
+
 def mark_notified(alerts: Iterable[ActivityAlert], *, today: Optional[datetime] = None) -> None:
     """把今天已经推送过的活动记下来，避免同一天每轮检查都催一遍。"""
     day_key = (today or datetime.now()).strftime("%Y-%m-%d")
     ids = [alert.ann_id for alert in alerts if alert.ann_id]
     if not ids:
         return
-    cache = load_cache()
-    notified = cache.get("notified") or {}
-    if not isinstance(notified, dict):
-        notified = {}
-    raw_current = notified.get(day_key)
-    current = list(raw_current) if isinstance(raw_current, list) else []
-    for ann_id in ids:
-        if ann_id not in current:
-            current.append(ann_id)
-    notified[day_key] = current
-    cache["notified"] = _prune_notified(notified)
-    try:
-        save_cache(cache)
-    except OSError as exc:
-        logger.warning("记录活动提醒失败（下次可能重复提醒）：%s", exc)
+    # 和单条开关共用一把锁：两边都是「读 → 改 → 写」，
+    # 不排队的话后写的一方会拿旧副本把另一边刚改的字段覆盖掉。
+    with _ACTIVITY_WRITE_LOCK:
+        cache = load_cache()
+        notified = cache.get("notified") or {}
+        if not isinstance(notified, dict):
+            notified = {}
+        raw_current = notified.get(day_key)
+        current = list(raw_current) if isinstance(raw_current, list) else []
+        for ann_id in ids:
+            if ann_id not in current:
+                current.append(ann_id)
+        notified[day_key] = current
+        cache["notified"] = _prune_notified(notified)
+        try:
+            save_cache(cache)
+        except OSError as exc:
+            logger.warning("记录活动提醒失败（下次可能重复提醒）：%s", exc)
 
 
 def _prune_notified(notified: Dict[str, Any]) -> Dict[str, Any]:
@@ -410,6 +560,7 @@ def summary() -> Dict[str, Any]:
     fetched_at = str(cache.get("fetched_at") or "")
     age = _cache_age_hours(fetched_at)
     activities = [act.to_dict() for act in ongoing()]
+    soon = [item for item in activities if item.get("ending_soon")]
     return {
         "ok": True,
         "has_data": bool(fetched_at),
@@ -420,4 +571,8 @@ def summary() -> Dict[str, Any]:
         "window_hours": ALERT_WINDOW_HOURS,
         "items": activities,
         "unsupported": [dict(item) for item in UNSUPPORTED],
+        "muted_keywords": list(MUTED_KEYWORDS),
+        # 72 小时内的活动共几个、其中真正会提醒的几个（界面提示用）
+        "soon_count": len(soon),
+        "alerting_count": sum(1 for item in soon if item.get("alert_enabled")),
     }
