@@ -1198,6 +1198,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .switch{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);
           cursor:pointer;white-space:nowrap;user-select:none}
   .switch input{width:15px;height:15px;accent-color:var(--brand);cursor:pointer;margin:0}
+  /* 开机自启：一整行可点，右边挂状态徽标 */
+  .autostart-row{display:flex;align-items:center;gap:9px;margin-top:14px;
+    padding:10px 12px;border:1px solid var(--line);border-radius:10px;
+    background:var(--bg);font-size:14px;cursor:pointer;user-select:none}
+  .autostart-row input{width:16px;height:16px;accent-color:var(--brand);
+    cursor:pointer;margin:0;flex:none}
+  .autostart-row span{flex:1}
+  .autostart-row .badge{flex:none}
+  .autostart-row input:disabled{cursor:not-allowed}
+  .autostart-row:has(input:disabled){opacity:.55;cursor:not-allowed}
   .field{margin-top:4px}
   .field input,.field textarea{width:100%;padding:10px 12px;border-radius:9px;
                border:1px solid var(--line);background:var(--bg);color:var(--fg);
@@ -1465,6 +1475,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button id="btn-daemon-start">启动守护进程</button>
         <button id="btn-daemon-stop" class="alt">停止守护进程</button>
       </div>
+
+      <!-- 开机自启：写 HKCU\...\Run，登录时静默拉起 daemon.py（托盘） -->
+      <label class="autostart-row">
+        <input type="checkbox" id="autostart-toggle">
+        <span>开机自动启动控制台</span>
+        <b class="badge" id="autostart-state">读取中</b>
+      </label>
+      <p class="hint" id="autostart-hint">
+        开启后每次开机静默挂载在右下角托盘，不影响前台。
+      </p>
       <p class="hint">
         启动后关掉本网页也不影响提醒；要彻底停掉就点「停止守护进程」，
         或在右下角托盘图标上右键 → 退出程序。
@@ -1597,7 +1617,7 @@ function switchTab(name){
   });
 
   if (name === 'notify') loadPush();
-  if (name === 'schedule') { loadSchedule(); startSchedPoll(); loadThresholds(); } else { stopSchedPoll(); }
+  if (name === 'schedule') { loadSchedule(); startSchedPoll(); loadThresholds(); loadAutostart(); } else { stopSchedPoll(); }
   if (name === 'account') { loadDevice(); refreshNotice(); }
   if (name === 'history') loadHistory();
 }
@@ -2136,6 +2156,80 @@ function loadSchedule(){
     .catch(function(){});
 }
 
+/* ========================= 开机自启 ========================= */
+function renderAutostart(d){
+  const box = document.getElementById('autostart-toggle');
+  const badge = document.getElementById('autostart-state');
+  const hint = document.getElementById('autostart-hint');
+  const supported = !!(d && d.supported);
+
+  if (box) {
+    box.checked = !!(d && d.enabled);
+    box.disabled = !supported;
+  }
+  if (badge) {
+    if (!supported) {
+      badge.textContent = '不支持';
+      badge.className = 'badge err';
+    } else if (d.stale) {
+      badge.textContent = '路径已失效';
+      badge.className = 'badge err';
+    } else if (d.enabled) {
+      badge.textContent = '已开启';
+      badge.className = 'badge ok';
+    } else {
+      badge.textContent = '未开启';
+      badge.className = 'badge';
+    }
+  }
+  if (hint) {
+    if (!supported) {
+      hint.textContent = (d && d.message) || '仅支持 Windows';
+    } else if (d.stale) {
+      hint.innerHTML = '注册表里存的还是旧路径（搬过目录或换过 Python），' +
+                       '开机大概率起不来 —— 把开关关掉再打开一次即可刷新。';
+    } else {
+      hint.innerHTML = '开启后每次开机静默挂载在右下角托盘，不影响前台。' +
+                       '（写的是当前用户的注册表，不需要管理员权限）';
+    }
+  }
+}
+
+function loadAutostart(){
+  fetch('/api/autostart').then(function(r){ return r.json(); })
+    .then(renderAutostart)
+    .catch(function(){
+      const hint = document.getElementById('autostart-hint');
+      if (hint) hint.textContent = '读取自启状态失败，刷新页面重试';
+    });
+}
+
+async function toggleAutostart(){
+  const box = document.getElementById('autostart-toggle');
+  if (!box) return;
+  const want = box.checked;
+  box.disabled = true;
+  try {
+    const d = await postJSON('/api/autostart', { enable: want });
+    if (!d.ok) {
+      box.checked = !want;          // 失败就把开关拨回去，别让界面撒谎
+      toast(d.message || '设置失败', true);
+      renderAutostart(d);
+      return;
+    }
+    renderAutostart(d);
+    toast(d.message || (want ? '已开启开机自启' : '已关闭开机自启'));
+  } catch (e) {
+    box.checked = !want;
+    toast('设置失败：' + e, true);
+  } finally {
+    box.disabled = false;
+  }
+}
+
+document.getElementById('autostart-toggle')
+  .addEventListener('change', toggleAutostart);
+
 async function saveTimes(times){
   try {
     const d = await postJSON('/api/schedule', { times: times });
@@ -2398,6 +2492,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(thresholds_status())
             return
 
+        if parsed.path == "/api/autostart":
+            from core import autostart
+
+            self._json(autostart.status())
+            return
+
         self._send(404, b"not found", "text/plain; charset=utf-8")
 
     # ------------------------------ POST ------------------------------ #
@@ -2522,6 +2622,18 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("保存阈值失败")
                     self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)
+            return
+
+        if path == "/api/autostart":
+            payload = self._read_json_body()
+            if payload is not None:
+                try:
+                    from core import autostart
+
+                    self._json(autostart.apply(payload.get("enable")))
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("切换开机自启失败")
+                    self._json({"ok": False, "message": f"操作失败：{exc}"}, 500)
             return
 
         if path == "/api/apk/restart":
