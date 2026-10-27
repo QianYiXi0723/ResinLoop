@@ -18,7 +18,7 @@ from typing import List
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "release" / "resinloop"
 ZIP_DIR = ROOT / "dist"
-ZIP_NAME = "ResinLoop_v1.1.4"
+ZIP_NAME = "ResinLoop_v1.1.5"
 
 
 def collect_secrets() -> List[str]:

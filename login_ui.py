@@ -1599,18 +1599,26 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .act-unsupported .au-title{font-size:12px;color:var(--muted);margin-bottom:6px}
   .au-chip{display:inline-block;font-size:11.5px;color:var(--muted);background:var(--bg);
     border:1px solid var(--line);border-radius:999px;padding:2px 9px;margin:0 6px 6px 0}
-  /* 活动行右侧：剩余时间 + 单条提醒开关 */
-  .act-side{display:flex;align-items:center;gap:10px;flex:none}
-  .act-mute{display:none;font-size:11px;color:var(--muted);border:1px solid var(--line);
-    border-radius:999px;padding:0 6px;margin-left:6px;white-space:nowrap}
-  .act-row.off .act-mute{display:inline-block}
-  .act-row.off .act-title{color:var(--muted);font-weight:400}
-  .act-row.off .badge{color:var(--muted);border-color:var(--line)}
-  .sw-wrap{display:inline-flex;align-items:center;gap:6px;flex:none;cursor:pointer}
-  .sw-wrap > span{font-size:11.5px;color:var(--muted);white-space:nowrap}
-  .toggle.sm{width:34px;height:19px}
-  .toggle.sm i::after{top:2.5px;left:2.5px;width:14px;height:14px}
-  .toggle.sm input:checked + i::after{transform:translateX(15px)}
+  /* 活动行：左侧图标+名称，右侧进度/状态/删除 */
+  .act-side{display:flex;align-items:center;gap:8px;flex:none}
+  .act-icon{width:28px;height:28px;border-radius:8px;object-fit:cover;flex:none;
+    background:var(--bg);border:1px solid var(--line)}
+  .act-icon.ph{display:grid;place-items:center;font-size:12px;color:var(--muted)}
+  .act-progress{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;
+    white-space:nowrap}
+  .act-state{font-size:11px;padding:0 7px;border-radius:999px;border:1px solid var(--line);
+    color:var(--muted);white-space:nowrap}
+  .act-state.on{color:var(--brand);border-color:rgba(37,99,235,.35);background:rgba(37,99,235,.06)}
+  .act-state.done{color:var(--ok);border-color:var(--ok)}
+  .act-state.soon{color:var(--warn);border-color:var(--warn)}
+  .act-del{width:22px;height:22px;padding:0;flex:none;border-radius:6px;border:1px solid transparent;
+    background:transparent;color:var(--muted);font-size:16px;line-height:1;cursor:pointer;
+    opacity:.5;transition:opacity .15s,background .15s,color .15s}
+  .act-row:hover .act-del{opacity:1}
+  .act-del:hover{background:rgba(220,38,38,.10);color:var(--err);border-color:rgba(220,38,38,.25)}
+  .act-restore{font-size:12px;color:var(--brand);cursor:pointer;text-decoration:none;
+    margin-left:6px}
+  .act-restore:hover{text-decoration:underline}
   @media (max-width:560px){
     .act-row{flex-wrap:wrap;align-items:flex-start}
     .act-main{flex:1 1 100%}
@@ -1644,7 +1652,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button type="button" data-tab="notify">通知绑定</button>
         <button type="button" data-tab="schedule">定时与状态</button>
       </nav>
-      <div class="side-foot">v1.1.4 · 本地运行</div>
+      <div class="side-foot">v1.1.5 · 本地运行</div>
     </aside>
 
     <main class="main">
@@ -1985,9 +1993,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button type="button" class="mini" id="btn-act-refresh">刷新</button>
       </div>
       <p class="desc">
-        原神 / 星铁 / 绝区零取自官方公告接口，明日方舟取自鹰角官网活动页，
-        都给<b>真实起止时间</b>；每天最多拉一次（缓存 <code>data/activities.json</code>）。
-        剩余 ≤72 小时会在推送末尾提醒；祈愿、刷素材类公告<b>默认静音</b>，右侧「提醒」开关可逐条改。
+        与米游社「活动日历」同一份数据：原神 / 星铁 / 绝区零读账号的活动日历接口，
+        明日方舟取鹰角官网活动页，都带<b>真实起止时间</b>（缓存
+        <code>data/activities.json</code>，每 20 小时最多拉一次）。
+        剩余 ≤72 小时会在推送末尾提醒；<b>不想要的活动点右侧垃圾桶删掉</b>，之后永久不再提醒。
       </p>
       <div id="act-list"><div class="emptybox">读取中…</div></div>
       <p class="hint" id="act-hint"></p>
@@ -2790,12 +2799,10 @@ document.getElementById('btn-live-refresh')
   .addEventListener('click', function(){ loadLive(true); });
 document.getElementById('btn-act-refresh')
   .addEventListener('click', refreshActivities);
-/* 活动行是动态渲染的，单条开关用事件委托挂在容器上（重建列表也不用重新绑定） */
-document.getElementById('act-list').addEventListener('change', function(e){
-  const input = e.target;
-  if (input && input.matches && input.matches('input[data-act-id]')) {
-    toggleActAlert(input);
-  }
+/* 活动行是动态渲染的，删除按钮用事件委托挂在容器上（重建列表也不用重新绑定） */
+document.getElementById('act-list').addEventListener('click', function(e){
+  const btn = e.target && e.target.closest ? e.target.closest('.act-del') : null;
+  if (btn) { e.preventDefault(); deleteActivity(btn); }
 });
 
 /* 折叠面板标题栏里的开关 / 小按钮：只做自己的事，不连带展开或收起面板。
@@ -2942,7 +2949,7 @@ function loadLive(force){
 }
 
 function renderActHint(d){
-  // 缓存状态 + 72 小时内的提醒数量，一行说清
+  // 缓存状态 + 72 小时内会提醒几个 + 已删除几个（可一键恢复）
   const hint = document.getElementById('act-hint');
   if (!hint) return;
   d = d || {};
@@ -2953,34 +2960,38 @@ function renderActHint(d){
     parts.push('数据更新于 ' + d.fetched_at + ' · 每 20 小时最多拉一次，也可以手动刷新');
   }
   if (typeof d.soon_count === 'number' && d.soon_count > 0) {
-    parts.push('72 小时内结束 ' + d.soon_count + ' 个，其中会提醒 ' +
-      (d.alerting_count || 0) + ' 个');
+    parts.push('72 小时内结束 ' + d.soon_count + ' 个，会推送提醒');
   }
-  hint.textContent = parts.join(' · ');
+  if (d.ignored_count > 0) {
+    parts.push('已删除 ' + d.ignored_count + ' 个');
+  }
+  hint.innerHTML = escHtml(parts.join(' · ')) +
+    (d.ignored_count > 0 ? ' <a class="act-restore" id="act-restore">恢复全部</a>' : '');
+  const restore = document.getElementById('act-restore');
+  if (restore) restore.addEventListener('click', restoreActivities);
 }
 
 function actRowHtml(it){
-  const on = it.alert_enabled !== false;
-  const soon = !!it.ending_soon;
-  // 静音的活动不再高亮「还剩 N 天」—— 它本来就不会推送，别制造紧迫感
-  const cls = 'act-row' + (soon && on ? ' soon' : '') + (on ? '' : ' off');
-  const badge = soon
-    ? '<span class="badge' + (on ? ' warn' : '') + '">还剩 ' + it.days_left + ' 天</span>'
-    : '<span class="badge">' + it.days_left + ' 天</span>';
-  const tip = it.muted_by
-    ? '默认静音：标题命中关键词「' + it.muted_by + '」，打开后仍会参与 72 小时提醒'
-    : '结束前 72 小时在推送末尾提醒';
+  const notStarted = !!it.not_started;
+  const done = it.status === '已完成';
+  const soon = !!it.ending_soon && !notStarted;
+  const state = notStarted ? '未开启' : (done ? '已完成' : '进行中');
+  const stateCls = 'act-state' + (notStarted ? '' : (done ? ' done' : (soon ? ' soon' : ' on')));
+  const icon = it.icon
+    ? '<img class="act-icon" src="' + escHtml(it.icon) + '" alt="" loading="lazy">'
+    : '<span class="act-icon ph">' + escHtml(String(it.game_name || '?').slice(0, 1)) + '</span>';
+  const progress = it.progress
+    ? '<span class="act-progress">' + escHtml(it.progress) + '</span>' : '';
   const id = escHtml(it.id || '');
-  return '<div class="' + cls + '" data-soon="' + (soon ? '1' : '0') + '">' +
+  return '<div class="act-row' + (soon ? ' soon' : '') + '" data-id="' + id + '">' + icon +
     '<div class="act-main"><div class="act-title">' + escHtml(it.title) + '</div>' +
-    '<div class="act-sub">' + escHtml(it.game_name) + ' · ' +
-      escHtml(String(it.end || '').slice(0, 16)) + ' 结束' +
-      '<span class="act-mute">已静音</span></div></div>' +
-    '<div class="act-side">' + badge +
-      '<label class="sw-wrap" title="' + escHtml(tip) + '"><span>提醒</span>' +
-        '<span class="toggle sm"><input type="checkbox" data-act-id="' + id + '"' +
-          (on ? ' checked' : '') + '><i></i></span>' +
-      '</label>' +
+      '<div class="act-sub">' + escHtml(it.game_name) + ' · ⏱ ' +
+      escHtml(it.countdown || '') +
+      (it.kind === 'challenge' ? ' · 周期挑战' : '') + '</div></div>' +
+    '<div class="act-side">' + progress +
+      '<span class="' + stateCls + '">' + escHtml(state) + '</span>' +
+      '<button type="button" class="act-del" data-del="' + id +
+        '" title="删除，之后不再提醒">×</button>' +
     '</div></div>';
 }
 
@@ -2997,7 +3008,7 @@ function renderActivities(d){
   } else {
     // 四款游戏合起来二十多条，全都列出来：按结束时间截断会把后排的游戏整个藏掉
     let html = items.map(actRowHtml).join('');
-    html += '<p class="hint">共 ' + items.length + ' 个进行中的活动 / 公告。</p>';
+    html += '<p class="hint">共 ' + items.length + ' 个进行中的活动 / 挑战。</p>';
     list.innerHTML = html;
   }
   renderActHint(d);
@@ -3013,34 +3024,35 @@ function renderActivities(d){
   }
 }
 
-/* 单条活动的「提醒」开关：先乐观翻转，失败了再翻回来，绝不假装保存成功 */
-async function toggleActAlert(input){
-  const id = input.getAttribute('data-act-id');
-  const want = input.checked;
-  const row = input.closest('.act-row');
-  input.disabled = true;
+/* 删除：立刻从界面消失，并写进 data/ignored_activities.json，之后永不提醒 */
+async function deleteActivity(btn){
+  const id = btn.getAttribute('data-del');
+  const row = btn.closest('.act-row');
+  btn.disabled = true;
   try {
-    const d = await postJSON('/api/activities/toggle', { id: id, enabled: want });
+    const d = await postJSON('/api/activities/delete', { id: id });
     if (!d || d.ok === false) {
-      input.checked = !want;
-      toast((d && d.message) || '保存失败', true);
+      toast((d && d.message) || '删除失败', true);
+      btn.disabled = false;
       return;
     }
-    if (row) {
-      const soon = row.getAttribute('data-soon') === '1';
-      row.className = 'act-row' + (soon && want ? ' soon' : '') + (want ? '' : ' off');
-      const badge = row.querySelector('.badge');
-      if (badge) badge.className = 'badge' + (soon && want ? ' warn' : '');
-      const tip = row.querySelector('.sw-wrap');
-      if (tip && !want) tip.setAttribute('title', '已静音，不参与推送');
-    }
+    if (row) row.remove();
     renderActHint(d);
-    toast(want ? '已开启这条活动的提醒' : '已静音，不再单独提醒');
+    toast('已删除，之后不会再提醒');
   } catch (e) {
-    input.checked = !want;
-    toast('保存失败：' + e, true);
-  } finally {
-    input.disabled = false;
+    btn.disabled = false;
+    toast('删除失败：' + e, true);
+  }
+}
+
+async function restoreActivities(){
+  try {
+    const d = await postJSON('/api/activities/restore', {});
+    if (!d || d.ok === false) { toast('恢复失败', true); return; }
+    renderActivities(d);
+    toast('已恢复全部被删除的活动');
+  } catch (e) {
+    toast('恢复失败：' + e, true);
   }
 }
 
@@ -3488,32 +3500,30 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)
             return
 
-        if path == "/api/activities/toggle":
+        if path == "/api/activities/delete":
             from core import activities
 
             payload = self._read_json_body()
             if payload is not None:
                 try:
-                    enabled = payload.get("enabled")
-                    if not isinstance(enabled, bool):
-                        raise ValueError("enabled 必须是 true 或 false")
-                    self._json(
-                        activities.set_alert_enabled(str(payload.get("id") or ""), enabled)
-                    )
+                    self._json(activities.ignore_activity(str(payload.get("id") or "")))
                 except ValueError as exc:
                     self._json({"ok": False, "message": str(exc)}, 400)
-                except KeyError:
-                    self._json(
-                        {
-                            "ok": False,
-                            "message": "这个活动已经结束或已被新一批数据替换，"
-                                       "请点「刷新」后再试",
-                        },
-                        404,
-                    )
                 except Exception as exc:  # noqa: BLE001
-                    logger.exception("保存活动提醒开关失败")
-                    self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)
+                    logger.exception("删除活动失败")
+                    self._json({"ok": False, "message": f"删除失败：{exc}"}, 500)
+            return
+
+        if path == "/api/activities/restore":
+            from core import activities
+
+            payload = self._read_json_body()
+            if payload is not None:
+                try:
+                    self._json(activities.restore_ignored())
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("恢复活动失败")
+                    self._json({"ok": False, "message": f"恢复失败：{exc}"}, 500)
             return
 
         if path == "/api/activities/refresh":

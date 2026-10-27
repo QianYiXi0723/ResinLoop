@@ -1,17 +1,23 @@
-"""活动日历：拉取「即将结束」的游戏内活动，并缓存到 data/activities.json。
+"""活动日历：拉取各游戏官方的「活动日历」，缓存到 data/activities.json。
+
+数据来源（都是已登录账号的官方接口，不是公告）
+------------------------------------------------
+* **原神**：``POST api-takumi-record…/genshin/api/act_calendar``
+  → ``act_list``（活动）+ ``fixed_act_list``（渊月螺旋等固定挑战）
+* **星铁**：``GET api-takumi-record…/hkrpg/api/get_act_calender``
+  （官方拼错的 calender）→ ``act_list`` + ``challenge_list``
+* **绝区零**：``GET api-takumi-record…/zzz/activity_calendar``
+  （参数是 ``uid`` / ``region``，不是 role_id/server）→ ``activity_list``
+* **明日方舟**：鹰角官网 ``api/news`` 的 ``tab=1``，结束时间解析自活动正文
 
 设计要点
 --------
-* **只认官方公开接口**：原神用米哈游公告接口 ``getAnnList`` 的「活动公告」分组，
-  里面每条都带真实的 ``start_time`` / ``end_time``。
-* **每天最多拉一次**：缓存 20 小时有效，定时检查每轮调用 ``ensure_fresh()``
-  也不会真的发请求；界面另有「刷新」按钮可强制拉取。
-* **拿不到就明说**：星铁公告接口没有活动分组、绝区零公告接口异常、森空岛没有
-  公开活动日历 —— 这些游戏在界面上标注「暂不支持」，绝不编造活动数据。
-* **单条可静音**：卡池祈愿、刷素材这类常驻公告默认不提醒（``MUTED_KEYWORDS``），
-  但照样展示、照样可以手动打开；开关状态存在 ``items[].alert_enabled``，
-  刷新时按活动 ID 继承，不会把用户的选择冲掉。
-* **绝不拖垮主流程**：网络失败只记日志，沿用旧缓存；任何异常都不外抛。
+* **只认「日历」**：不再抓游戏公告。日历里每一条都有名字、起止时间、
+  进度和状态，和米游社 App 里「活动日历」看到的是同一份数据。
+* **每天最多拉一次**：缓存 20 小时有效；界面另有「刷新」可强制拉取。
+* **不想要的直接删**：删掉的活动记在 ``data/ignored_activities.json``，
+  拉取之后立刻过滤，**永远不会再进列表、也不会再触发推送**。
+* **绝不拖垮主流程**：单个游戏失败只丢那一款，网络异常一律不外抛。
 """
 
 from __future__ import annotations
@@ -33,6 +39,10 @@ logger = logging.getLogger("dailycheck.activities")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CACHE_PATH = BASE_DIR / "data" / "activities.json"
+IGNORED_PATH = BASE_DIR / "data" / "ignored_activities.json"
+
+#: 缓存结构版本。版本不一致时下一轮强制重拉（老缓存是公告，结构对不上）。
+CACHE_VERSION = 3
 
 #: 缓存有效期：20 小时（每天最多真正请求一次）
 CACHE_TTL_HOURS = 20
@@ -43,31 +53,46 @@ REQUEST_TIMEOUT = 8
 #: 缓存文件里保留多少天的「已提醒」记录
 NOTIFIED_KEEP_DAYS = 7
 
-#: 默认静音关键词：这些公告不是「限时活动」，而是卡池祈愿 / 常规掉落加成 /
-#: 周期性挑战。天天催只会让人对提醒脱敏，所以命中即默认关掉提醒 ——
-#: 但活动列表里照常展示，右侧开关随时可以单独打开。
-MUTED_KEYWORDS: Tuple[str, ...] = ("祈愿", "砺行修远", "祝圣移涌", "幽境危战")
-
-#: 已确认没有可用活动接口的游戏：界面上明确标注「暂不支持」。
+#: 拿不到结构化日历的游戏（其余四款都已接入）
 UNSUPPORTED: Tuple[Dict[str, str], ...] = (
     {
         "game": "endfield",
         "game_name": "终末地",
-        "reason": "官网公告只写「版本更新后至版本维护前」，没有可计算的截止日期",
+        "reason": "官方只有公告且不含截止日期，没有可用的活动日历接口",
     },
 )
 
-GENSHIN_ANN_URL = "https://hk4e-api.mihoyo.com/common/hk4e_cn/announcement/api/getAnnList"
-GENSHIN_ANN_PARAMS: Dict[str, Any] = {
-    "game": "hk4e",
-    "game_biz": "hk4e_cn",
-    "lang": "zh-cn",
-    "bundle_id": "hk4e_cn",
-    "platform": "pc",
-    "region": "cn_gf01",
-    "level": 60,
-    "uid": "100000000",
-}
+GENSHIN_CAL_URL = (
+    "https://api-takumi-record.mihoyo.com/game_record/app/genshin/api/act_calendar"
+)
+STARRAIL_CAL_URL = (
+    "https://api-takumi-record.mihoyo.com/game_record/app/hkrpg/api/get_act_calender"
+)
+ZZZ_CAL_URL = (
+    "https://api-takumi-record.mihoyo.com/event/game_record_zzz/api/zzz/activity_calendar"
+)
+
+AK_NEWS_URL = "https://ak.hypergryph.com/api/news"
+AK_NEWS_PAGE = "https://ak.hypergryph.com/news/%s"
+#: 最多翻几条活动详情（每条一次请求，只取最近的一批）
+AK_DETAIL_LIMIT = 6
+
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+
+#: 方舟正文里的活动时间，兼容：
+#:   10月24日20:00~11月24日03:59 / 11月01日 12:00 - 11月15日 03:59
+_DATE_WINDOW_RE = re.compile(
+    r"活动时间[：:]\s*"
+    r"(?:(\d{4})[年/])?(\d{1,2})[月/](\d{1,2})日?\s*(\d{1,2}:\d{2})?\s*"
+    r"[~～\-—至到]+"
+    r"\s*(?:(\d{4})[年/])?(\d{1,2})[月/](\d{1,2})日?\s*(\d{1,2}:\d{2})?"
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -75,52 +100,31 @@ GENSHIN_ANN_PARAMS: Dict[str, Any] = {
 # --------------------------------------------------------------------------- #
 
 
-def muted_keyword(title: Any) -> str:
-    """标题命中的默认静音关键词；没命中返回空串。"""
-    text = str(title or "")
-    for keyword in MUTED_KEYWORDS:
-        if keyword and keyword in text:
-            return keyword
-    return ""
-
-
-def default_alert_enabled(title: Any) -> bool:
-    """新活动的默认开关：命中静音关键词的关掉，其余全开。"""
-    return not muted_keyword(title)
-
-
-def activity_uid(game_id: Any, ann_id: Any = 0, title: Any = "") -> str:
-    """活动的稳定标识（前端开关、缓存继承都用它）。
-
-    优先用官方公告 id —— 同一场活动每天重新拉取都是同一个值；
-    没有 id 的游戏退回「游戏 + 标题」，标题不变就还是同一个活动。
-    """
-    game = str(game_id or "")
-    try:
-        aid = int(ann_id or 0)
-    except (TypeError, ValueError):
-        aid = 0
-    if aid:
-        return f"{game}:{aid}"
-    return f"{game}:t:{str(title or '')}"
+def _clean_text(text: Any) -> str:
+    """去掉 HTML 标签 / 反转义 / 压平空白。"""
+    raw = _HTML_TAG_RE.sub(" ", str(text or ""))
+    return _WS_RE.sub(" ", html.unescape(raw)).strip()
 
 
 @dataclass
 class Activity:
-    """一个正在进行中的活动。"""
+    """活动日历里的一条。"""
 
     game_id: str
     game_name: str
     title: str
     start: datetime
     end: datetime
-    ann_id: int = 0
-    alert_enabled: bool = True
-    muted_by: str = ""
+    kind: str = "act"          # act=活动 challenge=固定挑战（深渊/忘却之庭）
+    status: str = ""           # 进行中 / 未开启 / 已完成（没给就按时间算）
+    progress: str = ""         # 36/36 这种进度，没有就空
+    icon: str = ""             # 活动图标（界面用）
+    remote_id: str = ""        # 官方活动 id，用于生成稳定 uid
 
     @property
     def uid(self) -> str:
-        return activity_uid(self.game_id, self.ann_id, self.title)
+        key = self.remote_id or self.title
+        return f"{self.game_id}:{self.kind}:{key}"
 
     @property
     def hours_left(self) -> float:
@@ -131,6 +135,20 @@ class Activity:
         """向上取整的天数：47 小时 -> 2 天，23 小时 -> 1 天。"""
         return max(int(math.ceil(self.hours_left / 24.0)), 1 if self.hours_left > 0 else 0)
 
+    @property
+    def not_started(self) -> bool:
+        return datetime.now() < self.start
+
+    def countdown_text(self) -> str:
+        """界面上的倒计时文案：和 App 里「5天9小时」一个意思。"""
+        now = datetime.now()
+        if self.not_started:
+            left = self.start - now
+            return f"{_human_gap(left)}后开启"
+        if self.end <= now:
+            return "已结束"
+        return f"剩 {_human_gap(self.end - now)}"
+
     def to_dict(self) -> Dict[str, Any]:
         hours = self.hours_left
         return {
@@ -138,17 +156,30 @@ class Activity:
             "game": self.game_id,
             "game_name": self.game_name,
             "title": self.title,
+            "kind": self.kind,
             "start": self.start.strftime("%Y-%m-%d %H:%M:%S"),
             "end": self.end.strftime("%Y-%m-%d %H:%M:%S"),
-            "ann_id": self.ann_id,
             "hours_left": round(hours, 1),
             "days_left": self.days_left,
-            "ending_soon": 0 < hours <= ALERT_WINDOW_HOURS,
-            # False = 单条已静音（不参与 72 小时推送），但列表里照常显示
-            "alert_enabled": bool(self.alert_enabled),
-            # 命中的默认静音关键词，界面上用作「为什么默认关掉」的解释
-            "muted_by": self.muted_by,
+            "ending_soon": 0 < hours <= ALERT_WINDOW_HOURS and not self.not_started,
+            "not_started": self.not_started,
+            "countdown": self.countdown_text(),
+            "status": self.status or ("未开启" if self.not_started else "进行中"),
+            "progress": self.progress,
+            "icon": self.icon,
         }
+
+
+def _human_gap(delta: timedelta) -> str:
+    """1 天 3 小时 / 5 小时 12 分 —— 粗到小时就够，别做秒级抖动。"""
+    total_minutes = max(int(delta.total_seconds() // 60), 0)
+    days, rem = divmod(total_minutes, 1440)
+    hours, minutes = divmod(rem, 60)
+    if days:
+        return f"{days} 天 {hours} 小时" if hours else f"{days} 天"
+    if hours:
+        return f"{hours} 小时 {minutes} 分" if minutes else f"{hours} 小时"
+    return f"{minutes} 分"
 
 
 @dataclass
@@ -159,7 +190,7 @@ class ActivityAlert:
     game_name: str
     title: str
     end: datetime
-    ann_id: int = 0
+    uid: str = ""
 
     @property
     def days_left(self) -> int:
@@ -169,11 +200,7 @@ class ActivityAlert:
         return max(int(math.ceil(hours / 24.0)), 1)
 
     def warn_line(self) -> str:
-        """📅 活动提醒：原神「祝圣移涌」，还剩 2 天结束，请抓紧时间！
-
-        不少公告标题本身就带「」（星铁更常见：``4.6版本「无名勋礼」更新``），
-        只有整条标题一个引号都没有时才补外层引号，避免出现「「…」」。
-        """
+        """📅 活动提醒：原神「祝圣移涌」，还剩 2 天结束，请抓紧时间！"""
         days = self.days_left
         needs_quote = "「" not in self.title and "」" not in self.title
         shown = f"「{self.title}」" if needs_quote else self.title
@@ -187,25 +214,34 @@ class ActivityAlert:
 
 
 def _empty_cache() -> Dict[str, Any]:
-    return {"version": 2, "fetched_at": "", "last_attempt": "", "items": [], "notified": {}}
+    return {
+        "version": CACHE_VERSION,
+        "fetched_at": "",
+        "last_attempt": "",
+        "items": [],
+        "notified": {},
+    }
+
+
+def _read_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return default
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.warning("读取 %s 失败（按空处理）：%s", path.name, exc)
+        return default
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning("%s JSON 损坏（按空处理）：%s", path.name, exc)
+        return default
+    return data if isinstance(data, dict) else default
 
 
 def load_cache() -> Dict[str, Any]:
     """读缓存；文件不存在 / 损坏 / 结构不对都返回空结构，绝不抛异常。"""
-    try:
-        raw = CACHE_PATH.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return _empty_cache()
-    except (OSError, UnicodeDecodeError) as exc:
-        logger.warning("读取活动缓存失败（按空处理）：%s", exc)
-        return _empty_cache()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        logger.warning("活动缓存 JSON 损坏（按空处理）：%s", exc)
-        return _empty_cache()
-    if not isinstance(data, dict):
-        return _empty_cache()
+    data = _read_json(CACHE_PATH, _empty_cache())
     if not isinstance(data.get("items"), list):
         data["items"] = []
     if not isinstance(data.get("notified"), dict):
@@ -213,26 +249,82 @@ def load_cache() -> Dict[str, Any]:
     return data
 
 
-def save_cache(data: Dict[str, Any]) -> None:
-    """原子写缓存：唯一临时文件 + os.replace，避免并发时互相删掉对方的 tmp。"""
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=".activities-", suffix=".tmp", dir=str(CACHE_PATH.parent)
-    )
+def _atomic_write(path: Path, payload: Dict[str, Any]) -> None:
+    """原子写：唯一临时文件 + os.replace，并发时不会互相删掉对方的 tmp。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix="." + path.stem + "-", suffix=".tmp", dir=str(path.parent))
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, CACHE_PATH)
+        os.replace(tmp, path)
     finally:
         if tmp.exists():
             try:
                 tmp.unlink()
-            except OSError:  # 清理失败不影响已经写完的缓存
+            except OSError:  # 清理失败不影响已经写完的文件
                 pass
+
+
+def save_cache(data: Dict[str, Any]) -> None:
+    _atomic_write(CACHE_PATH, data)
+
+
+# --------------------------------------------------------------------------- #
+# 黑名单：删掉的活动记在这里，永远不再出现
+# --------------------------------------------------------------------------- #
+
+
+def load_ignored() -> Dict[str, Any]:
+    data = _read_json(IGNORED_PATH, {"version": 1, "ids": [], "updated_at": ""})
+    ids = data.get("ids")
+    if not isinstance(ids, list):
+        data["ids"] = []
+    else:
+        data["ids"] = [str(item) for item in ids if isinstance(item, str)]
+    return data
+
+
+def _ignored_ids() -> set:
+    return set(load_ignored().get("ids") or [])
+
+
+_IGNORED_WRITE_LOCK = threading.Lock()
+
+
+def ignore_activity(uid: str) -> Dict[str, Any]:
+    """把一条活动加入黑名单：立刻从列表消失，且不会再触发推送。"""
+    target = str(uid or "").strip()
+    if not target:
+        raise ValueError("缺少活动 ID")
+    with _IGNORED_WRITE_LOCK:
+        data = load_ignored()
+        ids = data.get("ids") or []
+        if target not in ids:
+            ids.append(target)
+        data["ids"] = ids
+        data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _atomic_write(IGNORED_PATH, data)
+        logger.info("活动已隐藏（加入黑名单）：%s", target)
+    return summary()
+
+
+def restore_ignored() -> Dict[str, Any]:
+    """清空黑名单（界面上的「全部恢复」用）。"""
+    with _IGNORED_WRITE_LOCK:
+        _atomic_write(
+            IGNORED_PATH,
+            {"version": 1, "ids": [], "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+        )
+    return summary()
+
+
+# --------------------------------------------------------------------------- #
+# 时间解析
+# --------------------------------------------------------------------------- #
 
 
 def _parse_time(text: Any) -> Optional[datetime]:
@@ -254,6 +346,19 @@ def _parse_time(text: Any) -> Optional[datetime]:
     return None
 
 
+def _from_ts(value: Any) -> Optional[datetime]:
+    try:
+        stamp = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if stamp <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(stamp)
+    except (OSError, ValueError, OverflowError):
+        return None
+
+
 def _cache_age_hours(fetched_at: str) -> Optional[float]:
     moment = _parse_time(fetched_at)
     if moment is None:
@@ -261,96 +366,8 @@ def _cache_age_hours(fetched_at: str) -> Optional[float]:
     return (datetime.now() - moment).total_seconds() / 3600.0
 
 
-# --------------------------------------------------------------------------- #
-# 拉取（四款游戏各有各的官方来源，见下面每个 fetcher 的注释）
-# --------------------------------------------------------------------------- #
-
-BROWSER_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
-
-#: 星铁：公告接口（这是国服唯一公开的公告源，type_list 只有「公告」一类）
-STARRAIL_ANN_URL = "https://hkrpg-ann-api.mihoyo.com/common/hkrpg_cn/announcement/api/getAnnList"
-STARRAIL_ANN_PARAMS: Dict[str, Any] = {
-    "game": "hkrpg",
-    "game_biz": "hkrpg_cn",
-    "lang": "zh-cn",
-    "bundle_id": "hkrpg_cn",
-    "platform": "pc",
-    "region": "prod_gf_cn",
-    "level": 70,
-    "uid": "100000000",
-}
-
-#: 星铁公告里这些是运营/周边内容，不是游戏内活动，别拿去催人
-STARRAIL_NOISE = (
-    "周边", "问卷", "社媒", "防沉迷", "公平运营", "PC端", "小程序",
-    "社区工具", "谨防诈骗", "跃迁记录", "游戏优化", "已知问题",
-)
-
-#: 绝区零：注意域名是 api-takumi（ann-api 会返回 retcode=-1000）
-ZZZ_ANN_URL = "https://api-takumi.mihoyo.com/common/nap_cn/announcement/api/getAnnList"
-ZZZ_ANN_PARAMS: Dict[str, Any] = {
-    "game": "nap",
-    "game_biz": "nap_cn",
-    "lang": "zh-cn",
-    "bundle_id": "nap_cn",
-    "platform": "pc",
-    "region": "prod_gf_cn",
-    "level": 60,
-    "uid": "100000000",
-}
-
-#: 鹰角官网新闻接口 / 正文页（活动起止时间只写在正文里）
-AK_NEWS_URL = "https://ak.hypergryph.com/api/news"
-AK_NEWS_PAGE = "https://ak.hypergryph.com/news/%s"
-#: 最多翻几条活动详情（每条一次请求，只取最近的一批）
-AK_DETAIL_LIMIT = 6
-
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
-_WS_RE = re.compile(r"\s+")
-
-#: 正文里的活动时间，兼容这几种写法：
-#:   10月24日20:00~11月24日03:59 / 11月01日 12:00 - 11月15日 03:59
-#:   2026/10/15 12:00 - 2026/11/26 03:59
-_DATE_WINDOW_RE = re.compile(
-    r"活动时间[：:]\s*"
-    r"(?:(\d{4})[年/])?(\d{1,2})[月/](\d{1,2})日?\s*(\d{1,2}:\d{2})?\s*"
-    r"[~～\-—至到]+"
-    r"\s*(?:(\d{4})[年/])?(\d{1,2})[月/](\d{1,2})日?\s*(\d{1,2}:\d{2})?"
-)
-
-
-def _clean_text(text: Any) -> str:
-    """去掉 HTML 标签 / 反转义 / 压平空白 —— 公告标题和正文都带一堆标签。"""
-    raw = _HTML_TAG_RE.sub(" ", str(text or ""))
-    return _WS_RE.sub(" ", html.unescape(raw)).strip()
-
-
-def _new_session():
-    """建一个直连会话：本机系统代理会拦部分外网，trust_env=False 更稳。"""
-    import requests  # 惰性导入：没装依赖时也不影响其它功能
-
-    session = requests.Session()
-    session.trust_env = False
-    session.headers.update({"User-Agent": BROWSER_UA})
-    return session
-
-
-def _int_or_zero(value: Any) -> int:
-    try:
-        return int(str(value).strip())
-    except (TypeError, ValueError):
-        return 0
-
-
 def _window_from_text(text: str, base: datetime) -> Optional[Tuple[datetime, datetime]]:
-    """从公告正文里抠出「活动时间：A ~ B」。
-
-    年份一般不写，按发布时间补：起止跨年时结束时间算到次年，
-    发布时间比活动开始晚半年以上说明是「预告」，开始时间算到次年。
-    """
+    """从公告正文里抠出「活动时间：A ~ B」（只给方舟用）。"""
     match = _DATE_WINDOW_RE.search(text)
     if not match:
         return None
@@ -360,7 +377,7 @@ def _window_from_text(text: str, base: datetime) -> Optional[Tuple[datetime, dat
         end_month, end_day = int(em), int(ed)
         start_year = int(sy) if sy else base.year
         if not sy and start_month < base.month - 6:
-            start_year += 1  # 明显是明年的预告
+            start_year += 1
         end_year = int(ey) if ey else start_year
         if not ey and (end_month, end_day) < (start_month, start_day):
             end_year += 1
@@ -375,9 +392,262 @@ def _window_from_text(text: str, base: datetime) -> Optional[Tuple[datetime, dat
     return start, end
 
 
-def _fetch_detail_window(
-    session: Any, url: str, base: datetime
-) -> Optional[Tuple[datetime, datetime]]:
+# --------------------------------------------------------------------------- #
+# 米游社活动日历（原神 / 星铁 / 绝区零）
+# --------------------------------------------------------------------------- #
+
+
+def _miyoushe_credentials(game_id: str):
+    """取某个游戏已绑定账号的 (ltuid, ltoken, uid, server, cookie)。"""
+    from core import mihoyo_api  # 惰性导入，避免没配账号时拖慢启动
+    from core.config import load_config
+
+    config = load_config(BASE_DIR / "config.json", auto_create=False)
+    for account in config.accounts:
+        if account.game == game_id and account.enabled:
+            return mihoyo_api.extract_credentials(account)
+    raise RuntimeError(f"{game_id} 还没有绑定米游社账号，无法读取活动日历")
+
+
+def _miyoushe_session():
+    import requests
+
+    session = requests.Session()
+    session.trust_env = False
+    return session
+
+
+def _miyoushe_get(url: str, params: Dict[str, Any], creds) -> Dict[str, Any]:
+    from core import mihoyo_api
+
+    ltuid, ltoken, uid, server, cookie = creds
+    headers = mihoyo_api.build_headers(
+        ltuid, ltoken, query=params, cookie=cookie, with_device=False
+    )
+    session = _miyoushe_session()
+    response = session.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    payload = response.json()
+    retcode = payload.get("retcode")
+    if retcode not in (0, None):
+        raise RuntimeError(
+            f"活动日历接口返回 retcode={retcode}：{payload.get('message')}"
+        )
+    return payload.get("data") or {}
+
+
+def _miyoushe_post(url: str, body: Dict[str, Any], creds) -> Dict[str, Any]:
+    from core import mihoyo_api
+
+    ltuid, ltoken, uid, server, cookie = creds
+    text = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+    headers = mihoyo_api.build_headers(ltuid, ltoken, query={}, cookie=cookie, with_device=False)
+    headers["DS"] = mihoyo_api.build_ds(query={}, body=text)
+    headers["Content-Type"] = "application/json"
+    session = _miyoushe_session()
+    response = session.post(url, data=text.encode("utf-8"), headers=headers, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    payload = response.json()
+    retcode = payload.get("retcode")
+    if retcode not in (0, None):
+        raise RuntimeError(
+            f"活动日历接口返回 retcode={retcode}：{payload.get('message')}"
+        )
+    return payload.get("data") or {}
+
+
+def _pick_time(info: Any, prefix: str = "") -> Tuple[Optional[datetime], Optional[datetime]]:
+    """从 time_info / 顶层字段里取 (start, end)，时间戳优先。"""
+    if not isinstance(info, dict):
+        return None, None
+    start = _from_ts(info.get(f"{prefix}start_ts")) or _parse_time(info.get(f"{prefix}start_time"))
+    end = _from_ts(info.get(f"{prefix}end_ts")) or _parse_time(info.get(f"{prefix}end_time"))
+    return start, end
+
+
+def _reward_icon(rewards: Any) -> str:
+    if isinstance(rewards, list):
+        for item in rewards:
+            if isinstance(item, dict) and item.get("icon"):
+                return str(item["icon"])
+    return ""
+
+
+def fetch_genshin_activities() -> List[Dict[str, Any]]:
+    """原神 act_calendar：活动 + 固定挑战（渊月螺旋）。"""
+    creds = _miyoushe_credentials("genshin")
+    _ltuid, _ltoken, uid, server, _cookie = creds
+    data = _miyoushe_post(GENSHIN_CAL_URL, {"role_id": uid, "server": server}, creds)
+
+    now = datetime.now()
+    result: List[Dict[str, Any]] = []
+    for raw in data.get("act_list") or []:
+        if not isinstance(raw, dict):
+            continue
+        start, end = _pick_time({
+            "start_ts": raw.get("start_timestamp"), "end_ts": raw.get("end_timestamp"),
+            "start_time": (raw.get("start_time") or {}).get("year") and _fmt_cn(raw.get("start_time")),
+            "end_time": (raw.get("end_time") or {}).get("year") and _fmt_cn(raw.get("end_time")),
+        })
+        title = str(raw.get("name") or "").strip()
+        if not title or not start or not end or end <= now:
+            continue
+        finished = bool(raw.get("is_finished"))
+        result.append({
+            "game": "genshin", "game_name": "原神", "kind": "act", "title": title,
+            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "已完成" if finished else "",
+            "progress": "",
+            "icon": _reward_icon(raw.get("reward_list")),
+            "remote_id": str(raw.get("id") or ""),
+        })
+
+    for raw in data.get("fixed_act_list") or []:
+        if not isinstance(raw, dict):
+            continue
+        start, end = _pick_time({
+            "start_ts": raw.get("start_timestamp"), "end_ts": raw.get("end_timestamp"),
+        })
+        title = str(raw.get("name") or "").strip()
+        if not title or not start or not end or end <= now:
+            continue
+        progress = ""
+        tower = raw.get("tower_detail") or {}
+        if isinstance(tower, dict):
+            got, total = tower.get("star_num"), tower.get("total_star_num")
+            if total:
+                progress = f"{got or 0}/{total}"
+        result.append({
+            "game": "genshin", "game_name": "原神", "kind": "challenge", "title": title,
+            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "", "progress": progress,
+            "icon": _reward_icon(raw.get("reward_list")),
+            "remote_id": str(raw.get("id") or ""),
+        })
+    result.sort(key=lambda item: item["end"])
+    return result
+
+
+def _fmt_cn(node: Any) -> str:
+    """{"year":2026,"month":11,"day":2,"hour":3,"minute":59,"second":0} -> 字符串。"""
+    try:
+        return "%04d-%02d-%02d %02d:%02d:%02d" % (
+            int(node["year"]), int(node["month"]), int(node["day"]),
+            int(node.get("hour", 0)), int(node.get("minute", 0)), int(node.get("second", 0)),
+        )
+    except (KeyError, TypeError, ValueError):
+        return ""
+
+
+def fetch_starrail_activities() -> List[Dict[str, Any]]:
+    """星铁 get_act_calender：活动 + 挑战（忘却之庭等）。"""
+    creds = _miyoushe_credentials("starrail")
+    _ltuid, _ltoken, uid, server, _cookie = creds
+    data = _miyoushe_get(STARRAIL_CAL_URL, {"role_id": uid, "server": server}, creds)
+
+    now = datetime.now()
+    result: List[Dict[str, Any]] = []
+    for raw in data.get("act_list") or []:
+        if not isinstance(raw, dict):
+            continue
+        start, end = _pick_time(raw.get("time_info"))
+        title = str(raw.get("name") or "").strip()
+        if not title or not start or not end or end <= now:
+            continue
+        status_map = {
+            "OtherActStatusUnFinish": "",
+            "OtherActStatusFinish": "已完成",
+            "DoubleRewardActStatusUnopened": "未开启",
+            "OtherActStatusUnopened": "未开启",
+        }
+        progress = ""
+        total, current = raw.get("total_progress"), raw.get("current_progress")
+        if isinstance(total, int) and total > 0:
+            progress = f"{current or 0}/{total}"
+        result.append({
+            "game": "starrail", "game_name": "崩坏：星穹铁道", "kind": "act", "title": title,
+            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+            "status": status_map.get(str(raw.get("act_status") or ""), ""),
+            "progress": progress,
+            "icon": _reward_icon(raw.get("reward_list")),
+            "remote_id": str(raw.get("id") or ""),
+        })
+
+    for raw in data.get("challenge_list") or []:
+        if not isinstance(raw, dict):
+            continue
+        start, end = _pick_time(raw.get("time_info"))
+        title = str(raw.get("name_mi18n") or raw.get("name") or "").strip()
+        if not title or not start or not end or end <= now:
+            continue
+        progress = ""
+        total, current = raw.get("total_progress"), raw.get("current_progress")
+        if isinstance(total, int) and total > 0:
+            progress = f"{current or 0}/{total}"
+        result.append({
+            "game": "starrail", "game_name": "崩坏：星穹铁道", "kind": "challenge", "title": title,
+            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "", "progress": progress,
+            "icon": "",
+            "remote_id": str(raw.get("group_id") or raw.get("challenge_type") or title),
+        })
+    result.sort(key=lambda item: item["end"])
+    return result
+
+
+def fetch_zzz_activities() -> List[Dict[str, Any]]:
+    """绝区零 activity_calendar：参数是 uid / region，不是 role_id / server。"""
+    creds = _miyoushe_credentials("zzz")
+    _ltuid, _ltoken, uid, server, _cookie = creds
+    data = _miyoushe_get(ZZZ_CAL_URL, {"uid": uid, "region": server}, creds)
+
+    now = datetime.now()
+    result: List[Dict[str, Any]] = []
+    for raw in data.get("activity_list") or []:
+        if not isinstance(raw, dict):
+            continue
+        start, end = _from_ts(raw.get("start_ts")), _from_ts(raw.get("end_ts"))
+        title = str(raw.get("name") or "").strip()
+        if not title or not start or not end or end <= now:
+            continue
+        progress = ""
+        total, got = raw.get("monochrome_cnt"), raw.get("monochrome_got_cnt")
+        if isinstance(total, int) and total > 0:
+            progress = f"{got or 0}/{total}"
+        state = str(raw.get("state") or "")
+        status = "已完成" if state == "STATE_FINISHED" else ""
+        result.append({
+            "game": "zzz", "game_name": "绝区零", "kind": "act", "title": title,
+            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+            "status": status, "progress": progress,
+            "icon": "",
+            "remote_id": str(raw.get("activity_id") or ""),
+        })
+    result.sort(key=lambda item: item["end"])
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# 明日方舟（鹰角官网）
+# --------------------------------------------------------------------------- #
+
+
+def _new_session():
+    """建一个直连会话：本机系统代理会拦部分外网，trust_env=False 更稳。"""
+    import requests
+
+    session = requests.Session()
+    session.trust_env = False
+    session.headers.update({"User-Agent": BROWSER_UA})
+    return session
+
+
+def _fetch_detail_window(session, url: str, base: datetime) -> Optional[Tuple[datetime, datetime]]:
     """抓公告正文并解析活动时间；抓不到 / 没写清楚就返回 None（不猜）。"""
     try:
         response = session.get(url, timeout=REQUEST_TIMEOUT)
@@ -388,151 +658,8 @@ def _fetch_detail_window(
     return _window_from_text(_clean_text(response.text), base)
 
 
-def fetch_genshin_activities() -> List[Dict[str, Any]]:
-    """拉原神「活动公告」分组，返回带真实起止时间的活动列表。"""
-    session = _new_session()
-    response = session.get(GENSHIN_ANN_URL, params=GENSHIN_ANN_PARAMS, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-    payload = response.json()
-    if payload.get("retcode") not in (0, None):
-        raise RuntimeError(f"公告接口返回 retcode={payload.get('retcode')}：{payload.get('message')}")
-
-    data = payload.get("data") or {}
-    groups = data.get("list") or []
-    if not isinstance(groups, list):
-        raise RuntimeError("公告接口返回结构异常（list 不是数组）")
-
-    now = datetime.now()
-    result: List[Dict[str, Any]] = []
-    seen = set()
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
-        # 原神的活动在 type_id == 1「活动公告」；用 label 兜底，避免 id 变动
-        if group.get("type_id") != 1 and group.get("type_label") != "活动公告":
-            continue
-        for item in group.get("list") or []:
-            if not isinstance(item, dict):
-                continue
-            title = str(item.get("title") or "").strip()
-            start = _parse_time(item.get("start_time"))
-            end = _parse_time(item.get("end_time"))
-            if not title or not start or not end:
-                continue
-            if end <= now or start > now:
-                continue  # 只留"正在进行中"的
-            if title in seen:
-                continue
-            seen.add(title)
-            result.append({
-                "game": "genshin",
-                "game_name": "原神",
-                "title": title,
-                "start": start.strftime("%Y-%m-%d %H:%M:%S"),
-                "end": end.strftime("%Y-%m-%d %H:%M:%S"),
-                "ann_id": int(item.get("ann_id") or 0),
-            })
-    result.sort(key=lambda item: item["end"])
-    return result
-
-
-def fetch_starrail_activities() -> List[Dict[str, Any]]:
-    """星铁：国服公告接口（type_list 只有「公告」，没有单独的活动分组）。
-
-    公告本身带真实 start_time / end_time，版本说明、战令、限时玩法都在里面；
-    周边、问卷、防沉迷这类运营内容用 STARRAIL_NOISE 排掉。
-    """
-    session = _new_session()
-    response = session.get(
-        STARRAIL_ANN_URL, params=STARRAIL_ANN_PARAMS, timeout=REQUEST_TIMEOUT
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if payload.get("retcode") not in (0, None):
-        raise RuntimeError(
-            f"公告接口返回 retcode={payload.get('retcode')}：{payload.get('message')}"
-        )
-
-    now = datetime.now()
-    result: List[Dict[str, Any]] = []
-    seen = set()
-    for group in (payload.get("data") or {}).get("list") or []:
-        if not isinstance(group, dict):
-            continue
-        for item in group.get("list") or []:
-            if not isinstance(item, dict):
-                continue
-            title = _clean_text(item.get("title") or item.get("subtitle"))
-            if not title or any(word in title for word in STARRAIL_NOISE):
-                continue
-            start = _parse_time(item.get("start_time"))
-            end = _parse_time(item.get("end_time"))
-            if not start or not end or end <= now or start > now:
-                continue
-            if title in seen:
-                continue
-            seen.add(title)
-            result.append({
-                "game": "starrail",
-                "game_name": "崩坏：星穹铁道",
-                "title": title,
-                "start": start.strftime("%Y-%m-%d %H:%M:%S"),
-                "end": end.strftime("%Y-%m-%d %H:%M:%S"),
-                "ann_id": int(item.get("ann_id") or 0),
-            })
-    result.sort(key=lambda item: item["end"])
-    return result
-
-
-def fetch_zzz_activities() -> List[Dict[str, Any]]:
-    """绝区零：公告接口的「活动公告」「福利活动」两类（tag_label 区分）。"""
-    session = _new_session()
-    response = session.get(ZZZ_ANN_URL, params=ZZZ_ANN_PARAMS, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-    payload = response.json()
-    if payload.get("retcode") not in (0, None):
-        raise RuntimeError(
-            f"公告接口返回 retcode={payload.get('retcode')}：{payload.get('message')}"
-        )
-
-    now = datetime.now()
-    result: List[Dict[str, Any]] = []
-    seen = set()
-    for group in (payload.get("data") or {}).get("list") or []:
-        if not isinstance(group, dict):
-            continue
-        for item in group.get("list") or []:
-            if not isinstance(item, dict):
-                continue
-            tag = str(item.get("tag_label") or "")
-            if "活动" not in tag:
-                continue  # 常规公告 / 重要公告 / 社群公告 都不算活动
-            title = _clean_text(item.get("subtitle") or item.get("title"))
-            start = _parse_time(item.get("start_time"))
-            end = _parse_time(item.get("end_time"))
-            if not title or not start or not end or end <= now or start > now:
-                continue
-            if title in seen:
-                continue
-            seen.add(title)
-            result.append({
-                "game": "zzz",
-                "game_name": "绝区零",
-                "title": title,
-                "start": start.strftime("%Y-%m-%d %H:%M:%S"),
-                "end": end.strftime("%Y-%m-%d %H:%M:%S"),
-                "ann_id": int(item.get("ann_id") or 0),
-            })
-    result.sort(key=lambda item: item["end"])
-    return result
-
-
 def fetch_arknights_activities() -> List[Dict[str, Any]]:
-    """明日方舟：鹰角官网 news 接口（tab=1 是活动），起止时间解析自正文。
-
-    官网列表只给发布时间，真正的「活动时间：10月24日20:00~11月24日03:59」
-    写在活动详情页正文里，所以对最近的几条活动各抓一次详情。
-    """
+    """明日方舟：鹰角官网 news 接口（tab=1 是活动），起止时间解析自正文。"""
     session = _new_session()
     response = session.get(
         AK_NEWS_URL,
@@ -546,7 +673,6 @@ def fetch_arknights_activities() -> List[Dict[str, Any]]:
 
     now = datetime.now()
     result: List[Dict[str, Any]] = []
-    seen = set()
     checked = 0
     for item in (payload.get("data") or {}).get("list") or []:
         if not isinstance(item, dict) or str(item.get("tab")) != "1":
@@ -570,18 +696,14 @@ def fetch_arknights_activities() -> List[Dict[str, Any]]:
             logger.debug("方舟活动正文里没有明确的起止时间，跳过：%s", title)
             continue
         start, end = window
-        if end <= now or start > now:
+        if end <= now:
             continue
-        if title in seen:
-            continue
-        seen.add(title)
         result.append({
-            "game": "arknights",
-            "game_name": "明日方舟",
-            "title": title,
+            "game": "arknights", "game_name": "明日方舟", "kind": "act", "title": title,
             "start": start.strftime("%Y-%m-%d %H:%M:%S"),
             "end": end.strftime("%Y-%m-%d %H:%M:%S"),
-            "ann_id": _int_or_zero(cid),
+            "status": "", "progress": "", "icon": "",
+            "remote_id": cid,
         })
     result.sort(key=lambda item: item["end"])
     return result
@@ -589,10 +711,10 @@ def fetch_arknights_activities() -> List[Dict[str, Any]]:
 
 #: 每个抓取器对应的来源说明，写进缓存的 source 字段方便排查
 SOURCES: Dict[str, str] = {
-    "genshin": "miyoushe-getAnnList(type_id=1)",
-    "starrail": "hkrpg-ann-api-getAnnList",
-    "zzz": "api-takumi-getAnnList(tag=活动)",
-    "arknights": "ak.hypergryph.com/api/news(tab=1)+正文",
+    "genshin": "miyoushe act_calendar",
+    "starrail": "miyoushe get_act_calender",
+    "zzz": "miyoushe activity_calendar",
+    "arknights": "ak.hypergryph.com news(tab=1)+正文",
 }
 
 #: 新增游戏时在这里挂一个 fetch 函数即可。
@@ -604,58 +726,21 @@ FETCHERS = {
 }
 
 
-def _migrate_items(cache: Dict[str, Any]) -> bool:
-    """给老缓存补齐 ``alert_enabled`` 字段（按关键词默认值），只补不覆盖。"""
-    changed = False
-    for item in cache.get("items") or []:
-        if isinstance(item, dict) and not isinstance(item.get("alert_enabled"), bool):
-            item["alert_enabled"] = default_alert_enabled(item.get("title"))
-            changed = True
-    if changed:
-        cache["version"] = 2
-    return changed
-
-
-def _carry_over_switch(cache: Dict[str, Any]) -> Dict[str, bool]:
-    """把旧缓存里用户手动改过的开关状态按活动 ID 抽出来。
-
-    刷新只替换活动清单，**不动用户的选择**：老朋友原样继承，
-    新活动才按关键词给默认值。
-    """
-    previous: Dict[str, bool] = {}
-    for old in cache.get("items") or []:
-        if not isinstance(old, dict):
-            continue
-        flag = old.get("alert_enabled")
-        if not isinstance(flag, bool):
-            continue
-        previous[activity_uid(old.get("game"), old.get("ann_id"), old.get("title"))] = flag
-    return previous
-
-
 def refresh(force: bool = False) -> Dict[str, Any]:
     """刷新缓存（默认 20 小时内不重复请求）。失败保留旧数据，只记 last_error。"""
     cache = load_cache()
-    # 老版本缓存没有 alert_enabled：先补齐再判断要不要真的去拉，
-    # 这样即便这轮不刷新，磁盘上的结构也已经是新格式。
-    if _migrate_items(cache):
-        try:
-            save_cache(cache)
-        except OSError as exc:
-            logger.warning("补写活动开关字段失败（不影响使用）：%s", exc)
     age = _cache_age_hours(cache.get("fetched_at", ""))
-    if not force and age is not None and age < CACHE_TTL_HOURS:
+    if not force and cache.get("version") == CACHE_VERSION and age is not None and age < CACHE_TTL_HOURS:
         return summary()
 
-    previous = _carry_over_switch(cache)
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     collected: List[Dict[str, Any]] = []
     errors: List[str] = []
     for game_id, fetcher in FETCHERS.items():
         try:
             collected.extend(fetcher())
-        except Exception as exc:  # noqa: BLE001 - 拉不到活动不能影响主流程
-            logger.warning("拉取 %s 活动失败：%s", game_id, exc)
+        except Exception as exc:  # noqa: BLE001 - 单个游戏失败不能影响其它游戏
+            logger.warning("拉取 %s 活动日历失败：%s", game_id, exc)
             errors.append(f"{game_id}: {exc}")
 
     cache["last_attempt"] = now_text
@@ -665,23 +750,26 @@ def refresh(force: bool = False) -> Dict[str, Any]:
         logger.warning("活动缓存未更新（沿用旧数据）：%s", cache["last_error"])
         return summary()
 
-    # 老活动继承用户选择；新活动按默认静音关键词决定初始开关
-    for item in collected:
-        key = activity_uid(item.get("game"), item.get("ann_id"), item.get("title"))
-        if key in previous:
-            item["alert_enabled"] = previous[key]
-        else:
-            item["alert_enabled"] = default_alert_enabled(item.get("title"))
-
+    # 黑名单只做「读时过滤」：缓存里保留全量，
+    # 这样点「恢复全部」能立刻回来，不用等下一轮重新拉接口。
+    cache["version"] = CACHE_VERSION
     cache["items"] = collected
     cache["fetched_at"] = now_text
     cache["source"] = dict(SOURCES)
-    cache.pop("last_error", None)
+    if errors:
+        cache["last_error"] = "部分游戏拉取失败：" + "；".join(errors)
+    else:
+        cache.pop("last_error", None)
     cache["notified"] = _prune_notified(cache.get("notified") or {})
     save_cache(cache)
-    muted = sum(1 for item in collected if not item.get("alert_enabled"))
+    ignored = _ignored_ids()
+    hidden = sum(
+        1 for item in collected
+        if f"{item['game']}:{item.get('kind', 'act')}:{item.get('remote_id') or item['title']}" in ignored
+    )
     logger.info(
-        "活动缓存已更新：%d 个进行中的活动（其中 %d 个静音）", len(collected), muted
+        "活动日历已更新：%d 个进行中（其中 %d 个在黑名单里，不展示不提醒）",
+        len(collected), hidden,
     )
     return summary()
 
@@ -701,33 +789,33 @@ def ensure_fresh() -> Dict[str, Any]:
 
 
 def ongoing() -> List[Activity]:
-    """当前仍在进行中的活动（只读缓存，不发请求）。"""
+    """当前仍在进行中 / 即将开始的活动（只读缓存，不发请求）。"""
     cache = load_cache()
     now = datetime.now()
+    ignored = _ignored_ids()
     result: List[Activity] = []
     for item in cache.get("items") or []:
         if not isinstance(item, dict):
             continue
         start = _parse_time(item.get("start"))
         end = _parse_time(item.get("end"))
-        if not start or not end or end <= now or start > now:
+        if not start or not end or end <= now:
             continue
-        title = str(item.get("title") or "")
-        matched = muted_keyword(title)
-        flag = item.get("alert_enabled")
-        if not isinstance(flag, bool):
-            # 老缓存（v1.1.2 及以前）没有这个字段：按关键词默认值兜底，不写盘
-            flag = not matched
-        result.append(Activity(
+        activity = Activity(
             game_id=str(item.get("game") or ""),
             game_name=str(item.get("game_name") or ""),
-            title=title,
+            title=str(item.get("title") or ""),
             start=start,
             end=end,
-            ann_id=int(item.get("ann_id") or 0),
-            alert_enabled=flag,
-            muted_by=matched,
-        ))
+            kind=str(item.get("kind") or "act"),
+            status=str(item.get("status") or ""),
+            progress=str(item.get("progress") or ""),
+            icon=str(item.get("icon") or ""),
+            remote_id=str(item.get("remote_id") or ""),
+        )
+        if activity.uid in ignored:
+            continue  # 黑名单兜底：即使缓存里还在，也不让它出现
+        result.append(activity)
     result.sort(key=lambda act: act.end)
     return result
 
@@ -737,84 +825,43 @@ def pending_alerts(
     *,
     today: Optional[datetime] = None,
 ) -> List[ActivityAlert]:
-    """剩余 <= hours 的活动，且「单条开关开着」+「今天还没提醒过」。"""
+    """剩余 <= hours 且已开始的活动，今天还没提醒过的。"""
     day_key = (today or datetime.now()).strftime("%Y-%m-%d")
     cache = load_cache()
     raw_notified = cache.get("notified", {}).get(day_key, [])
     notified = set(raw_notified) if isinstance(raw_notified, list) else set()
     alerts: List[ActivityAlert] = []
     for act in ongoing():
-        if not act.alert_enabled:
-            logger.debug("活动提醒已静音，跳过：%s", act.title)
+        if act.not_started:
             continue
         left = act.hours_left
         if not (0 < left <= hours):
             continue
-        if act.ann_id and act.ann_id in notified:
+        if act.uid in notified:
             continue
         alerts.append(ActivityAlert(
             game_id=act.game_id, game_name=act.game_name, title=act.title,
-            end=act.end, ann_id=act.ann_id,
+            end=act.end, uid=act.uid,
         ))
     return alerts
-
-
-#: activities.json 同样是「读 → 改 → 写」：界面连点几条开关时排队写，
-#: 避免后一次拿旧副本把前一次的选择覆盖掉（与 config.json 的锁各管各的文件）。
-_ACTIVITY_WRITE_LOCK = threading.Lock()
-
-
-def set_alert_enabled(uid: str, enabled: bool) -> Dict[str, Any]:
-    """切换单个活动的提醒开关，原子写回缓存。
-
-    uid 不存在（活动已结束 / 已被新一批数据替换）时抛 ``KeyError``，
-    前端提示用户刷新即可；写盘失败抛 ``OSError``。
-    """
-    target_uid = str(uid or "").strip()
-    if not target_uid:
-        raise ValueError("缺少活动 ID")
-    with _ACTIVITY_WRITE_LOCK:
-        cache = load_cache()
-        items = cache.get("items")
-        if not isinstance(items, list):
-            items = []
-        target: Optional[Dict[str, Any]] = None
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            if activity_uid(item.get("game"), item.get("ann_id"), item.get("title")) == target_uid:
-                target = item
-                break
-        if target is None:
-            raise KeyError(target_uid)
-        target["alert_enabled"] = bool(enabled)
-        cache["items"] = items
-        cache["version"] = 2
-        save_cache(cache)
-        logger.info(
-            "活动提醒开关：%s -> %s", target.get("title"), "开" if enabled else "关"
-        )
-    return summary()
 
 
 def mark_notified(alerts: Iterable[ActivityAlert], *, today: Optional[datetime] = None) -> None:
     """把今天已经推送过的活动记下来，避免同一天每轮检查都催一遍。"""
     day_key = (today or datetime.now()).strftime("%Y-%m-%d")
-    ids = [alert.ann_id for alert in alerts if alert.ann_id]
+    ids = [alert.uid for alert in alerts if alert.uid]
     if not ids:
         return
-    # 和单条开关共用一把锁：两边都是「读 → 改 → 写」，
-    # 不排队的话后写的一方会拿旧副本把另一边刚改的字段覆盖掉。
-    with _ACTIVITY_WRITE_LOCK:
+    with _IGNORED_WRITE_LOCK:
         cache = load_cache()
         notified = cache.get("notified") or {}
         if not isinstance(notified, dict):
             notified = {}
         raw_current = notified.get(day_key)
         current = list(raw_current) if isinstance(raw_current, list) else []
-        for ann_id in ids:
-            if ann_id not in current:
-                current.append(ann_id)
+        for uid in ids:
+            if uid not in current:
+                current.append(uid)
         notified[day_key] = current
         cache["notified"] = _prune_notified(notified)
         try:
@@ -840,6 +887,7 @@ def summary() -> Dict[str, Any]:
     age = _cache_age_hours(fetched_at)
     activities = [act.to_dict() for act in ongoing()]
     soon = [item for item in activities if item.get("ending_soon")]
+    ignored = load_ignored()
     return {
         "ok": True,
         "has_data": bool(fetched_at),
@@ -850,8 +898,6 @@ def summary() -> Dict[str, Any]:
         "window_hours": ALERT_WINDOW_HOURS,
         "items": activities,
         "unsupported": [dict(item) for item in UNSUPPORTED],
-        "muted_keywords": list(MUTED_KEYWORDS),
-        # 72 小时内的活动共几个、其中真正会提醒的几个（界面提示用）
         "soon_count": len(soon),
-        "alerting_count": sum(1 for item in soon if item.get("alert_enabled")),
+        "ignored_count": len(ignored.get("ids") or []),
     }

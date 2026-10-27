@@ -11,6 +11,19 @@
 
 ## 更新日志
 
+### v1.1.5
+
+- **活动数据换成米游社「活动日历」**：不再抓公告。原神 `act_calendar`、星铁
+  `get_act_calender`（官方把 calendar 拼错了）、绝区零 `activity_calendar`
+  （参数是 `uid`/`region`），拿到的就是 App 里那份：活动名、起止时间、
+  进度（36/36、0/900）、状态（未开启 / 进行中 / 已完成）。
+- **删掉就是删掉**：每行的「提醒」开关换成 `×`，点完立刻消失，ID 写进
+  `data/ignored_activities.json`，之后无论刷新还是推送都不会再出现；
+  底部有「恢复全部」兜底。原来的 `MUTED_KEYWORDS` / `alert_enabled` 整套逻辑已删除。
+- **排版向手机端靠**：行内是「图标 + 名称 + ⏱ 倒计时 + 进度 + 状态标签」，
+  倒计时按「剩 5 天 9 小时 / 2 小时 / X 天后开启」显示，72 小时内会变成橙色。
+- 终末地仍不支持（官方没有带绝对日期的活动数据）。
+
 ### v1.1.4
 
 - **活动提醒扩到四款游戏**：星铁、绝区零、明日方舟都接上了官方数据源，加上原神一共
@@ -954,53 +967,50 @@ python main.py --force-alert   :: 强制发一条，验证推送通道本身通�
 （`GET /api/live?refresh=1`），把五款游戏的当前体力 / 理智做成卡片。
 **不写历史、不推送**，结果在进程内缓存 45 秒，来回切页签不会反复打接口。
 
-**即将结束的活动**：四条数据源逐条取官方公告里的真实起止时间，缓存到
-`data/activities.json`，**20 小时内最多真正请求一次**（定时检查里的 `ensure_fresh()`
-也遵守同一个 TTL），页面右上角另有手动刷新按钮。
+**即将结束的活动**：读的是各游戏**官方的「活动日历」**（就是米游社 App 里那份），
+不是公告。每条都带名字、起止时间、进度和状态，缓存到 `data/activities.json`，
+**20 小时内最多真正请求一次**（定时检查里的 `ensure_fresh()` 也遵守同一个 TTL）。
 
-各游戏实测结论（2026-10 再次核对，全部实测）：
+| 游戏 | 数据源 | 说明 |
+| --- | --- | --- |
+| 原神 | `POST …/genshin/api/act_calendar` | `act_list`（活动）+ `fixed_act_list`（渊月螺旋等），带 `countdown_seconds`、`is_finished` |
+| 崩坏：星穹铁道 | `GET …/hkrpg/api/get_act_calender` | 官方把 calendar 拼成了 **calender**；`act_list` + `challenge_list`，带 `current/total_progress`、`act_status` |
+| 绝区零 | `GET …/zzz/activity_calendar` | 参数是 **`uid` / `region`**（不是 role_id/server）；`activity_list` 带 `monochrome_got_cnt/cnt` |
+| 明日方舟 | `ak.hypergryph.com/api/news` 的 `tab=1` | 官网列表没有结束时间，解析活动正文「活动时间：10月24日20:00~11月24日03:59」 |
+| 终末地 | —— | 只有公告且不含绝对日期，标「暂不支持」 |
 
-| 游戏 | 数据源 | 起止时间 | 结论 |
-| --- | --- | --- | --- |
-| 原神 | `hk4e-api` 的 `getAnnList`，`type_id=1`「活动公告」分组 | 接口直出 `start_time/end_time` | ✅ |
-| 崩坏：星穹铁道 | `hkrpg-ann-api` 的 `getAnnList`（国服 `type_list` 只有「公告」一类） | 接口直出，周边/问卷/防沉迷等运营内容已排除 | ✅ |
-| 绝区零 | `api-takumi.mihoyo.com` 的 `nap_cn/getAnnList`，取 `tag_label` 含「活动」的（活动公告 / 福利活动） | 接口直出 | ✅ |
-| 明日方舟 | `ak.hypergryph.com/api/news` 的 `tab=1`，再抓 `/news/{cid}` 正文 | 正文里的「活动时间：10月24日20:00~11月24日03:59」，正则解析 | ✅ |
-| 终末地 | 官网 `/news` 只有 `displayTime`（发布时间），正文写「版本更新后至版本维护前」 | 没有可计算的截止日期 | ⛔ |
+三家米游社接口都要**带账号 Cookie 与 DS 签名**（复用 `core/mihoyo_api.py` 那套），
+所以必须先绑定对应游戏；没绑定的那款只会缺它自己的数据，不影响其它游戏。
 
-**踩过的坑**：绝区零公告必须用 `api-takumi.mihoyo.com`，`ann-api.mihoyo.com` 会返回
-`retcode=-1000`；星铁公告接口看起来「只有公告」，其实版本说明、战令、限时玩法都在这一组里，
-按标题排除运营内容即可；方舟官网列表只有发布时间，结束时间只写在活动详情正文里。
+**不想要的活动直接删**：列表里每条右侧有个 `×`。点掉之后：
 
-拿不到就标「暂不支持」，**不会编造活动或截止时间**。
-
-**单条静音**：列表里每条活动右侧都有「提醒」开关（`items[].alert_enabled`）。
-默认规则是「普通活动开、常驻公告关」—— 标题命中 `MUTED_KEYWORDS`
-（`祈愿` / `砺行修远` / `祝圣移涌` / `幽境危战`）的活动默认静音，列表照常显示，
-只是标一个「已静音」、不再参与倒计时推送。刷新活动数据时按 `ann_id` 继承上次的选择，
-**不会把你手动改过的开关重置回默认值**。
+1. 立刻从界面消失；
+2. ID 写进 `data/ignored_activities.json`；
+3. **之后无论怎么刷新、什么时候推送，都不会再出现、也不会再提醒**
+   （`ongoing()` 读缓存时就按黑名单过滤，`pending_alerts()` 走同一条路径）。
 
 ```
-POST /api/activities/toggle
-{"id": "genshin:21888", "enabled": false}
-→ {"ok": true, "items": [...], "soon_count": 3, "alerting_count": 2, ...}
+POST /api/activities/delete   {"id": "genshin:act:449"}
+POST /api/activities/restore  {}          # 底部「恢复全部」
+→ {"ok": true, "items": [...], "ignored_count": 1, ...}
 ```
 
-推送侧：定时检查读取缓存，活动剩余 ≤72 小时、`alert_enabled` 为真时，在推送正文**末尾**追加
-`📅 活动提醒：原神「祝圣移涌」活动：圣遗物双倍掉落，还剩 2 天结束，请抓紧时间！`，
+黑名单只做「读时过滤」：缓存里仍保留全量，所以点「恢复全部」能立刻回来，不用等下一轮重拉。
+
+推送侧：定时检查读取缓存，活动剩余 ≤72 小时、且不在黑名单里时，在推送正文**末尾**追加
+`📅 活动提醒：原神「无忧无虑大雪仗」，还剩 2 天结束，请抓紧时间！`，
 标题追加 `· 📅 活动将结束（N）`。同一活动每天最多提醒一次（记在缓存的 `notified` 里），
 只有真的发出去才记账，没发成下一轮会重试。`app.activity_alert_enabled` 可整体关闭。
 
-**怎么验证静音真的生效**（不会打扰到真实推送）：
+**怎么验证删除真的生效**：
 
-1. 「信息查询」里把任意一条活动的「提醒」关掉，页面提示「已静音」，
-   `data/activities.json` 里该活动变成 `"alert_enabled": false`。
-2. 点卡片右上角「刷新」强制重拉一次 —— 开关不会被重置（按 `ann_id` 继承）。
-3. 想看推送侧：把某条活动的 `end` 临时改成明天（顺手再改一条做对照），
-   跑 `python main.py --dry-run --debug`，日志里的 `活动提醒=N` 与正文
-   `📅 活动提醒：…` 只会出现没被静音的那条；
-   验证完在页面上点一次「刷新」即可拿回真实时间。
-4. 活动过期后对应条目会在下一次刷新时自然消失，不影响其它活动。
+1. 「信息查询」里点某条活动右侧的 `×` —— 该行立刻消失，底部提示「已删除 1 个」，
+   `data/ignored_activities.json` 里出现这条的 ID。
+2. 点卡片右上角「刷新」强制重拉一次，它依然不出现（拉回来也会被黑名单挡住）。
+3. 想看推送侧：把某条**没删**的活动 `end` 临时改成明天，跑
+   `python -c "from core import activities; [print(a.warn_line()) for a in activities.pending_alerts()]"`
+   —— 只打印没被删的那条；验证完点一次「刷新」拿回真实时间。
+4. 点错了就点底部「恢复全部」，所有删掉的活动立刻回来。
 
 ---
 
