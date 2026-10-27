@@ -11,6 +11,19 @@
 
 ## 更新日志
 
+### v1.1.1
+
+- **「定时与状态」改成手风琴**：提醒时间点常驻平铺，守护进程 / 下次开机自动运行 /
+  睡过头补发 / 体力溢出提醒四块默认收起，标题栏右侧直接放主操作
+  （启动·停止 / 三个 Toggle），其余技术细节展开才出现。
+- **两个总开关**：`app.catch_up_enabled`、`app.resource_alert_enabled`。
+  关掉后补发窗口与溢出判定整体失效，但各自的数值会保留，重新打开即恢复。
+- **顶部页签重排**：每日报表 → 账号绑定 → 通知绑定 → 定时与状态，首页直接看结果。
+- **运行状态与开机自启彻底分开**：两条之间加了分割线；「停止」只停本次运行，
+  提示会明确说明「开机自启设置保持不变」。
+- 修掉两个开关几乎同时保存时，`config.json` 临时文件互相覆盖导致「配置写进去了、
+  接口却返回 500」的并发写盘问题。
+
 ### v1.1.0
 
 - **体力溢出提醒扩展到森空岛**：明日方舟、终末地的「理智」也能预警了。
@@ -36,10 +49,11 @@
 1. 双击 start.bat
      → 自动装依赖 → 后台拉起守护进程 → 弹出独立的控制台窗口
 
-2. 窗口里配三个页签
+2. 窗口里四个页签（默认停在「每日报表」）
+     每日报表  ：看每款游戏的连续完成天数与最近 7 天
      账号绑定  ：贴设备指纹（推荐）→ 扫码登录
      通知绑定  ：填 Server酱 / Qmsg 的 Key → 发送测试推送
-     定时与状态：加提醒时间点 → 启动守护进程
+     定时与状态：加提醒时间点 → 启动守护进程 → 按需开补发 / 溢出提醒
 
 3. 挂机
      右下角托盘常驻，关掉窗口不影响；到点自动检查并推送
@@ -126,9 +140,13 @@ python main.py --init
     "test_mode": "auto",
     "check_times": ["08:30", "20:30"],
     "catch_up_minutes": 180,
+    "catch_up_enabled": true,
+    "resource_alert_enabled": true,
     "genshin_resin_threshold": 160,
     "starrail_stamina_threshold": 240,
-    "zzz_energy_threshold": 200
+    "zzz_energy_threshold": 200,
+    "arknights_ap_threshold": 135,
+    "endfield_sanity_threshold": 300
   },
   "accounts": [
     {
@@ -198,10 +216,14 @@ python main.py --init
 | --- | --- |
 | `app.test_mode` | `auto` 自动判断 / `force_alert` 强制提醒 / `force_silent` 强制静默 |
 | `app.check_times` | 每日检查时间点（HH:MM，24 小时制），改完即时生效 |
+| `app.catch_up_enabled` | 睡过头补发总开关，`false` 时补发整体失效（窗口数值保留）。默认 `true` |
 | `app.catch_up_minutes` | 睡过头补发窗口（分钟）。错过时间点后，在这个窗口内醒来会立刻补跑一次；`0` = 关闭补发。默认 180，上限 720 |
+| `app.resource_alert_enabled` | 体力溢出提醒总开关，`false` 时完全跳过判定（各阈值保留）。默认 `true` |
 | `app.genshin_resin_threshold` | 原神「原粹树脂」溢出预警阈值：当前值 ≥ 阈值就强制推一条（日常全做完也推）。`0` = 关闭。默认 160（上限 200） |
 | `app.starrail_stamina_threshold` | 崩铁「开拓力」溢出预警阈值，同上。默认 240 |
 | `app.zzz_energy_threshold` | 绝区零「电量」溢出预警阈值，同上。默认 200 |
+| `app.arknights_ap_threshold` | 明日方舟「理智」溢出预警阈值，同上。默认 135（上限随账号等级，实测 205） |
+| `app.endfield_sanity_threshold` | 终末地「理智」溢出预警阈值，同上。默认 300（上限实测 350） |
 | `push.always_notify` | 平安通知：`true` 时日常**全部完成也发一条**「今日全部完成」，默认 `false`（无事不打扰） |
 | `accounts[].game` | 游戏标识：`genshin` / `starrail` / `zzz` / `arknights` / `endfield` |
 | `accounts[].enabled` | 是否参与检查，`false` 直接跳过 |
@@ -849,12 +871,17 @@ python main.py --force-alert   :: 强制发一条，验证推送通道本身通�
 
 ```json
 "app": {
+  "resource_alert_enabled": true,
   "genshin_resin_threshold": 160,
   "starrail_stamina_threshold": 240,
-  "zzz_energy_threshold": 200
+  "zzz_energy_threshold": 200,
+  "arknights_ap_threshold": 135,
+  "endfield_sanity_threshold": 300
 }
 ```
 
+- `resource_alert_enabled` 是**总开关**：`false` 时整块判定直接跳过（阈值原样保留），
+  适合「这几天不想收这类提醒」；
 - 当前值 **≥ 阈值**就强制推一条（日常全做完也会推），`0` = 关闭该游戏的预警；
 - **不额外发请求**：数值来自本轮定时检查已经拿到的实时便笺，只是拿来比一下；
 - 推送标题会变成 `… · ⚠️ 体力将溢出（N）`，正文第一行就是

@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+import functools
 import json
 import logging
 import os
 import re
 import socket
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -336,16 +338,47 @@ def _normalize_threshold(raw: Any, label: str, default: int) -> int:
     return min(value, 1000)
 
 
+def _resource_alert_enabled() -> bool:
+    """体力溢出提醒总开关；读不到配置时按开启处理（保持旧行为）。"""
+    try:
+        raw = load_raw_config()
+    except Exception:  # noqa: BLE001
+        return True
+    app = raw.get("app") if isinstance(raw.get("app"), dict) else {}
+    try:
+        return _normalize_bool(app.get("resource_alert_enabled"), True)
+    except ValueError:
+        return True
+
+
 def thresholds_status() -> Dict[str, Any]:
-    """返回当前阈值 + 默认值 + 上限（前端占位符、提示用）。"""
+    """返回当前阈值 + 默认值 + 上限 + 总开关（前端占位符、提示用）。"""
     return {
         "ok": True,
+        "enabled": _resource_alert_enabled(),
         "values": _resource_thresholds(),
         "defaults": {key: default for key, _jk, default in _THRESHOLD_FIELDS},
         "max": 1000,
     }
 
 
+#: config.json 是「读 → 改 → 写」的共享文件。界面上两个开关几乎同时保存时，
+#: 后写的一方会拿着旧副本把前一次的改动覆盖掉。这把锁把整段临界区串起来。
+_CONFIG_WRITE_LOCK = threading.Lock()
+
+
+def _serialized_write(func):
+    """让同一个进程内的配置写入排队执行（HTTP 服务是多线程的）。"""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with _CONFIG_WRITE_LOCK:
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
+@_serialized_write
 def save_thresholds(payload: Dict[str, Any]) -> Dict[str, Any]:
     """保存三个阈值。校验不过抛 ValueError（接口返 400，不落盘）。"""
     from core.config import parse_config
@@ -361,9 +394,16 @@ def save_thresholds(payload: Dict[str, Any]) -> Dict[str, Any]:
     if problems:
         raise ValueError("；".join(problems))
 
+    # 总开关（可选）：不传就保持原样，避免只改阈值时把开关状态覆盖掉
+    enabled = None
+    if isinstance(payload, dict) and payload.get("enabled") is not None:
+        enabled = _normalize_bool(payload.get("enabled"), True)
+
     raw = load_raw_config()
     if not isinstance(raw.get("app"), dict):
         raw["app"] = {}
+    if enabled is not None:
+        raw["app"]["resource_alert_enabled"] = enabled
     raw["app"]["genshin_resin_threshold"]    = normalized["genshin"]
     raw["app"]["starrail_stamina_threshold"] = normalized["starrail"]
     raw["app"]["zzz_energy_threshold"]       = normalized["zzz"]
@@ -381,10 +421,12 @@ def save_thresholds(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     result = thresholds_status()
     off = [k for k, v in normalized.items() if v == 0]
-    result["message"] = (
-        f"已保存（{', '.join(off)} 已关闭）" if off
-        else "已保存，下次检查自动生效"
-    )
+    if not result["enabled"]:
+        result["message"] = "已保存阈值，但提醒总开关是关闭的（判定已跳过）"
+    elif off:
+        result["message"] = f"已保存（{', '.join(off)} 已关闭）"
+    else:
+        result["message"] = "已保存，下次检查自动生效"
     return result
 
 
@@ -394,15 +436,29 @@ def save_raw_config(raw: Dict[str, Any]) -> None:
     直接 write_text 覆盖有个隐患——写到一半断电/被杀，config.json 就成半截
     JSON，之后所有命令都读不了配置。这里改成「临时文件 + os.replace」：
     同一分区内的 replace 是原子操作，失败时原文件完好无损。
+
+    临时文件名用 mkstemp 保证唯一：界面上两个开关几乎同时保存时，
+    固定文件名会让两个线程互相删掉对方的临时文件（先写的那次拿不到
+    自己的 tmp，finally 清理直接抛错，于是配置写进去了、接口却返回 500）。
     """
     text = json.dumps(raw, ensure_ascii=False, indent=2) + "\n"
-    tmp = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".config-", suffix=".tmp", dir=str(CONFIG_PATH.parent)
+    )
+    tmp = Path(tmp_name)
     try:
-        tmp.write_text(text, encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
         json.loads(tmp.read_text(encoding="utf-8"))  # 复检：确保落盘内容可解析
         os.replace(tmp, CONFIG_PATH)
     finally:
-        tmp.unlink(missing_ok=True)
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:  # 清理失败不影响已完成的保存
+                pass
 
 
 
@@ -833,6 +889,22 @@ def daemon_status() -> Dict[str, Any]:
         return {"running": False, "error": str(exc), "check_times": [], "next_run": ""}
 
 
+def _normalize_bool(raw: Any, default: bool) -> bool:
+    """解析总开关：接受 true/false、1/0、on/off；留空走默认值。"""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    text = str(raw).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"开关值必须是 true 或 false，收到：{raw!r}")
+
+
 def schedule_status() -> Dict[str, Any]:
     from core.config import next_check_time
 
@@ -844,6 +916,8 @@ def schedule_status() -> Dict[str, Any]:
         "ok": True,
         "times": times,
         "catch_up_minutes": _normalize_catch_up(app.get("catch_up_minutes")),
+        "catch_up_enabled": _normalize_bool(app.get("catch_up_enabled"), True),
+        "resource_alert_enabled": _normalize_bool(app.get("resource_alert_enabled"), True),
         "next_run": target.strftime("%Y-%m-%d %H:%M") if target else "",
         "daemon": daemon_status(),
         # 页面上要列账号就取这里，避免把游戏清单写死在多份 HTML / JS 里
@@ -870,24 +944,34 @@ def _normalize_catch_up(raw: Any) -> int:
     return min(value, CATCH_UP_MINUTES_MAX)
 
 
-def save_catch_up(raw_minutes: Any) -> Dict[str, Any]:
-    """保存补发窗口。时间点是即时生效的，改这个也不用重启守护进程。"""
+@_serialized_write
+def save_catch_up(raw_minutes: Any, enabled: Any = None) -> Dict[str, Any]:
+    """保存补发窗口（可选同时改总开关）。改完不用重启守护进程。"""
     value = _normalize_catch_up(raw_minutes)
     raw = load_raw_config()
     if not isinstance(raw.get("app"), dict):
         raw["app"] = {}
     raw["app"]["catch_up_minutes"] = value
+    if enabled is not None:
+        raw["app"]["catch_up_enabled"] = _normalize_bool(enabled, True)
 
     from core.config import parse_config
 
     parse_config(raw, source=CONFIG_PATH)
     save_raw_config(raw)
-    logger.info("补发窗口已更新：%d 分钟", value)
+    logger.info("补发窗口已更新：%d 分钟（总开关=%s）", value,
+                "开" if raw["app"].get("catch_up_enabled", True) else "关")
     result = schedule_status()
-    result["message"] = "已关闭补发" if value == 0 else f"错过时间点后 {value} 分钟内会补发"
+    if not result["catch_up_enabled"]:
+        result["message"] = "已关闭补发（补发窗口的数值已保留）"
+    elif value == 0:
+        result["message"] = "已关闭补发（补发窗口为 0）"
+    else:
+        result["message"] = f"错过时间点后 {value} 分钟内会补发"
     return result
 
 
+@_serialized_write
 def save_schedule(times: Any) -> Dict[str, Any]:
     normalized = _normalize_times(times)
     raw = load_raw_config()
@@ -1198,13 +1282,49 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .switch{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);
           cursor:pointer;white-space:nowrap;user-select:none}
   .switch input{width:15px;height:15px;accent-color:var(--brand);cursor:pointer;margin:0}
-  /* 开机自启：左文字 + 右拨动开关，整行可点 */
-  .autostart-row{display:flex;align-items:center;justify-content:space-between;
-    gap:12px;margin-top:14px;padding:11px 14px;border:1px solid var(--line);
-    border-radius:10px;background:var(--bg);font-size:14px;cursor:pointer;
-    user-select:none;transition:border-color .15s}
-  .autostart-row:hover{border-color:var(--brand)}
-  .autostart-row > span:first-child{flex:1;min-width:0}
+  /* ---------- 手风琴（定时与状态） ---------- */
+  .acc-item{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    box-shadow:var(--shadow);overflow:hidden;margin-top:10px}
+  .card + .acc-item{margin-top:14px}
+  .acc-sep + .acc-item{margin-top:0}
+  .acc-item.soft{background:var(--bg)}
+  .acc-head{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:14px 16px;cursor:pointer;user-select:none;list-style:none;
+    -webkit-tap-highlight-color:transparent;transition:background .15s}
+  .acc-head::-webkit-details-marker{display:none}
+  .acc-head:hover{background:rgba(37,99,235,.035)}
+  .acc-head::before{content:"";width:0;height:0;flex:none;
+    border-left:5px solid var(--muted);border-top:4px solid transparent;
+    border-bottom:4px solid transparent;transform-origin:2px 50%;
+    transition:transform .18s ease}
+  .acc-item[open] > .acc-head::before{transform:rotate(90deg)}
+  .acc-title{display:flex;align-items:center;gap:8px;flex:1;min-width:0;
+    font-size:14.5px;font-weight:600;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  .acc-note{font-weight:400;font-size:12px;color:var(--muted);
+    overflow:hidden;text-overflow:ellipsis}
+  .acc-actions{display:flex;gap:8px;flex:none}
+  .mini{width:auto;padding:5px 13px;font-size:12.5px;border-radius:7px;line-height:1.5}
+  .mini.alt{background:transparent;border-color:var(--line);color:var(--fg)}
+  .mini.alt:hover{border-color:var(--brand);color:var(--brand);opacity:1}
+  /* 运行中：启动按钮变灰不可点，一眼看出是"已经在跑"而不是坏了 */
+  .mini:disabled{background:var(--line);color:var(--muted);border-color:transparent;
+    opacity:1;cursor:not-allowed}
+  .acc-body{padding:2px 16px 16px;border-top:1px solid var(--line)}
+  .acc-body .daemon-core{margin-top:14px}
+  .acc-body .desc{margin-top:12px;margin-bottom:0}
+  /* 总开关关掉时，展开内容淡淡地"退后一步"（仍可编辑，只是提示当前不生效） */
+  .acc-item.is-off .acc-body{opacity:.6}
+  .acc-item.is-off .acc-body:focus-within{opacity:1}
+  /* 粗一点的浅灰分割线：把「当前运行」和「开机行为」在视觉上切成两组 */
+  .acc-sep{height:4px;border-radius:999px;background:#d7dbe1;margin:18px 8px}
+  @media (prefers-color-scheme: dark){ .acc-sep{background:#343a44} }
+  @media (max-width:520px){
+    .acc-head{padding:12px;gap:8px}
+    .acc-title{font-size:13.5px}
+    .acc-note{display:none}
+    .mini{padding:4px 10px;font-size:12px}
+  }
 
   /* 现代拨动开关（纯 CSS，无图片） */
   .toggle{position:relative;display:inline-block;width:42px;height:24px;flex:none}
@@ -1229,18 +1349,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .daemon-core b{font-weight:600;text-align:right;overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
 
-  /* 高级运行信息：原生 details，默认收起 */
-  .adv{margin-top:14px;border-top:1px solid var(--line);padding-top:4px}
-  .adv summary{cursor:pointer;list-style:none;padding:8px 0;font-size:12.5px;
-    color:var(--muted);user-select:none;display:flex;align-items:center;gap:6px}
-  .adv summary::-webkit-details-marker{display:none}
-  .adv summary::before{content:"▸";font-size:10px;transition:transform .15s;display:inline-block}
-  .adv[open] summary::before{transform:rotate(90deg)}
-  .adv summary:hover{color:var(--fg)}
-  .adv[open] summary{margin-bottom:2px}
-
   /* 已运行时"启动"按钮置灰，但仍保留占位不让布局跳动 */
-  #btn-daemon-start:disabled{opacity:.5;cursor:not-allowed}
+  #btn-daemon-start:disabled{opacity:.45;cursor:not-allowed}
   .field{margin-top:4px}
   .field input,.field textarea{width:100%;padding:10px 12px;border-radius:9px;
                border:1px solid var(--line);background:var(--bg);color:var(--fg);
@@ -1346,18 +1456,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <div class="wrap">
   <header>
     <h1>ResinLoop · 控制台</h1>
-    <p class="sub">账号绑定解决「查得到」，通知绑定解决「收得到」，定时与状态负责「一直跑」</p>
+    <p class="sub">每日报表看结果，账号绑定解决「查得到」，通知绑定解决「收得到」，定时与状态负责「一直跑」</p>
   </header>
 
   <nav class="tabs">
-    <button type="button" data-tab="account" class="on">账号绑定</button>
+    <button type="button" data-tab="history" class="on">每日报表</button>
+    <button type="button" data-tab="account">账号绑定</button>
     <button type="button" data-tab="notify">通知绑定</button>
     <button type="button" data-tab="schedule">定时与状态</button>
-    <button type="button" data-tab="history">每日报表</button>
   </nav>
 
   <!-- ======================= Tab 1：账号绑定 ======================= -->
-  <section class="tabpanel on" id="tab-account">
+  <section class="tabpanel" id="tab-account">
     <div class="notice" id="notice" style="display:none"></div>
 
     <div class="cards">
@@ -1494,51 +1604,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   <!-- ======================= Tab 3：定时与状态 ======================= -->
   <section class="tabpanel" id="tab-schedule">
-    <section class="card">
-      <div class="chan-head">
-        <h2><span class="dot" id="d-dot"></span>守护进程</h2>
-        <span class="badge" id="d-state">读取中</span>
-      </div>
 
-      <!-- 主界面只留两行：下次提醒 / 最近一次 -->
-      <div class="daemon-core">
-        <div><span>下次提醒</span><b id="d-next">-</b></div>
-        <div><span>最近一次</span><b id="d-last">-</b></div>
-      </div>
-
-      <div class="row">
-        <button id="btn-daemon-start">启动守护进程</button>
-        <button id="btn-daemon-stop" class="alt">停止守护进程</button>
-      </div>
-
-      <!-- 开机自启：右侧拨动开关，说明放 title 悬浮提示 -->
-      <label class="autostart-row"
-             title="开启后静默挂载在托盘，彻底关闭需点停止守护进程">
-        <span>开机自动启动</span>
-        <span class="toggle">
-          <input type="checkbox" id="autostart-toggle">
-          <i></i>
-        </span>
-      </label>
-
-      <!-- 技术细节收进原生折叠面板，默认不展开 -->
-      <details class="adv">
-        <summary>查看高级运行信息</summary>
-        <div class="kv2">
-          <div><span>进程 PID</span><b id="d-pid">-</b></div>
-          <div><span>启动时间</span><b id="d-since">-</b></div>
-          <div><span>参与检查</span><b id="d-games">-</b></div>
-          <div><span>开机自启</span><b class="badge" id="autostart-state">读取中</b></div>
-        </div>
-        <p class="hint" id="autostart-hint">
-          开启后每次开机静默挂载在右下角托盘，不影响前台。
-        </p>
-        <p class="hint">
-          关掉本网页不影响提醒；要彻底停掉就点「停止守护进程」，或在托盘图标上右键 → 退出程序。
-        </p>
-      </details>
-    </section>
-
+    <!-- 1. 提醒时间点：常驻展开（最常用，不折叠） -->
     <section class="card">
       <div class="chan-head">
         <h2><span class="dot" style="background:var(--ok)"></span>提醒时间点</h2>
@@ -1553,68 +1620,140 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <p class="hint">改完立即生效，<b>不用重启守护进程</b>。</p>
     </section>
 
-    <section class="card">
-      <div class="chan-head">
-        <h2><span class="dot" style="background:var(--warn)"></span>睡过头补发</h2>
-        <span class="badge" id="cu-state">-</span>
+    <!-- 2. 守护进程：默认折叠，标题栏右侧放启动/停止 -->
+    <details class="acc-item" id="acc-daemon">
+      <summary class="acc-head">
+        <span class="acc-title">
+          <span class="dot" id="d-dot"></span>守护进程
+          <span class="badge" id="d-state">读取中</span>
+        </span>
+        <span class="acc-actions">
+          <button type="button" class="mini" id="btn-daemon-start">启动</button>
+          <button type="button" class="mini alt" id="btn-daemon-stop">停止</button>
+        </span>
+      </summary>
+      <div class="acc-body">
+        <div class="daemon-core">
+          <div><span>下次提醒</span><b id="d-next">-</b></div>
+          <div><span>最近一次</span><b id="d-last">-</b></div>
+        </div>
+        <div class="kv2">
+          <div><span>进程 PID</span><b id="d-pid">-</b></div>
+          <div><span>启动时间</span><b id="d-since">-</b></div>
+          <div><span>参与检查</span><b id="d-games">-</b></div>
+          <div><span>心跳</span><b id="d-heart">-</b></div>
+        </div>
+        <p class="hint">
+          守护进程只负责「到点检查 + 推送」。关掉本网页不影响它；
+          要彻底停掉就点上面的「停止」，或在右下角托盘图标上右键 → 退出程序。
+        </p>
       </div>
-      <p class="desc">
-        合盖休眠、关机、断网都可能让那个整点悄悄过去。开着的<b>补发窗口</b>内一旦醒来，
-        守护进程会立刻补跑一次（同一天同一个时间点只会补一次）。
-      </p>
-      <div class="row3">
-        <input type="number" id="catch-up-minutes" min="0" max="720" step="30">
-        <button id="btn-catch-up">保存</button>
-      </div>
-      <p class="hint">
-        单位分钟，<b>0 = 关闭补发</b>（错过就当天不再提醒），最大 720。
-      </p>
-    </section>
+    </details>
 
-    <!-- 体力溢出警告：阈值设置（与 config.app 的 *_threshold 字段对应） -->
-    <section class="card">
-      <div class="chan-head">
-        <h2><span class="dot" style="background:var(--warn)"></span>体力溢出警告</h2>
-        <span class="badge" id="resin-state">读取中</span>
+    <!-- 分割线：下面这些是「开机行为」，与当前是否在跑无关 -->
+    <div class="acc-sep" role="separator"></div>
+
+    <!-- 3. 开机自启：默认折叠，右侧 Toggle -->
+    <details class="acc-item soft" id="acc-autostart">
+      <summary class="acc-head">
+        <span class="acc-title">下次开机自动运行
+          <span class="acc-note">（独立于当前运行状态）</span>
+        </span>
+        <label class="toggle" title="开启后静默挂载在托盘，彻底关闭需点停止守护进程">
+          <input type="checkbox" id="autostart-toggle">
+          <i></i>
+        </label>
+      </summary>
+      <div class="acc-body">
+        <p class="hint">
+          当前状态：<b class="badge" id="autostart-state">读取中</b>
+        </p>
+        <p class="hint" id="autostart-hint">读取中…</p>
+        <p class="hint">
+          写的是当前用户的注册表（<code>HKCU\…\Run</code>），<b>不需要管理员权限</b>；
+          它决定的是<b>下次登录 Windows</b> 时会不会自动拉起托盘，
+          和左边的「停止」互不影响 —— 停止只停这一次，不会关掉开机自启。
+        </p>
       </div>
-      <p class="desc">
-        当前体力 / 树脂 / 电量 / 理智 ≥ 阈值时强制推送一条提醒。
-        <b>0 = 关闭该游戏</b>，留空则用默认值。改完下次检查自动生效，<b>不用重启守护进程</b>。
-      </p>
-      <div class="resin-row">
-        <label>
-          <span>原神 · 原粹树脂</span>
-          <input type="number" id="resin-genshin" min="0" max="1000" step="10"
-                 placeholder="160" inputmode="numeric">
+    </details>
+
+    <!-- 4. 睡过头补发：默认折叠，右侧总开关 -->
+    <details class="acc-item" id="acc-catchup">
+      <summary class="acc-head">
+        <span class="acc-title">睡过头补发
+          <span class="acc-note" id="cu-state">-</span>
+        </span>
+        <label class="toggle" title="合盖休眠错过时间点后，醒来补跑一次">
+          <input type="checkbox" id="catch-up-toggle">
+          <i></i>
         </label>
-        <label>
-          <span>星铁 · 开拓力</span>
-          <input type="number" id="resin-starrail" min="0" max="1000" step="10"
-                 placeholder="240" inputmode="numeric">
-        </label>
-        <label>
-          <span>绝区零 · 电量</span>
-          <input type="number" id="resin-zzz" min="0" max="1000" step="10"
-                 placeholder="200" inputmode="numeric">
-        </label>
-        <label>
-          <span>明日方舟 · 理智</span>
-          <input type="number" id="resin-arknights" min="0" max="1000" step="10"
-                 placeholder="135" inputmode="numeric">
-        </label>
-        <label>
-          <span>终末地 · 理智</span>
-          <input type="number" id="resin-endfield" min="0" max="1000" step="10"
-                 placeholder="300" inputmode="numeric">
-        </label>
+      </summary>
+      <div class="acc-body">
+        <p class="desc">
+          合盖休眠、关机、断网都可能让那个整点悄悄过去。开启后，在下面的补发窗口内一旦醒来，
+          守护进程会立刻补跑一次（同一天同一个时间点只会补一次）。
+        </p>
+        <div class="row3">
+          <input type="number" id="catch-up-minutes" min="0" max="720" step="30">
+          <button id="btn-catch-up">保存</button>
+        </div>
+        <p class="hint">
+          单位分钟，最大 720。<b>关掉上方开关后，补发窗口不再生效</b>，但数值会保留，重新打开即恢复。
+        </p>
       </div>
-      <button id="btn-resin-save">保存阈值</button>
-      <p class="hint" id="resin-hint">读取中…</p>
-    </section>
+    </details>
+
+    <!-- 5. 体力溢出提醒：默认折叠，右侧总开关 -->
+    <details class="acc-item" id="acc-resource">
+      <summary class="acc-head">
+        <span class="acc-title">体力溢出提醒
+          <span class="acc-note" id="resin-state">读取中</span>
+        </span>
+        <label class="toggle" title="当前体力 ≥ 阈值时额外推送一条">
+          <input type="checkbox" id="resin-toggle">
+          <i></i>
+        </label>
+      </summary>
+      <div class="acc-body">
+        <p class="desc">
+          当前体力 / 树脂 / 电量 / 理智 ≥ 阈值时强制推送一条提醒。
+          <b>0 = 关闭该游戏</b>，留空则用默认值。改完下次检查自动生效，<b>不用重启守护进程</b>。
+        </p>
+        <div class="resin-row">
+          <label>
+            <span>原神 · 原粹树脂</span>
+            <input type="number" id="resin-genshin" min="0" max="1000" step="10"
+                   placeholder="160" inputmode="numeric">
+          </label>
+          <label>
+            <span>星铁 · 开拓力</span>
+            <input type="number" id="resin-starrail" min="0" max="1000" step="10"
+                   placeholder="240" inputmode="numeric">
+          </label>
+          <label>
+            <span>绝区零 · 电量</span>
+            <input type="number" id="resin-zzz" min="0" max="1000" step="10"
+                   placeholder="200" inputmode="numeric">
+          </label>
+          <label>
+            <span>明日方舟 · 理智</span>
+            <input type="number" id="resin-arknights" min="0" max="1000" step="10"
+                   placeholder="135" inputmode="numeric">
+          </label>
+          <label>
+            <span>终末地 · 理智</span>
+            <input type="number" id="resin-endfield" min="0" max="1000" step="10"
+                   placeholder="300" inputmode="numeric">
+          </label>
+        </div>
+        <button id="btn-resin-save">保存阈值</button>
+        <p class="hint" id="resin-hint">读取中…</p>
+      </div>
+    </details>
   </section>
 
   <!-- ======================= Tab 4：每日报表 ======================= -->
-  <section class="tabpanel" id="tab-history">
+  <section class="tabpanel on" id="tab-history">
     <section class="card">
       <div class="chan-head">
         <h2><span class="dot" style="background:var(--ok)"></span>连续完成</h2>
@@ -1650,7 +1789,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
 <script>
 /* =========================== Tab 切换 =========================== */
-const PANEL_NAMES = ['account', 'notify', 'schedule', 'history'];
+const PANEL_NAMES = ['history', 'account', 'notify', 'schedule'];
 let schedTimer = null;
 
 function switchTab(name){
@@ -1928,12 +2067,20 @@ function renderThresholds(d){
     box.value = (values[gid] != null) ? values[gid] : '';
     box.placeholder = (defs[gid] != null) ? String(defs[gid]) : '0';
   });
+
+  const enabled = d.enabled !== false;
+  const box = document.getElementById('resin-toggle');
+  if (box) box.checked = enabled;
+
   const state = document.getElementById('resin-state');
   if (state) {
     const off = Object.keys(values).filter(function(k){ return values[k] === 0; });
-    state.textContent = off.length ? off.length + ' 项关闭' : '已启用';
-    state.className = 'badge ' + (off.length ? 'warn' : 'ok');
+    state.textContent = !enabled ? '已关闭'
+      : (off.length ? off.length + ' 项关闭' : '已启用');
   }
+  const item = document.getElementById('acc-resource');
+  if (item) item.classList.toggle('is-off', !enabled);
+
   const hint = document.getElementById('resin-hint');
   if (hint) {
     hint.innerHTML = '默认值：原神 160、星铁 240、绝区零 200、方舟理智 135、终末地理智 300（写 0 关闭）';
@@ -1949,20 +2096,25 @@ function loadThresholds(){
     });
 }
 
+function resinPayload(){
+  const box = document.getElementById('resin-toggle');
+  return {
+    genshin:   document.getElementById('resin-genshin').value,
+    starrail:  document.getElementById('resin-starrail').value,
+    zzz:       document.getElementById('resin-zzz').value,
+    arknights: document.getElementById('resin-arknights').value,
+    endfield:  document.getElementById('resin-endfield').value,
+    enabled:   box ? box.checked : true
+  };
+}
+
 async function saveThresholds(){
   const btn = document.getElementById('btn-resin-save');
   if (!btn) return;
   const old = btn.textContent;
   btn.disabled = true; btn.textContent = '保存中…';
   try {
-    const payload = {
-      genshin:   document.getElementById('resin-genshin').value,
-      starrail:  document.getElementById('resin-starrail').value,
-      zzz:       document.getElementById('resin-zzz').value,
-      arknights: document.getElementById('resin-arknights').value,
-      endfield:  document.getElementById('resin-endfield').value
-    };
-    const d = await postJSON('/api/settings', payload);
+    const d = await postJSON('/api/settings', resinPayload());
     if (!d.ok) { toast(d.message || '保存失败', true); return; }
     renderThresholds(d);
     toast(d.message || '已保存');
@@ -1970,6 +2122,31 @@ async function saveThresholds(){
     toast('保存失败：' + e, true);
   } finally {
     btn.disabled = false; btn.textContent = old;
+  }
+}
+
+async function toggleResourceAlert(){
+  const box = document.getElementById('resin-toggle');
+  if (!box) return;
+  const want = box.checked;
+  box.disabled = true;
+  try {
+    // 顺带把输入框里的当前值一起提交，避免开关切换把用户刚改的数字丢掉
+    const payload = resinPayload();
+    payload.enabled = want;
+    const d = await postJSON('/api/settings', payload);
+    if (!d.ok) {
+      box.checked = !want;
+      toast(d.message || '设置失败', true);
+      return;
+    }
+    renderThresholds(d);
+    toast(want ? '已开启体力溢出提醒' : '已关闭体力溢出提醒（阈值已保留）');
+  } catch (e) {
+    box.checked = !want;
+    toast('设置失败：' + e, true);
+  } finally {
+    box.disabled = false;
   }
 }
 
@@ -2122,6 +2299,11 @@ function renderDaemon(st){
 
   document.getElementById('d-pid').textContent = st.pid || '-';
   document.getElementById('d-since').textContent = st.started_at || '-';
+  const heart = document.getElementById('d-heart');
+  if (heart) {
+    heart.textContent = (st.heartbeat_age != null)
+      ? Math.round(st.heartbeat_age) + ' 秒前' : '-';
+  }
 
   // 「最近一次」只留结论 + 月-日 时:分，别把秒和完整年份糊在脸上
   const last = st.last_run || {};
@@ -2168,19 +2350,57 @@ function renderSchedule(d){
     }
   }
 
-  renderCatchUp(d.catch_up_minutes);
+  renderCatchUp(d);
   renderDaemon(d.daemon || {});
 }
 
-function renderCatchUp(minutes){
-  const num = parseInt(minutes, 10);
+/* 补发：开关 + 窗口数值分别对应 config.app.catch_up_enabled / catch_up_minutes */
+let lastCatchUp = { enabled: true, minutes: 180 };
+
+function renderCatchUp(d){
+  d = d || {};
+  const enabled = d.catch_up_enabled !== false;
+  const num = parseInt(d.catch_up_minutes, 10);
+  const minutes = isNaN(num) ? 180 : num;
+  lastCatchUp = { enabled: enabled, minutes: minutes };
+
   const input = document.getElementById('catch-up-minutes');
-  if (!input) return;
-  if (document.activeElement !== input) {
-    input.value = isNaN(num) ? 180 : num;
-  }
+  if (input && document.activeElement !== input) input.value = minutes;
+
+  const box = document.getElementById('catch-up-toggle');
+  if (box) box.checked = enabled;
+
   const badge = document.getElementById('cu-state');
-  if (badge) badge.textContent = (!num ? '已关闭' : num + ' 分钟内补发');
+  if (badge) {
+    if (!enabled) badge.textContent = '已关闭';
+    else if (minutes > 0) badge.textContent = minutes + ' 分钟内补发';
+    else badge.textContent = '窗口为 0，不补发';
+  }
+  const item = document.getElementById('acc-catchup');
+  if (item) item.classList.toggle('is-off', !enabled);
+}
+
+async function toggleCatchUp(){
+  const box = document.getElementById('catch-up-toggle');
+  if (!box) return;
+  const want = box.checked;
+  box.disabled = true;
+  try {
+    const d = await postJSON('/api/catch_up',
+      { minutes: lastCatchUp.minutes, enabled: want });
+    if (!d.ok) {
+      box.checked = !want;
+      toast(d.message || '设置失败', true);
+      return;
+    }
+    renderCatchUp(d);
+    toast(want ? '已开启睡过头补发' : '已关闭睡过头补发（窗口数值已保留）');
+  } catch (e) {
+    box.checked = !want;
+    toast('设置失败：' + e, true);
+  } finally {
+    box.disabled = false;
+  }
 }
 
 async function saveCatchUp(){
@@ -2192,9 +2412,10 @@ async function saveCatchUp(){
   if (minutes > 720) minutes = 720;
   btn.disabled = true;
   try {
-    const d = await postJSON('/api/catch_up', { minutes: minutes });
+    const d = await postJSON('/api/catch_up',
+      { minutes: minutes, enabled: lastCatchUp.enabled });
     if (!d.ok) { toast(d.message || '保存失败', true); return; }
-    renderCatchUp(d.catch_up_minutes);
+    renderCatchUp(d);
     toast(d.message || '已保存');
   } catch (e) {
     toast('保存失败：' + e, true);
@@ -2241,9 +2462,10 @@ function renderAutostart(d){
     } else if (d.stale) {
       hint.innerHTML = '注册表里存的还是旧路径（搬过目录或换过 Python），' +
                        '开机大概率起不来 —— 把开关关掉再打开一次即可刷新。';
+    } else if (d.enabled) {
+      hint.innerHTML = '已写入注册表：<b>下次登录 Windows</b> 会自动在右下角托盘启动，无需再双击 start.bat。';
     } else {
-      hint.innerHTML = '开启后每次开机静默挂载在右下角托盘，不影响前台。' +
-                       '（写的是当前用户的注册表，不需要管理员权限）';
+      hint.innerHTML = '当前未写入注册表；勾选后<b>下次登录 Windows</b> 会自动在右下角托盘启动。';
     }
   }
 }
@@ -2282,6 +2504,16 @@ async function toggleAutostart(){
 
 document.getElementById('autostart-toggle')
   .addEventListener('change', toggleAutostart);
+document.getElementById('catch-up-toggle')
+  .addEventListener('change', toggleCatchUp);
+document.getElementById('resin-toggle')
+  .addEventListener('change', toggleResourceAlert);
+
+/* 折叠面板标题栏里的开关 / 小按钮：只做自己的事，不连带展开或收起面板。
+   stopPropagation 拦住冒泡，summary 就不会收到这次点击（默认的展开动作也就不会发生）。 */
+document.querySelectorAll('.acc-head .toggle, .acc-head .mini').forEach(function(el){
+  el.addEventListener('click', function(e){ e.stopPropagation(); });
+});
 
 async function saveTimes(times){
   try {
@@ -2331,7 +2563,11 @@ async function controlDaemon(action){
   try {
     const d = await postJSON('/api/daemon/' + action, {});
     if (d.daemon) renderDaemon(d.daemon);
-    toast(d.message || (d.ok ? '操作完成' : '操作失败'), !d.ok);
+    // 「停止」只停本次，不能说成"关掉了自启"——这两件事完全独立
+    const okMsg = action === 'stop'
+      ? '已停止本次运行，开机自启设置保持不变，下次开机仍会启动'
+      : (d.message || '已启动守护进程');
+    toast(d.ok ? okMsg : (d.message || '操作失败'), !d.ok);
   } catch (e) {
     toast('操作失败：' + e, true);
   } finally {
@@ -2475,10 +2711,12 @@ document.getElementById('btn-history-refresh').addEventListener('click', loadHis
 
 /* =========================== 启动 =========================== */
 const hash = (location.hash || '').replace('#', '');
-switchTab(PANEL_NAMES.indexOf(hash) >= 0 ? hash : 'account');
+switchTab(PANEL_NAMES.indexOf(hash) >= 0 ? hash : 'history');
 refreshNotice();
 loadDevice();
 loadThresholds();
+loadSchedule();      // 定时页默认折叠，但时间点/开关状态先拉一次，展开时不会闪空
+loadAutostart();
 </script>
 </body>
 </html>
@@ -2721,7 +2959,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_json_body()
             if payload is not None:
                 try:
-                    self._json(save_catch_up(payload.get("minutes")))
+                    self._json(save_catch_up(payload.get("minutes"), payload.get("enabled")))
                 except ValueError as exc:
                     self._json({"ok": False, "message": str(exc)}, 400)
                 except Exception as exc:  # noqa: BLE001

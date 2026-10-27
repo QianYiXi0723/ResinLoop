@@ -6,6 +6,8 @@
       "20:30"
     ],
     "catch_up_minutes": 180,
+    "catch_up_enabled": true,
+    "resource_alert_enabled": true,
     "genshin_resin_threshold": 160,
     "starrail_stamina_threshold": 240,
     "zzz_energy_threshold": 200,

@@ -56,6 +56,11 @@ MIHOYO_GAMES: Tuple[str, ...] = ("genshin", "starrail", "zzz")
 CATCH_UP_MINUTES_DEFAULT = 180
 CATCH_UP_MINUTES_MAX = 720
 
+#: 「睡过头补发」「体力溢出提醒」的总开关。
+#: 关掉后各自的时间 / 阈值参数会原样保留，重新打开即恢复，不用重新填一遍。
+CATCH_UP_ENABLED_DEFAULT = True
+RESOURCE_ALERT_ENABLED_DEFAULT = True
+
 #: 体力溢出预警阈值：当前值 >= 阈值就强制推一条（0 = 关闭该游戏的预警）。
 #: 判定完全复用定时检查那一次查询的结果，**不额外发任何请求**。
 RESOURCE_THRESHOLD_DEFAULT: Dict[str, int] = {
@@ -94,6 +99,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "test_mode": TEST_MODE_AUTO,
         "check_times": ["08:30", "20:30"],
         "catch_up_minutes": CATCH_UP_MINUTES_DEFAULT,
+        "catch_up_enabled": CATCH_UP_ENABLED_DEFAULT,
+        "resource_alert_enabled": RESOURCE_ALERT_ENABLED_DEFAULT,
         "genshin_resin_threshold": RESOURCE_THRESHOLD_DEFAULT["genshin"],
         "starrail_stamina_threshold": RESOURCE_THRESHOLD_DEFAULT["starrail"],
         "zzz_energy_threshold": RESOURCE_THRESHOLD_DEFAULT["zzz"],
@@ -589,6 +596,10 @@ class AppConfig:
     check_times: List[str] = field(default_factory=lambda: ["08:30", "20:30"])
     # 睡过头 / 关机错过时间点后，醒来立刻补跑一次；0 = 关闭补发
     catch_up_minutes: int = CATCH_UP_MINUTES_DEFAULT
+    # 补发总开关：false 时补发窗口整体失效（catch_up_minutes 原样保留）
+    catch_up_enabled: bool = CATCH_UP_ENABLED_DEFAULT
+    # 体力溢出提醒总开关：false 时完全跳过判定（各阈值原样保留）
+    resource_alert_enabled: bool = RESOURCE_ALERT_ENABLED_DEFAULT
     # 体力溢出预警：当前值 >= 阈值则强制推送（0 = 关闭）。只看已有查询结果，不额外请求。
     genshin_resin_threshold: int = RESOURCE_THRESHOLD_DEFAULT["genshin"]
     starrail_stamina_threshold: int = RESOURCE_THRESHOLD_DEFAULT["starrail"]
@@ -624,7 +635,13 @@ class AppConfig:
 
     @property
     def resource_thresholds(self) -> Dict[str, int]:
-        """{game_id: 阈值}，交给 analyzer 判定体力溢出。"""
+        """{game_id: 阈值}，交给 analyzer 判定体力溢出。
+
+        总开关关掉时统一返回 0（= 每个游戏都关闭）——analyzer 里阈值 <= 0 即跳过，
+        这样「关闭提醒」只需要经过一个入口，不用在判定函数里再加分支。
+        """
+        if not self.resource_alert_enabled:
+            return {game: 0 for game in RESOURCE_THRESHOLD_DEFAULT}
         return {
             "genshin": self.genshin_resin_threshold,
             "starrail": self.starrail_stamina_threshold,
@@ -639,6 +656,8 @@ class AppConfig:
                 "test_mode": self.test_mode,
                 "check_times": list(self.check_times),
                 "catch_up_minutes": int(self.catch_up_minutes),
+                "catch_up_enabled": bool(self.catch_up_enabled),
+                "resource_alert_enabled": bool(self.resource_alert_enabled),
                 "genshin_resin_threshold": int(self.genshin_resin_threshold),
                 "starrail_stamina_threshold": int(self.starrail_stamina_threshold),
                 "zzz_energy_threshold": int(self.zzz_energy_threshold),
@@ -668,6 +687,22 @@ def _parse_check_times(raw: Any) -> List[str]:
         if text not in result:
             result.append(text)
     return sorted(result)
+
+
+def _parse_bool(raw: Any, label: str, default: bool = True) -> bool:
+    """解析总开关：接受 true/false、1/0、on/off、yes/no；留空走默认值。"""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    text = str(raw).strip().lower()
+    if text in ("1", "true", "yes", "on", "开", "开启"):
+        return True
+    if text in ("0", "false", "no", "off", "关", "关闭"):
+        return False
+    raise ConfigError(f"app.{label} = {raw!r} 非法，请填 true 或 false")
 
 
 def _parse_catch_up_minutes(raw: Any) -> int:
@@ -730,6 +765,11 @@ def parse_config(data: Dict[str, Any], source: Optional[Path] = None) -> AppConf
         test_mode=test_mode,
         check_times=_parse_check_times(app_section.get("check_times")),
         catch_up_minutes=_parse_catch_up_minutes(app_section.get("catch_up_minutes")),
+        catch_up_enabled=_parse_bool(
+            app_section.get("catch_up_enabled"), "catch_up_enabled", CATCH_UP_ENABLED_DEFAULT),
+        resource_alert_enabled=_parse_bool(
+            app_section.get("resource_alert_enabled"), "resource_alert_enabled",
+            RESOURCE_ALERT_ENABLED_DEFAULT),
         genshin_resin_threshold=_parse_threshold(
             app_section.get("genshin_resin_threshold"), "genshin_resin_threshold", "genshin"),
         starrail_stamina_threshold=_parse_threshold(

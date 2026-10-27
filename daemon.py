@@ -217,11 +217,27 @@ def read_check_times() -> List[str]:
     return sorted(result)
 
 
+def read_catch_up_enabled() -> bool:
+    """补发总开关：没配这个字段时按开启处理（兼容老配置）。
+
+    关掉后 catch_up_minutes 的数值原样保留，重新打开即恢复窗口。
+    """
+    value = _read_app_section().get("catch_up_enabled")
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return True
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in ("0", "false", "no", "off", "关", "关闭")
+
+
 def read_catch_up_minutes() -> int:
     """补发窗口（分钟）：休眠 / 关机错过时间点后，醒来立刻补跑一次。
 
     0 或负数 = 关闭补发；没配这个字段时按默认 180 分钟处理。
+    总开关 catch_up_enabled 为 false 时直接返回 0，补发逻辑自然整体失效。
     """
+    if not read_catch_up_enabled():
+        return 0
     try:
         value = int(_read_app_section().get("catch_up_minutes"))
     except (TypeError, ValueError):
@@ -258,6 +274,7 @@ def status() -> Dict[str, Any]:
         "heartbeat_age": round(age, 1) if age is not None else None,
         "check_times": times,
         "catch_up_minutes": read_catch_up_minutes(),
+        "catch_up_enabled": read_catch_up_enabled(),
         "next_run": next_run_text(times) if times else "",
         "last_run": {
             "slot": state.get("last_slot", ""),
@@ -720,9 +737,12 @@ def run_daemon(use_tray: bool = True) -> int:
     logger.info("时间点：%s｜下次：%s", "、".join(read_check_times()) or "(未配置)",
                 next_run_text() or "-")
     catch_up = read_catch_up_minutes()
-    logger.info(
-        "补发窗口：%s", f"{catch_up} 分钟" if catch_up > 0 else "已关闭（错过就不再补）"
-    )
+    if not read_catch_up_enabled():
+        logger.info("补发窗口：已被总开关关闭（catch_up_enabled = false）")
+    else:
+        logger.info(
+            "补发窗口：%s", f"{catch_up} 分钟" if catch_up > 0 else "已关闭（错过就不再补）"
+        )
     logger.info("日志：%s", LOGS_DIR / "dailycheck.log")
 
     stop_event = threading.Event()
