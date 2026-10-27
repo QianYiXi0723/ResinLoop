@@ -1700,7 +1700,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button type="button" data-tab="notify">通知绑定</button>
         <button type="button" data-tab="schedule">定时与状态</button>
       </nav>
-      <div class="side-foot">v1.1.7 · 本地运行</div>
+      <div class="side-foot">v1.1.8 · 本地运行</div>
     </aside>
 
     <main class="main">

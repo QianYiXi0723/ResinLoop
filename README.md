@@ -11,6 +11,15 @@
 
 ## 更新日志
 
+### v1.1.8
+
+- **原神图标换回经典版**：之前那张左上角有「6th」周年角标。实测 App Store 国区、
+  国际区、TapTap、B站官方号、官网 favicon **全都是同一张 6 周年图**，
+  只有本机米哈游启动器的 `ico/hk4e_cn.ico` 还是经典版 —— 改成从那里取，
+  裁掉底部 miHoYo 名称条后导出（256 → 228）。
+- `tools/fetch_game_icons.py` 重写：优先本机启动器 ico，没有再退回 App Store，
+  并在输出里标明每张图的来源与是否带角标。
+
 ### v1.1.7
 
 - **修「换了图标还显示旧图」**：图标 URL 带上 `?v=<文件 mtime>`，换图后 URL 必变；
@@ -1034,10 +1043,21 @@ POST /api/activities/restore  {}          # 底部「恢复全部」
 
 黑名单只做「读时过滤」：缓存里仍保留全量，所以点「恢复全部」能立刻回来，不用等下一轮重拉。
 
-**图标**：`static/icons/<game_id>.png`（512×512 官方原图，另配 72×72 的 `@2x`）。
-取自 App Store 官方商品图：`py tools/fetch_game_icons.py` 会按 bundle id 拉 1024×1024 原图，
-自动裁掉米哈游三款底部的 miHoYo / HOYOVERSE 名称条再导出。
-想换图直接把同名 png 覆盖进 `static/icons/` 就行，前端只认文件名。
+**图标**：`static/icons/<game_id>.png`（官方原图，另配 72×72 的 `@2x`）。
+`py tools/fetch_game_icons.py` 一次生成四张，来源按优先级：
+
+| 游戏 | 来源 | 说明 |
+| --- | --- | --- |
+| 原神 | 本机米哈游启动器 `ico/hk4e_cn.ico` | 256×256 **经典版**，无周年角标 |
+| 崩坏：星穹铁道 | App Store `com.miHoYo.hkrpg` | 1024 原图，裁掉底部名称条 |
+| 绝区零 | App Store `com.miHoYo.Nap` | 同上 |
+| 明日方舟 | App Store `com.hypergryph.arknights` | 本身没有名称条 |
+
+⚠️ 原神**不要用商店图**：2026-10 起 App Store 国区 / 国际区、TapTap、官网 favicon
+给的全是「6 周年」版（左上角一个 `6th` 角标），只有启动器里的本地 ico 还是经典版。
+启动器没装时脚本会自动退回商店图，并在输出里明确提示「该图带周年角标」。
+
+想换图直接把同名 png 覆盖进 `static/icons/` 就行，前端只认文件名（mtime 变了 URL 就变，不用清缓存）。
 
 推送侧：定时检查读取缓存，活动剩余 ≤72 小时、且不在黑名单里时，在推送正文**末尾**追加
 `📅 活动提醒：原神「无忧无虑大雪仗」，还剩 2 天结束，请抓紧时间！`，
