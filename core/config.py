@@ -60,6 +60,8 @@ CATCH_UP_MINUTES_MAX = 720
 #: 关掉后各自的时间 / 阈值参数会原样保留，重新打开即恢复，不用重新填一遍。
 CATCH_UP_ENABLED_DEFAULT = True
 RESOURCE_ALERT_ENABLED_DEFAULT = True
+#: 「活动结束提醒」总开关：活动剩 <=72 小时时在推送末尾追加提醒（默认开）
+ACTIVITY_ALERT_ENABLED_DEFAULT = True
 
 #: 体力溢出预警阈值：当前值 >= 阈值就强制推一条（0 = 关闭该游戏的预警）。
 #: 判定完全复用定时检查那一次查询的结果，**不额外发任何请求**。
@@ -101,6 +103,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "catch_up_minutes": CATCH_UP_MINUTES_DEFAULT,
         "catch_up_enabled": CATCH_UP_ENABLED_DEFAULT,
         "resource_alert_enabled": RESOURCE_ALERT_ENABLED_DEFAULT,
+        "activity_alert_enabled": ACTIVITY_ALERT_ENABLED_DEFAULT,
         "genshin_resin_threshold": RESOURCE_THRESHOLD_DEFAULT["genshin"],
         "starrail_stamina_threshold": RESOURCE_THRESHOLD_DEFAULT["starrail"],
         "zzz_energy_threshold": RESOURCE_THRESHOLD_DEFAULT["zzz"],
@@ -600,6 +603,8 @@ class AppConfig:
     catch_up_enabled: bool = CATCH_UP_ENABLED_DEFAULT
     # 体力溢出提醒总开关：false 时完全跳过判定（各阈值原样保留）
     resource_alert_enabled: bool = RESOURCE_ALERT_ENABLED_DEFAULT
+    # 活动结束提醒总开关：false 时不读活动缓存、不追加任何活动警告
+    activity_alert_enabled: bool = ACTIVITY_ALERT_ENABLED_DEFAULT
     # 体力溢出预警：当前值 >= 阈值则强制推送（0 = 关闭）。只看已有查询结果，不额外请求。
     genshin_resin_threshold: int = RESOURCE_THRESHOLD_DEFAULT["genshin"]
     starrail_stamina_threshold: int = RESOURCE_THRESHOLD_DEFAULT["starrail"]
@@ -658,6 +663,7 @@ class AppConfig:
                 "catch_up_minutes": int(self.catch_up_minutes),
                 "catch_up_enabled": bool(self.catch_up_enabled),
                 "resource_alert_enabled": bool(self.resource_alert_enabled),
+                "activity_alert_enabled": bool(self.activity_alert_enabled),
                 "genshin_resin_threshold": int(self.genshin_resin_threshold),
                 "starrail_stamina_threshold": int(self.starrail_stamina_threshold),
                 "zzz_energy_threshold": int(self.zzz_energy_threshold),
@@ -770,6 +776,9 @@ def parse_config(data: Dict[str, Any], source: Optional[Path] = None) -> AppConf
         resource_alert_enabled=_parse_bool(
             app_section.get("resource_alert_enabled"), "resource_alert_enabled",
             RESOURCE_ALERT_ENABLED_DEFAULT),
+        activity_alert_enabled=_parse_bool(
+            app_section.get("activity_alert_enabled"), "activity_alert_enabled",
+            ACTIVITY_ALERT_ENABLED_DEFAULT),
         genshin_resin_threshold=_parse_threshold(
             app_section.get("genshin_resin_threshold"), "genshin_resin_threshold", "genshin"),
         starrail_stamina_threshold=_parse_threshold(

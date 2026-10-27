@@ -25,6 +25,8 @@ class DailyReport:
     generated_at: datetime = field(default_factory=datetime.now)
     #: 体力 / 树脂 / 电量溢出预警（阈值命中才非空）
     resource_alerts: List[ResourceAlert] = field(default_factory=list)
+    #: 活动结束提醒（剩 <=72 小时且今天还没提醒过的活动）
+    activity_alerts: List[Any] = field(default_factory=list)
 
     # ---------------- 分组 ---------------- #
     @property
@@ -55,6 +57,11 @@ class DailyReport:
     def has_overflow(self) -> bool:
         """是否有体力/树脂/电量达到预警阈值。"""
         return bool(self.resource_alerts)
+
+    @property
+    def has_activity_alerts(self) -> bool:
+        """是否有活动即将结束。"""
+        return bool(self.activity_alerts)
 
     # ---------------- 渲染：控制台 ---------------- #
     def to_console_text(self) -> str:
@@ -89,6 +96,8 @@ class DailyReport:
 
         for alert in self.resource_alerts:
             lines.append(f"⚠️  {alert.warn_line()}")
+        for alert in self.activity_alerts:
+            lines.append(alert.warn_line())
 
         if self.unfinished:
             names = "、".join(item.game_name for item in self.unfinished)
@@ -113,6 +122,8 @@ class DailyReport:
             title = f"游戏日常：{len(self.unfinished)}/{total} 个未完成"
         if self.resource_alerts:
             title += f" · ⚠️ 体力将溢出（{len(self.resource_alerts)}）"
+        if self.activity_alerts:
+            title += f" · 📅 活动将结束（{len(self.activity_alerts)}）"
 
         lines: List[str] = []
         lines.append(self.generated_at.strftime("%m-%d %H:%M"))
@@ -137,6 +148,12 @@ class DailyReport:
             lines.append("今天的日常全部完成，可以放心摆烂了。")
         else:
             lines.append(f"共漏 {self.unfinished_task_count} 项，别拖到 23:59。")
+
+        # 活动提醒放在消息末尾：不打断"日常做没做完"这个主信息
+        if self.activity_alerts:
+            lines.append("")
+            for alert in self.activity_alerts:
+                lines.append(alert.warn_line())
         return title, "\n".join(lines)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -145,6 +162,16 @@ class DailyReport:
             "need_alert": self.need_alert,
             "has_overflow": self.has_overflow,
             "resource_alerts": [alert.to_dict() for alert in self.resource_alerts],
+            "activity_alerts": [
+                {
+                    "game": alert.game_id,
+                    "game_name": alert.game_name,
+                    "title": alert.title,
+                    "end": alert.end.strftime("%Y-%m-%d %H:%M:%S"),
+                    "days_left": alert.days_left,
+                }
+                for alert in self.activity_alerts
+            ],
             "unfinished_task_count": self.unfinished_task_count,
             "summary": {
                 "total": len(self.statuses),
@@ -218,13 +245,16 @@ def detect_resource_alerts(
 def build_report(
     statuses: List[GameStatus],
     thresholds: Optional[Dict[str, int]] = None,
+    activity_alerts: Optional[List[Any]] = None,
 ) -> DailyReport:
     """入口函数：状态列表 -> 汇总报告。
 
     ``thresholds`` 为 ``{game_id: 阈值}``（见 ``AppConfig.resource_thresholds``）；
     传了就顺带判定体力溢出，不传则不做（向后兼容旧调用）。
+    ``activity_alerts`` 由 ``core.activities.pending_alerts()`` 提供，直接挂进报告。
     """
     return DailyReport(
         statuses=list(statuses),
         resource_alerts=detect_resource_alerts(statuses, thresholds),
+        activity_alerts=list(activity_alerts or []),
     )

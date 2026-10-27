@@ -73,6 +73,7 @@ def should_push(
     unfinished_count: int = 0,
     always_notify: bool = False,
     overflow_count: int = 0,
+    activity_count: int = 0,
 ) -> Tuple[bool, str]:
     """根据测试模式与检查结论决定是否推送，返回 (是否推送, 原因)。
 
@@ -81,6 +82,9 @@ def should_push(
 
     ``overflow_count`` > 0 表示体力 / 树脂 / 电量达到预警阈值。即便日常全部
     完成也会推（体力溢出是有时限的损失，跟"没做日常"一样值得催一下）。
+
+    ``activity_count`` > 0 表示有活动即将结束（剩 <=72 小时）。同样会推，
+    但同一活动每天只提醒一次（去重由 ``core.activities`` 负责）。
     """
     if test_mode == TEST_MODE_FORCE_SILENT:
         return False, "测试模式=强制静默，本次只写日志"
@@ -90,6 +94,8 @@ def should_push(
         return True, f"自动模式：{unfinished_count} 个游戏存在未完成项"
     if overflow_count > 0:
         return True, f"自动模式：{overflow_count} 项体力达到预警阈值，即将溢出"
+    if activity_count > 0:
+        return True, f"自动模式：{activity_count} 个活动即将结束（剩 <=72 小时）"
     if always_notify:
         return True, "自动模式：全部完成，按设置发送平安通知"
     return False, "自动模式：全部日常已完成，保持安静"

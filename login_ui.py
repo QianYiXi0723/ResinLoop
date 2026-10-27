@@ -33,6 +33,7 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime
 import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -918,6 +919,7 @@ def schedule_status() -> Dict[str, Any]:
         "catch_up_minutes": _normalize_catch_up(app.get("catch_up_minutes")),
         "catch_up_enabled": _normalize_bool(app.get("catch_up_enabled"), True),
         "resource_alert_enabled": _normalize_bool(app.get("resource_alert_enabled"), True),
+        "activity_alert_enabled": _normalize_bool(app.get("activity_alert_enabled"), True),
         "next_run": target.strftime("%Y-%m-%d %H:%M") if target else "",
         "daemon": daemon_status(),
         # 页面上要列账号就取这里，避免把游戏清单写死在多份 HTML / JS 里
@@ -969,6 +971,106 @@ def save_catch_up(raw_minutes: Any, enabled: Any = None) -> Dict[str, Any]:
     else:
         result["message"] = f"错过时间点后 {value} 分钟内会补发"
     return result
+
+
+@_serialized_write
+def save_activity_alert(enabled: Any) -> Dict[str, Any]:
+    """活动结束提醒总开关（config.app.activity_alert_enabled）。"""
+    value = _normalize_bool(enabled, True)
+    raw = load_raw_config()
+    if not isinstance(raw.get("app"), dict):
+        raw["app"] = {}
+    raw["app"]["activity_alert_enabled"] = value
+
+    from core.config import parse_config
+
+    parse_config(raw, source=CONFIG_PATH)
+    save_raw_config(raw)
+    logger.info("活动结束提醒：%s", "开" if value else "关")
+    result = schedule_status()
+    result["message"] = (
+        "已开启活动结束提醒（剩 ≤72 小时会追加到推送末尾）"
+        if value else "已关闭活动结束提醒"
+    )
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# 信息查询：实时体力 / 活动缓存
+# --------------------------------------------------------------------------- #
+
+#: 实时查询结果缓存（秒）。切页签不该每次都重新打 5 个游戏的接口。
+_LIVE_TTL_SECONDS = 45
+_LIVE_CACHE: Dict[str, Any] = {"at": 0.0, "payload": None}
+
+
+def _split_progress(text: Any) -> Tuple[Optional[int], Optional[int]]:
+    """把 "160/200" 拆成 (160, 200)；解析不了返回 (None, None)。"""
+    if not isinstance(text, str) or "/" not in text:
+        return None, None
+    left, right = text.split("/", 1)
+    try:
+        return int(left.strip()), int(right.strip())
+    except ValueError:
+        return None, None
+
+
+def live_status(force: bool = False) -> Dict[str, Any]:
+    """跑一次实时查询，返回每款游戏的体力 / 理智看板。
+
+    与定时检查共用 ``collect_statuses``：不写历史、不推送。结果在进程内缓存 45 秒，
+    避免来回切页签时反复打接口。
+    """
+    cached = _LIVE_CACHE.get("payload")
+    if (not force) and cached is not None and (time.time() - float(_LIVE_CACHE.get("at") or 0)) < _LIVE_TTL_SECONDS:
+        payload = dict(cached)
+        payload["cached"] = True
+        return payload
+
+    from core.config import RESOURCE_TASK_NAMES, load_config
+    from main import collect_statuses
+
+    config = load_config(CONFIG_PATH)
+    statuses = collect_statuses(config)
+
+    games: List[Dict[str, Any]] = []
+    for status in statuses:
+        want = RESOURCE_TASK_NAMES.get(status.game_id)
+        resource: Optional[Dict[str, Any]] = None
+        for task in status.tasks:
+            if task.name != want:
+                continue
+            current, maximum = _split_progress(task.progress)
+            percent = None
+            if current is not None and maximum:
+                percent = max(0, min(100, round(current * 100 / maximum)))
+            resource = {
+                "name": task.name,
+                "progress": task.progress,
+                "current": current,
+                "maximum": maximum,
+                "percent": percent,
+            }
+            break
+        games.append({
+            "game": status.game_id,
+            "game_name": status.game_name,
+            "nickname": status.nickname,
+            "ok": status.ok,
+            "finished": status.finished,
+            "error": status.error or "",
+            "resource": resource,
+        })
+
+    payload = {
+        "ok": True,
+        "cached": False,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "games": games,
+    }
+    _LIVE_CACHE["at"] = time.time()
+    _LIVE_CACHE["payload"] = payload
+    return payload
 
 
 @_serialized_write
@@ -1196,19 +1298,45 @@ HTML_PAGE = r"""<!DOCTYPE html>
        font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
        padding:48px 16px;
        min-height:100vh;display:flex;flex-direction:column;justify-content:center}
-  .wrap{width:100%;max-width:820px;margin:0 auto}
+  .wrap{width:100%;max-width:1080px;margin:0 auto}
   header{margin-bottom:18px}
   h1{font-size:22px;margin:0 0 6px;letter-spacing:-.01em}
   .sub{margin:0;color:var(--muted);font-size:14px}
 
-  /* ---------- 顶部三个导航按钮 ---------- */
-  .tabs{display:flex;gap:6px;margin:0 0 20px;padding:5px;background:var(--card);
-        border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
-  .tabs button{flex:1;padding:9px 8px;border-radius:8px;border:none;background:transparent;
-               color:var(--muted);font-size:14px;font-weight:500;cursor:pointer;
-               transition:background .15s,color .15s;white-space:nowrap}
-  .tabs button:hover{color:var(--fg);opacity:1}
-  .tabs button.on{background:var(--brand);color:#fff}
+  /* ---------- 左侧导航 + 右侧内容 ---------- */
+  .app{display:grid;grid-template-columns:196px minmax(0,1fr);gap:26px;align-items:start}
+  .side{background:var(--card);border:1px solid var(--line);border-radius:16px;
+        padding:16px 12px;box-shadow:var(--shadow)}
+  .brand{display:flex;align-items:center;gap:10px;padding:2px 8px 14px;
+         border-bottom:1px solid var(--line);margin-bottom:10px}
+  .brand .logo{width:32px;height:32px;border-radius:9px;background:var(--brand);
+        color:#fff;display:grid;place-items:center;font-weight:700;font-size:15px;flex:none}
+  .brand b{display:block;font-size:14.5px;line-height:1.25;letter-spacing:-.01em}
+  .brand span{font-size:11.5px;color:var(--muted)}
+  .nav{display:flex;flex-direction:column;gap:2px}
+  .nav button{display:block;width:100%;text-align:left;padding:9px 12px;border-radius:9px;
+        border:none;background:transparent;color:var(--muted);font-size:13.5px;
+        font-weight:500;cursor:pointer;position:relative;white-space:nowrap;
+        transition:background .15s,color .15s}
+  .nav button:hover{background:var(--bg);color:var(--fg);opacity:1}
+  .nav button.on{background:rgba(37,99,235,.10);color:var(--brand);font-weight:600}
+  .nav button.on::before{content:"";position:absolute;left:0;top:50%;transform:translateY(-50%);
+        width:3px;height:16px;border-radius:3px;background:var(--brand)}
+  .side-foot{margin-top:14px;padding:10px 8px 2px;border-top:1px solid var(--line);
+        font-size:11.5px;color:var(--muted)}
+  .main{min-width:0}
+  @media (max-width:820px){
+    .app{grid-template-columns:1fr;gap:16px}
+    .side{padding:10px}
+    .brand,.side-foot{display:none}
+    .nav{flex-direction:row;overflow-x:auto;gap:4px;scrollbar-width:none}
+    .nav::-webkit-scrollbar{display:none}
+    .nav button{width:auto;flex:none;padding:7px 12px;font-size:13px}
+    .nav button.on::before{display:none}
+  }
+  @media (prefers-color-scheme: dark){
+    .nav button.on{background:rgba(91,141,239,.16)}
+  }
   .tabpanel{display:none}
   .tabpanel.on{display:block}
 
@@ -1439,6 +1567,38 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .resin-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:4px 0 14px}
   @media (max-width:640px){ .resin-row{grid-template-columns:1fr} }
   .resin-row label{display:block;font-size:12.5px;color:var(--muted)}
+
+  /* ---------- 信息查询 ---------- */
+  .live-grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(148px,1fr))}
+  .live-grid .emptybox{grid-column:1/-1}
+  .live-card{background:var(--bg);border:1px solid var(--line);border-radius:11px;
+    padding:12px 13px}
+  .lc-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+  .lc-top b{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .lc-dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
+  .lc-dot.ok{background:var(--ok)}
+  .lc-dot.no{background:var(--warn)}
+  .lc-num{font-size:22px;font-weight:650;line-height:1.2;letter-spacing:-.02em}
+  .lc-num small{font-size:12.5px;font-weight:400;color:var(--muted)}
+  .lc-bar{height:5px;border-radius:999px;background:var(--line);margin:8px 0 6px;overflow:hidden}
+  .lc-bar i{display:block;height:100%;background:var(--brand);border-radius:999px}
+  .lc-bar i.hot{background:var(--warn)}
+  .lc-meta{font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .live-card.err .lc-num{font-size:13px;color:var(--err);font-weight:500;line-height:1.5}
+
+  .act-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:11px 0;border-bottom:1px dashed var(--line)}
+  .act-row:last-child{border-bottom:none}
+  .act-main{min-width:0}
+  .act-title{font-size:13.5px;line-height:1.45;overflow:hidden;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .act-sub{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .act-row.soon .act-title{font-weight:600}
+  .act-unsupported{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+  .act-unsupported .au-title{font-size:12px;color:var(--muted);margin-bottom:6px}
+  .au-chip{display:inline-block;font-size:11.5px;color:var(--muted);background:var(--bg);
+    border:1px solid var(--line);border-radius:999px;padding:2px 9px;margin:0 6px 6px 0}
   .resin-row input[type=number]{
     width:100%;margin-top:4px;padding:8px 10px;border-radius:9px;
     border:1px solid var(--line);background:var(--bg);color:var(--fg);
@@ -1454,17 +1614,27 @@ HTML_PAGE = r"""<!DOCTYPE html>
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <h1>ResinLoop · 控制台</h1>
-    <p class="sub">每日报表看结果，账号绑定解决「查得到」，通知绑定解决「收得到」，定时与状态负责「一直跑」</p>
-  </header>
+  <div class="app">
+    <aside class="side">
+      <div class="brand">
+        <div class="logo">R</div>
+        <div><b>ResinLoop</b><span>日常巡查</span></div>
+      </div>
+      <nav class="nav">
+        <button type="button" data-tab="history" class="on">每日报表</button>
+        <button type="button" data-tab="query">信息查询</button>
+        <button type="button" data-tab="account">账号绑定</button>
+        <button type="button" data-tab="notify">通知绑定</button>
+        <button type="button" data-tab="schedule">定时与状态</button>
+      </nav>
+      <div class="side-foot">v1.1.2 · 本地运行</div>
+    </aside>
 
-  <nav class="tabs">
-    <button type="button" data-tab="history" class="on">每日报表</button>
-    <button type="button" data-tab="account">账号绑定</button>
-    <button type="button" data-tab="notify">通知绑定</button>
-    <button type="button" data-tab="schedule">定时与状态</button>
-  </nav>
+    <main class="main">
+      <header>
+        <h1>ResinLoop · 控制台</h1>
+        <p class="sub">看结果、查体力、绑账号、管定时 —— 都在这一页完成</p>
+      </header>
 
   <!-- ======================= Tab 1：账号绑定 ======================= -->
   <section class="tabpanel" id="tab-account">
@@ -1750,6 +1920,61 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <p class="hint" id="resin-hint">读取中…</p>
       </div>
     </details>
+
+    <!-- 6. 活动结束提醒：默认折叠，右侧总开关 -->
+    <details class="acc-item" id="acc-activity">
+      <summary class="acc-head">
+        <span class="acc-title">活动结束提醒
+          <span class="acc-note" id="act-state">-</span>
+        </span>
+        <label class="toggle" title="活动剩 ≤72 小时时，在推送末尾追加提醒">
+          <input type="checkbox" id="activity-toggle">
+          <i></i>
+        </label>
+      </summary>
+      <div class="acc-body">
+        <p class="desc">
+          有活动<b>剩余 ≤72 小时</b>时，在推送消息末尾追加一条「📅 活动提醒」。
+          同一活动每天最多提醒一次，不会每轮检查都催。
+        </p>
+        <p class="hint">
+          活动数据<b>每天只拉一次</b>（缓存 <code>data/activities.json</code>），
+          不会跟着每轮检查去打接口。目前只有<b>原神</b>能拿到真实截止时间；
+          星铁、绝区零、明日方舟、终末地在「信息查询」页标注为暂不支持。
+        </p>
+      </div>
+    </details>
+  </section>
+
+  <!-- ======================= 信息查询 ======================= -->
+  <section class="tabpanel" id="tab-query">
+    <section class="card">
+      <div class="chan-head">
+        <h2><span class="dot" style="background:var(--brand)"></span>实时体力</h2>
+        <button type="button" class="mini" id="btn-live-refresh">刷新</button>
+      </div>
+      <p class="desc">
+        点「刷新」立刻查一次所有启用账号（和定时检查同一套接口，<b>不写历史、不推送</b>）。
+      </p>
+      <div class="live-grid" id="live-grid">
+        <div class="emptybox">读取中…</div>
+      </div>
+      <p class="hint" id="live-hint"></p>
+    </section>
+
+    <section class="card">
+      <div class="chan-head">
+        <h2><span class="dot" style="background:var(--warn)"></span>即将结束的活动</h2>
+        <button type="button" class="mini" id="btn-act-refresh">刷新</button>
+      </div>
+      <p class="desc">
+        来自官方公告接口的<b>真实起止时间</b>，每天最多拉一次（缓存
+        <code>data/activities.json</code>）。剩余 ≤72 小时会在推送末尾提醒。
+      </p>
+      <div id="act-list"><div class="emptybox">读取中…</div></div>
+      <p class="hint" id="act-hint"></p>
+      <div class="act-unsupported" id="act-unsupported"></div>
+    </section>
   </section>
 
   <!-- ======================= Tab 4：每日报表 ======================= -->
@@ -1783,13 +2008,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </p>
     </section>
   </section>
+    </main>
+  </div>
 </div>
 
 <div id="toast"></div>
 
 <script>
 /* =========================== Tab 切换 =========================== */
-const PANEL_NAMES = ['history', 'account', 'notify', 'schedule'];
+const PANEL_NAMES = ['history', 'query', 'account', 'notify', 'schedule'];
 let schedTimer = null;
 
 function switchTab(name){
@@ -1799,10 +2026,11 @@ function switchTab(name){
       panel.style.display = (k === name) ? 'block' : 'none';
       panel.classList.toggle('on', k === name);
     }
-    const btn = document.querySelector('.tabs button[data-tab="' + k + '"]');
+    const btn = document.querySelector('.nav button[data-tab="' + k + '"]');
     if (btn) btn.classList.toggle('on', k === name);
   });
 
+  if (name === 'query') loadQuery();
   if (name === 'notify') loadPush();
   if (name === 'schedule') { loadSchedule(); startSchedPoll(); loadThresholds(); loadAutostart(); } else { stopSchedPoll(); }
   if (name === 'account') { loadDevice(); refreshNotice(); }
@@ -1817,7 +2045,7 @@ function stopSchedPoll(){
   if (schedTimer) { clearInterval(schedTimer); schedTimer = null; }
 }
 
-document.querySelectorAll('.tabs button[data-tab]').forEach(function(btn){
+document.querySelectorAll('.nav button[data-tab]').forEach(function(btn){
   btn.addEventListener('click', function(){ switchTab(this.dataset.tab); });
 });
 
@@ -2352,6 +2580,36 @@ function renderSchedule(d){
 
   renderCatchUp(d);
   renderDaemon(d.daemon || {});
+  renderActivitySwitch(d.activity_alert_enabled);
+}
+
+/* 活动结束提醒：config.app.activity_alert_enabled */
+function renderActivitySwitch(enabled){
+  const on = enabled !== false;
+  const box = document.getElementById('activity-toggle');
+  if (box) box.checked = on;
+  const note = document.getElementById('act-state');
+  if (note) note.textContent = on ? '已开启' : '已关闭';
+  const item = document.getElementById('acc-activity');
+  if (item) item.classList.toggle('is-off', !on);
+}
+
+async function toggleActivityAlert(){
+  const box = document.getElementById('activity-toggle');
+  if (!box) return;
+  const want = box.checked;
+  box.disabled = true;
+  try {
+    const d = await postJSON('/api/activity_alert', { enabled: want });
+    if (!d.ok) { box.checked = !want; toast(d.message || '设置失败', true); return; }
+    renderActivitySwitch(d.activity_alert_enabled);
+    toast(want ? '已开启活动结束提醒' : '已关闭活动结束提醒');
+  } catch (e) {
+    box.checked = !want;
+    toast('设置失败：' + e, true);
+  } finally {
+    box.disabled = false;
+  }
 }
 
 /* 补发：开关 + 窗口数值分别对应 config.app.catch_up_enabled / catch_up_minutes */
@@ -2508,6 +2766,12 @@ document.getElementById('catch-up-toggle')
   .addEventListener('change', toggleCatchUp);
 document.getElementById('resin-toggle')
   .addEventListener('change', toggleResourceAlert);
+document.getElementById('activity-toggle')
+  .addEventListener('change', toggleActivityAlert);
+document.getElementById('btn-live-refresh')
+  .addEventListener('click', function(){ loadLive(true); });
+document.getElementById('btn-act-refresh')
+  .addEventListener('click', refreshActivities);
 
 /* 折叠面板标题栏里的开关 / 小按钮：只做自己的事，不连带展开或收起面板。
    stopPropagation 拦住冒泡，summary 就不会收到这次点击（默认的展开动作也就不会发生）。 */
@@ -2580,6 +2844,155 @@ document.getElementById('btn-daemon-start').addEventListener('click', function()
 document.getElementById('btn-daemon-stop').addEventListener('click', function(){ controlDaemon('stop'); });
 document.getElementById('btn-dev-save').addEventListener('click', saveDevice);
 document.getElementById('btn-dev-reset').addEventListener('click', resetDevice);
+
+
+/* ========================= 信息查询 ========================= */
+let liveLoaded = false;
+
+function loadQuery(){
+  loadActivities();
+  if (!liveLoaded) loadLive(false);
+}
+
+function renderLive(d){
+  const box = document.getElementById('live-grid');
+  const hint = document.getElementById('live-hint');
+  if (!box) return;
+  if (!d || d.ok === false) {
+    box.innerHTML = '<div class="emptybox">' + escHtml((d && d.message) || '查询失败，请重试') + '</div>';
+    if (hint) hint.textContent = '';
+    return;
+  }
+  const games = d.games || [];
+  if (!games.length) {
+    box.innerHTML = '<div class="emptybox">没有启用的账号。</div>';
+  } else {
+    box.innerHTML = games.map(function(g){
+      const name = escHtml(g.game_name || g.game);
+      if (!g.ok) {
+        return '<div class="live-card err">' +
+          '<div class="lc-top"><b>' + name + '</b><span class="badge err">失败</span></div>' +
+          '<div class="lc-num">' + escHtml(g.error || '未知错误') + '</div>' +
+          '<div class="lc-meta">' + escHtml(g.nickname || '') + '</div></div>';
+      }
+      const r = g.resource;
+      if (!r || r.current == null) {
+        return '<div class="live-card">' +
+          '<div class="lc-top"><b>' + name + '</b><i class="lc-dot" title="无体力字段"></i></div>' +
+          '<div class="lc-num">—</div>' +
+          '<div class="lc-meta">暂不支持体力查询</div></div>';
+      }
+      const pct = (r.percent == null) ? 0 : r.percent;
+      const dot = g.finished ? 'ok' : 'no';
+      return '<div class="live-card">' +
+        '<div class="lc-top"><b>' + name + '</b><i class="lc-dot ' + dot + '" title="' +
+          (g.finished ? '日常已完成' : '日常有未完成') + '"></i></div>' +
+        '<div class="lc-num">' + r.current + '<small>/' +
+          (r.maximum == null ? '?' : r.maximum) + '</small></div>' +
+        '<div class="lc-bar"><i class="' + (pct >= 85 ? 'hot' : '') +
+          '" style="width:' + pct + '%"></i></div>' +
+        '<div class="lc-meta">' + escHtml(r.name) + ' · ' + pct + '%</div></div>';
+    }).join('');
+  }
+  if (hint) {
+    hint.textContent = '查询时间 ' + (d.generated_at || '-') +
+      (d.cached ? '（45 秒内缓存）' : '') + ' · 仅查询，不写历史、不推送';
+  }
+}
+
+function loadLive(force){
+  const btn = document.getElementById('btn-live-refresh');
+  const box = document.getElementById('live-grid');
+  if (btn) { btn.disabled = true; btn.textContent = '查询中…'; }
+  if (box) box.innerHTML = '<div class="emptybox">正在查询，请稍候…</div>';
+  fetch('/api/live' + (force ? '?refresh=1' : ''))
+    .then(function(r){ return r.json(); })
+    .then(function(d){ liveLoaded = true; renderLive(d); })
+    .catch(function(){
+      if (box) box.innerHTML = '<div class="emptybox">查询失败，请稍后重试。</div>';
+    })
+    .then(function(){
+      if (btn) { btn.disabled = false; btn.textContent = '刷新'; }
+    });
+}
+
+function renderActivities(d){
+  const list = document.getElementById('act-list');
+  const hint = document.getElementById('act-hint');
+  const uns = document.getElementById('act-unsupported');
+  if (!list) return;
+  d = d || {};
+  const items = d.items || [];
+  if (!items.length) {
+    list.innerHTML = '<div class="emptybox">' +
+      (d.has_data ? '当前没有进行中的活动。' : '还没拉取过活动数据，点右上角「刷新」。') +
+      '</div>';
+  } else {
+    const shown = items.slice(0, 12);
+    let html = shown.map(function(it){
+      const soon = !!it.ending_soon;
+      const badge = soon
+        ? '<span class="badge warn">还剩 ' + it.days_left + ' 天</span>'
+        : '<span class="badge">' + it.days_left + ' 天</span>';
+      return '<div class="act-row' + (soon ? ' soon' : '') + '">' +
+        '<div class="act-main"><div class="act-title">' + escHtml(it.title) + '</div>' +
+        '<div class="act-sub">' + escHtml(it.game_name) + ' · ' +
+          escHtml(String(it.end || '').slice(0, 16)) + ' 结束</div></div>' +
+        badge + '</div>';
+    }).join('');
+    if (items.length > shown.length) {
+      html += '<p class="hint">仅显示最近结束的 ' + shown.length +
+        ' 个，共 ' + items.length + ' 个进行中。</p>';
+    }
+    list.innerHTML = html;
+  }
+  if (hint) {
+    if (d.last_error) {
+      hint.textContent = '上次拉取失败（沿用旧数据）：' + d.last_error;
+    } else if (d.fetched_at) {
+      hint.textContent = '数据更新于 ' + d.fetched_at +
+        ' · 每 20 小时最多拉一次，也可以手动刷新';
+    } else {
+      hint.textContent = '';
+    }
+  }
+  if (uns) {
+    const list2 = d.unsupported || [];
+    uns.innerHTML = list2.length
+      ? '<div class="au-title">暂不支持（没有可用的公开活动接口）</div>' +
+        list2.map(function(u){
+          return '<span class="au-chip" title="' + escHtml(u.reason || '') + '">' +
+            escHtml(u.game_name) + '</span>';
+        }).join('')
+      : '';
+  }
+}
+
+function loadActivities(){
+  fetch('/api/activities').then(function(r){ return r.json(); })
+    .then(renderActivities)
+    .catch(function(){
+      const list = document.getElementById('act-list');
+      if (list) list.innerHTML = '<div class="emptybox">读取活动缓存失败，请点「刷新」。</div>';
+    });
+}
+
+async function refreshActivities(){
+  const btn = document.getElementById('btn-act-refresh');
+  if (!btn) return;
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = '刷新中…';
+  try {
+    const d = await postJSON('/api/activities/refresh', {});
+    if (d.ok === false) { toast(d.message || '刷新失败', true); return; }
+    renderActivities(d);
+    toast('活动数据已更新（' + (d.items || []).length + ' 个进行中）');
+  } catch (e) {
+    toast('刷新失败：' + e, true);
+  } finally {
+    btn.disabled = false; btn.textContent = old;
+  }
+}
 
 /* =========================== Tab 4：每日报表 =========================== */
 function markOf(cell){
@@ -2853,6 +3266,26 @@ class Handler(BaseHTTPRequestHandler):
             self._json(autostart.status())
             return
 
+        if parsed.path == "/api/activities":
+            from core import activities
+
+            try:
+                self._json(activities.summary())
+            except Exception as exc:  # noqa: BLE001 - 页面读不到也要给人话
+                logger.exception("读取活动缓存失败")
+                self._json({"ok": False, "message": f"读取活动缓存失败：{exc}"}, 500)
+            return
+
+        if parsed.path == "/api/live":
+            # refresh=1 强制重新查询（默认走 45 秒进程内缓存）
+            force = (query.get("refresh") or ["0"])[0].lower() in ("1", "true", "yes")
+            try:
+                self._json(live_status(force=force))
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("实时查询失败")
+                self._json({"ok": False, "message": f"实时查询失败：{exc}", "games": []}, 500)
+            return
+
         self._send(404, b"not found", "text/plain; charset=utf-8")
 
     # ------------------------------ POST ------------------------------ #
@@ -2965,6 +3398,30 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("保存补发窗口失败")
                     self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)
+            return
+
+        if path == "/api/activity_alert":
+            payload = self._read_json_body()
+            if payload is not None:
+                try:
+                    self._json(save_activity_alert(payload.get("enabled")))
+                except ValueError as exc:
+                    self._json({"ok": False, "message": str(exc)}, 400)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("保存活动提醒开关失败")
+                    self._json({"ok": False, "message": f"保存失败：{exc}"}, 500)
+            return
+
+        if path == "/api/activities/refresh":
+            from core import activities
+
+            payload = self._read_json_body()
+            if payload is not None:
+                try:
+                    self._json(activities.refresh(force=True))
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("刷新活动缓存失败")
+                    self._json({"ok": False, "message": f"刷新失败：{exc}"}, 500)
             return
 
         if path == "/api/settings":

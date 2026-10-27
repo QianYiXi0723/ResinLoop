@@ -532,20 +532,37 @@ def run_once(config: AppConfig, dry_run: bool = False) -> int:
     # 1) 查询
     statuses = collect_statuses(config)
 
+    # 1.5) 活动缓存：每天最多真正请求一次（20 小时 TTL），失败沿用旧缓存。
+    #      活动列表变化很慢，绝不跟着每轮检查去打接口。
+    activity_alerts = []
+    if config.activity_alert_enabled:
+        try:
+            from core import activities
+
+            activities.ensure_fresh()
+            activity_alerts = activities.pending_alerts()
+        except Exception as exc:  # noqa: BLE001 - 活动提醒坏了也不能影响日常检查
+            logger.warning("读取活动提醒失败（不影响本轮检查）：%s", exc)
+
     # 2) 判断（体力溢出预警复用本轮查询结果，不额外发请求）
-    report = build_report(statuses, config.resource_thresholds)
+    report = build_report(
+        statuses, config.resource_thresholds, activity_alerts=activity_alerts
+    )
     _safe_console(report.to_console_text())
     logger.info(
-        "汇总：总数=%d 已完成=%d 未完成=%d 失败=%d 漏做任务=%d 体力预警=%d",
+        "汇总：总数=%d 已完成=%d 未完成=%d 失败=%d 漏做任务=%d 体力预警=%d 活动提醒=%d",
         len(report.statuses),
         len(report.finished),
         len(report.unfinished),
         len(report.failed),
         report.unfinished_task_count,
         len(report.resource_alerts),
+        len(report.activity_alerts),
     )
     for alert in report.resource_alerts:
         logger.info("体力预警：%s", alert.warn_line())
+    for alert in report.activity_alerts:
+        logger.info("活动提醒：%s", alert.warn_line())
 
     # 2.5) 落一份历史（dry-run 不算，免得污染统计）
     if not dry_run:
@@ -564,6 +581,7 @@ def run_once(config: AppConfig, dry_run: bool = False) -> int:
         len(report.unfinished),
         always_notify=config.push.always_notify,
         overflow_count=len(report.resource_alerts),
+        activity_count=len(report.activity_alerts),
     )
     logger.info("推送决策：%s（%s）", "推送" if alert else "不推送", reason)
 
@@ -578,6 +596,16 @@ def run_once(config: AppConfig, dry_run: bool = False) -> int:
             push_results = push_all(notifiers, title, body, dry_run=dry_run)
             for result in push_results:
                 logger.info("推送结果 %s", result)
+
+    # 3.5) 活动提醒的去重记账：只有真的发出去了才记账，没发成下轮还能再试
+    if alert and push_results and not dry_run and any(r.ok for r in push_results):
+        if report.activity_alerts:
+            try:
+                from core import activities
+
+                activities.mark_notified(report.activity_alerts)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("记录活动提醒失败（下次可能重复提醒）：%s", exc)
 
     # 4) 收尾 + 退出码
     if statuses and all(not status.ok for status in statuses):
