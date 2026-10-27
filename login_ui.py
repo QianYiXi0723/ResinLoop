@@ -1644,7 +1644,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button type="button" data-tab="notify">通知绑定</button>
         <button type="button" data-tab="schedule">定时与状态</button>
       </nav>
-      <div class="side-foot">v1.1.3 · 本地运行</div>
+      <div class="side-foot">v1.1.4 · 本地运行</div>
     </aside>
 
     <main class="main">
@@ -1985,9 +1985,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button type="button" class="mini" id="btn-act-refresh">刷新</button>
       </div>
       <p class="desc">
-        来自官方公告接口的<b>真实起止时间</b>，每天最多拉一次（缓存
-        <code>data/activities.json</code>）。剩余 ≤72 小时会在推送末尾提醒；
-        祈愿、刷素材类公告<b>默认静音</b>（只展示、不推送），右侧「提醒」开关可逐条改。
+        原神 / 星铁 / 绝区零取自官方公告接口，明日方舟取自鹰角官网活动页，
+        都给<b>真实起止时间</b>；每天最多拉一次（缓存 <code>data/activities.json</code>）。
+        剩余 ≤72 小时会在推送末尾提醒；祈愿、刷素材类公告<b>默认静音</b>，右侧「提醒」开关可逐条改。
       </p>
       <div id="act-list"><div class="emptybox">读取中…</div></div>
       <p class="hint" id="act-hint"></p>
@@ -2995,19 +2995,16 @@ function renderActivities(d){
       (d.has_data ? '当前没有进行中的活动。' : '还没拉取过活动数据，点右上角「刷新」。') +
       '</div>';
   } else {
-    const shown = items.slice(0, 12);
-    let html = shown.map(actRowHtml).join('');
-    if (items.length > shown.length) {
-      html += '<p class="hint">仅显示最近结束的 ' + shown.length +
-        ' 个，共 ' + items.length + ' 个进行中。</p>';
-    }
+    // 四款游戏合起来二十多条，全都列出来：按结束时间截断会把后排的游戏整个藏掉
+    let html = items.map(actRowHtml).join('');
+    html += '<p class="hint">共 ' + items.length + ' 个进行中的活动 / 公告。</p>';
     list.innerHTML = html;
   }
   renderActHint(d);
   if (uns) {
     const list2 = d.unsupported || [];
     uns.innerHTML = list2.length
-      ? '<div class="au-title">暂不支持（没有可用的公开活动接口）</div>' +
+      ? '<div class="au-title">暂不支持（鼠标悬停看原因）</div>' +
         list2.map(function(u){
           return '<span class="au-chip" title="' + escHtml(u.reason || '') + '">' +
             escHtml(u.game_name) + '</span>';

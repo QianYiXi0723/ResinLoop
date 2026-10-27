@@ -16,10 +16,12 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import math
 import os
+import re
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -46,27 +48,12 @@ NOTIFIED_KEEP_DAYS = 7
 #: 但活动列表里照常展示，右侧开关随时可以单独打开。
 MUTED_KEYWORDS: Tuple[str, ...] = ("祈愿", "砺行修远", "祝圣移涌", "幽境危战")
 
-#: 已确认没有可用公开活动接口的游戏：界面上明确标注「暂不支持」。
+#: 已确认没有可用活动接口的游戏：界面上明确标注「暂不支持」。
 UNSUPPORTED: Tuple[Dict[str, str], ...] = (
-    {
-        "game": "starrail",
-        "game_name": "崩坏：星穹铁道",
-        "reason": "官方公告接口只有版本/说明类公告，没有活动分组与截止时间",
-    },
-    {
-        "game": "zzz",
-        "game_name": "绝区零",
-        "reason": "公告接口当前返回异常，暂未找到可用的活动列表",
-    },
-    {
-        "game": "arknights",
-        "game_name": "明日方舟",
-        "reason": "森空岛未公开活动日历接口",
-    },
     {
         "game": "endfield",
         "game_name": "终末地",
-        "reason": "森空岛未公开活动日历接口",
+        "reason": "官网公告只写「版本更新后至版本维护前」，没有可计算的截止日期",
     },
 )
 
@@ -184,10 +171,12 @@ class ActivityAlert:
     def warn_line(self) -> str:
         """📅 活动提醒：原神「祝圣移涌」，还剩 2 天结束，请抓紧时间！
 
-        不少公告标题本身就带「」，这里只补外层缺失的引号，避免出现「「…」」。
+        不少公告标题本身就带「」（星铁更常见：``4.6版本「无名勋礼」更新``），
+        只有整条标题一个引号都没有时才补外层引号，避免出现「「…」」。
         """
         days = self.days_left
-        shown = self.title if self.title.startswith("「") else f"「{self.title}」"
+        needs_quote = "「" not in self.title and "」" not in self.title
+        shown = f"「{self.title}」" if needs_quote else self.title
         left = f"还剩 {days} 天" if days >= 1 else "今天就要"
         return f"📅 活动提醒：{self.game_name}{shown}，{left}结束，请抓紧时间！"
 
@@ -250,7 +239,14 @@ def _parse_time(text: Any) -> Optional[datetime]:
     if not isinstance(text, str):
         return None
     text = text.strip()
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y/%m/%d",
+    ):
         try:
             return datetime.strptime(text, fmt)
         except ValueError:
@@ -266,16 +262,135 @@ def _cache_age_hours(fetched_at: str) -> Optional[float]:
 
 
 # --------------------------------------------------------------------------- #
-# 拉取
+# 拉取（四款游戏各有各的官方来源，见下面每个 fetcher 的注释）
 # --------------------------------------------------------------------------- #
+
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+#: 星铁：公告接口（这是国服唯一公开的公告源，type_list 只有「公告」一类）
+STARRAIL_ANN_URL = "https://hkrpg-ann-api.mihoyo.com/common/hkrpg_cn/announcement/api/getAnnList"
+STARRAIL_ANN_PARAMS: Dict[str, Any] = {
+    "game": "hkrpg",
+    "game_biz": "hkrpg_cn",
+    "lang": "zh-cn",
+    "bundle_id": "hkrpg_cn",
+    "platform": "pc",
+    "region": "prod_gf_cn",
+    "level": 70,
+    "uid": "100000000",
+}
+
+#: 星铁公告里这些是运营/周边内容，不是游戏内活动，别拿去催人
+STARRAIL_NOISE = (
+    "周边", "问卷", "社媒", "防沉迷", "公平运营", "PC端", "小程序",
+    "社区工具", "谨防诈骗", "跃迁记录", "游戏优化", "已知问题",
+)
+
+#: 绝区零：注意域名是 api-takumi（ann-api 会返回 retcode=-1000）
+ZZZ_ANN_URL = "https://api-takumi.mihoyo.com/common/nap_cn/announcement/api/getAnnList"
+ZZZ_ANN_PARAMS: Dict[str, Any] = {
+    "game": "nap",
+    "game_biz": "nap_cn",
+    "lang": "zh-cn",
+    "bundle_id": "nap_cn",
+    "platform": "pc",
+    "region": "prod_gf_cn",
+    "level": 60,
+    "uid": "100000000",
+}
+
+#: 鹰角官网新闻接口 / 正文页（活动起止时间只写在正文里）
+AK_NEWS_URL = "https://ak.hypergryph.com/api/news"
+AK_NEWS_PAGE = "https://ak.hypergryph.com/news/%s"
+#: 最多翻几条活动详情（每条一次请求，只取最近的一批）
+AK_DETAIL_LIMIT = 6
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+
+#: 正文里的活动时间，兼容这几种写法：
+#:   10月24日20:00~11月24日03:59 / 11月01日 12:00 - 11月15日 03:59
+#:   2026/10/15 12:00 - 2026/11/26 03:59
+_DATE_WINDOW_RE = re.compile(
+    r"活动时间[：:]\s*"
+    r"(?:(\d{4})[年/])?(\d{1,2})[月/](\d{1,2})日?\s*(\d{1,2}:\d{2})?\s*"
+    r"[~～\-—至到]+"
+    r"\s*(?:(\d{4})[年/])?(\d{1,2})[月/](\d{1,2})日?\s*(\d{1,2}:\d{2})?"
+)
+
+
+def _clean_text(text: Any) -> str:
+    """去掉 HTML 标签 / 反转义 / 压平空白 —— 公告标题和正文都带一堆标签。"""
+    raw = _HTML_TAG_RE.sub(" ", str(text or ""))
+    return _WS_RE.sub(" ", html.unescape(raw)).strip()
+
+
+def _new_session():
+    """建一个直连会话：本机系统代理会拦部分外网，trust_env=False 更稳。"""
+    import requests  # 惰性导入：没装依赖时也不影响其它功能
+
+    session = requests.Session()
+    session.trust_env = False
+    session.headers.update({"User-Agent": BROWSER_UA})
+    return session
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def _window_from_text(text: str, base: datetime) -> Optional[Tuple[datetime, datetime]]:
+    """从公告正文里抠出「活动时间：A ~ B」。
+
+    年份一般不写，按发布时间补：起止跨年时结束时间算到次年，
+    发布时间比活动开始晚半年以上说明是「预告」，开始时间算到次年。
+    """
+    match = _DATE_WINDOW_RE.search(text)
+    if not match:
+        return None
+    sy, sm, sd, st, ey, em, ed, et = match.groups()
+    try:
+        start_month, start_day = int(sm), int(sd)
+        end_month, end_day = int(em), int(ed)
+        start_year = int(sy) if sy else base.year
+        if not sy and start_month < base.month - 6:
+            start_year += 1  # 明显是明年的预告
+        end_year = int(ey) if ey else start_year
+        if not ey and (end_month, end_day) < (start_month, start_day):
+            end_year += 1
+        sh, smin = (int(st[:2]), int(st[3:])) if st else (0, 0)
+        eh, emin = (int(et[:2]), int(et[3:])) if et else (23, 59)
+        start = datetime(start_year, start_month, start_day, sh, smin)
+        end = datetime(end_year, end_month, end_day, eh, emin)
+    except ValueError:
+        return None
+    if end <= start:
+        return None
+    return start, end
+
+
+def _fetch_detail_window(
+    session: Any, url: str, base: datetime
+) -> Optional[Tuple[datetime, datetime]]:
+    """抓公告正文并解析活动时间；抓不到 / 没写清楚就返回 None（不猜）。"""
+    try:
+        response = session.get(url, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+    except Exception as exc:  # noqa: BLE001 - 单条详情失败不影响其它活动
+        logger.debug("读取活动正文失败 %s：%s", url, exc)
+        return None
+    return _window_from_text(_clean_text(response.text), base)
 
 
 def fetch_genshin_activities() -> List[Dict[str, Any]]:
     """拉原神「活动公告」分组，返回带真实起止时间的活动列表。"""
-    import requests  # 惰性导入：没装依赖时也不影响其它功能
-
-    session = requests.Session()
-    session.trust_env = False  # 本机系统代理会拦 127.0.0.1 / 部分外网，直连更稳
+    session = _new_session()
     response = session.get(GENSHIN_ANN_URL, params=GENSHIN_ANN_PARAMS, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     payload = response.json()
@@ -321,8 +436,172 @@ def fetch_genshin_activities() -> List[Dict[str, Any]]:
     return result
 
 
-#: 目前只有原神有可用的官方活动接口；新增游戏时在这里挂一个 fetch 函数即可。
-FETCHERS = {"genshin": fetch_genshin_activities}
+def fetch_starrail_activities() -> List[Dict[str, Any]]:
+    """星铁：国服公告接口（type_list 只有「公告」，没有单独的活动分组）。
+
+    公告本身带真实 start_time / end_time，版本说明、战令、限时玩法都在里面；
+    周边、问卷、防沉迷这类运营内容用 STARRAIL_NOISE 排掉。
+    """
+    session = _new_session()
+    response = session.get(
+        STARRAIL_ANN_URL, params=STARRAIL_ANN_PARAMS, timeout=REQUEST_TIMEOUT
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("retcode") not in (0, None):
+        raise RuntimeError(
+            f"公告接口返回 retcode={payload.get('retcode')}：{payload.get('message')}"
+        )
+
+    now = datetime.now()
+    result: List[Dict[str, Any]] = []
+    seen = set()
+    for group in (payload.get("data") or {}).get("list") or []:
+        if not isinstance(group, dict):
+            continue
+        for item in group.get("list") or []:
+            if not isinstance(item, dict):
+                continue
+            title = _clean_text(item.get("title") or item.get("subtitle"))
+            if not title or any(word in title for word in STARRAIL_NOISE):
+                continue
+            start = _parse_time(item.get("start_time"))
+            end = _parse_time(item.get("end_time"))
+            if not start or not end or end <= now or start > now:
+                continue
+            if title in seen:
+                continue
+            seen.add(title)
+            result.append({
+                "game": "starrail",
+                "game_name": "崩坏：星穹铁道",
+                "title": title,
+                "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+                "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+                "ann_id": int(item.get("ann_id") or 0),
+            })
+    result.sort(key=lambda item: item["end"])
+    return result
+
+
+def fetch_zzz_activities() -> List[Dict[str, Any]]:
+    """绝区零：公告接口的「活动公告」「福利活动」两类（tag_label 区分）。"""
+    session = _new_session()
+    response = session.get(ZZZ_ANN_URL, params=ZZZ_ANN_PARAMS, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("retcode") not in (0, None):
+        raise RuntimeError(
+            f"公告接口返回 retcode={payload.get('retcode')}：{payload.get('message')}"
+        )
+
+    now = datetime.now()
+    result: List[Dict[str, Any]] = []
+    seen = set()
+    for group in (payload.get("data") or {}).get("list") or []:
+        if not isinstance(group, dict):
+            continue
+        for item in group.get("list") or []:
+            if not isinstance(item, dict):
+                continue
+            tag = str(item.get("tag_label") or "")
+            if "活动" not in tag:
+                continue  # 常规公告 / 重要公告 / 社群公告 都不算活动
+            title = _clean_text(item.get("subtitle") or item.get("title"))
+            start = _parse_time(item.get("start_time"))
+            end = _parse_time(item.get("end_time"))
+            if not title or not start or not end or end <= now or start > now:
+                continue
+            if title in seen:
+                continue
+            seen.add(title)
+            result.append({
+                "game": "zzz",
+                "game_name": "绝区零",
+                "title": title,
+                "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+                "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+                "ann_id": int(item.get("ann_id") or 0),
+            })
+    result.sort(key=lambda item: item["end"])
+    return result
+
+
+def fetch_arknights_activities() -> List[Dict[str, Any]]:
+    """明日方舟：鹰角官网 news 接口（tab=1 是活动），起止时间解析自正文。
+
+    官网列表只给发布时间，真正的「活动时间：10月24日20:00~11月24日03:59」
+    写在活动详情页正文里，所以对最近的几条活动各抓一次详情。
+    """
+    session = _new_session()
+    response = session.get(
+        AK_NEWS_URL,
+        params={"lang": "zh-cn", "page": 1, "pageSize": 20},
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("code") not in (0, None):
+        raise RuntimeError(f"官网新闻接口返回 code={payload.get('code')}")
+
+    now = datetime.now()
+    result: List[Dict[str, Any]] = []
+    seen = set()
+    checked = 0
+    for item in (payload.get("data") or {}).get("list") or []:
+        if not isinstance(item, dict) or str(item.get("tab")) != "1":
+            continue  # tab: 0=公告 1=活动 2=制作组通讯
+        title = _clean_text(item.get("title"))
+        cid = str(item.get("cid") or "").strip()
+        if not title or not cid:
+            continue
+        if checked >= AK_DETAIL_LIMIT:
+            break
+        checked += 1
+        published = now
+        stamp = item.get("displayTime")
+        if isinstance(stamp, (int, float)) and stamp > 0:
+            try:
+                published = datetime.fromtimestamp(int(stamp))
+            except (OSError, ValueError, OverflowError):
+                published = now
+        window = _fetch_detail_window(session, AK_NEWS_PAGE % cid, published)
+        if not window:
+            logger.debug("方舟活动正文里没有明确的起止时间，跳过：%s", title)
+            continue
+        start, end = window
+        if end <= now or start > now:
+            continue
+        if title in seen:
+            continue
+        seen.add(title)
+        result.append({
+            "game": "arknights",
+            "game_name": "明日方舟",
+            "title": title,
+            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.strftime("%Y-%m-%d %H:%M:%S"),
+            "ann_id": _int_or_zero(cid),
+        })
+    result.sort(key=lambda item: item["end"])
+    return result
+
+
+#: 每个抓取器对应的来源说明，写进缓存的 source 字段方便排查
+SOURCES: Dict[str, str] = {
+    "genshin": "miyoushe-getAnnList(type_id=1)",
+    "starrail": "hkrpg-ann-api-getAnnList",
+    "zzz": "api-takumi-getAnnList(tag=活动)",
+    "arknights": "ak.hypergryph.com/api/news(tab=1)+正文",
+}
+
+#: 新增游戏时在这里挂一个 fetch 函数即可。
+FETCHERS = {
+    "genshin": fetch_genshin_activities,
+    "starrail": fetch_starrail_activities,
+    "zzz": fetch_zzz_activities,
+    "arknights": fetch_arknights_activities,
+}
 
 
 def _migrate_items(cache: Dict[str, Any]) -> bool:
@@ -396,7 +675,7 @@ def refresh(force: bool = False) -> Dict[str, Any]:
 
     cache["items"] = collected
     cache["fetched_at"] = now_text
-    cache["source"] = {"genshin": "miyoushe-announcement"}
+    cache["source"] = dict(SOURCES)
     cache.pop("last_error", None)
     cache["notified"] = _prune_notified(cache.get("notified") or {})
     save_cache(cache)
