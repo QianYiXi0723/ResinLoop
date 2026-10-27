@@ -18,7 +18,7 @@ from typing import List
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "release" / "resinloop"
 ZIP_DIR = ROOT / "dist"
-ZIP_NAME = "ResinLoop_v1.1.5"
+ZIP_NAME = "ResinLoop_v1.1.6"
 
 
 def collect_secrets() -> List[str]:
@@ -182,9 +182,12 @@ README_TXT = """ResinLoop · 日常巡查 —— 三步搞定
 
 【信息查询】
   实时体力：点「刷新」立刻查一次，看五款游戏现在多少树脂/体力/理智
-  即将结束的活动：原神的官方活动列表（带真实截止时间）
+  活动日历：读的是米游社 App 里那份官方日历（原神 / 星铁 / 绝区零）
+      和鹰角官网活动页（明日方舟），只列「给抽卡资源」的活动
+      （原石 / 星琼 / 菲林 / 合成玉·源石），按「进行中 → 未开启」两段排好
       每天最多自动拉一次，也可以点右上角「刷新」
-      星铁 / 绝区零 / 方舟 / 终末地没有公开活动接口，会标「暂不支持」
+      不想要的点右侧 ×，之后永久不再展示、也不再提醒
+      终末地没有带绝对日期的活动数据，会标「暂不支持」
 
 【账号绑定】
   设备伪装（推荐，但不强制）
@@ -269,6 +272,13 @@ def main() -> None:
         shutil.copy2(py, OUT / "core" / py.name)
     shutil.copy2(ROOT / "requirements.txt", OUT / "requirements.txt")
     shutil.copy2(ROOT / "README.md", OUT / "README.md")
+
+    # 1.05) static/icons：活动列表里的游戏头像，缺了会退化成文字占位
+    icons_src = ROOT / "static" / "icons"
+    if icons_src.is_dir():
+        (OUT / "static" / "icons").mkdir(parents=True, exist_ok=True)
+        for icon in sorted(icons_src.glob("*.png")):
+            shutil.copy2(icon, OUT / "static" / "icons" / icon.name)
 
     # 1.1) tools/：手机端 APK（体积大，不进 git，但必须进发布包）
     tools_src = ROOT / "tools"

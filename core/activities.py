@@ -41,8 +41,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CACHE_PATH = BASE_DIR / "data" / "activities.json"
 IGNORED_PATH = BASE_DIR / "data" / "ignored_activities.json"
 
-#: 缓存结构版本。版本不一致时下一轮强制重拉（老缓存是公告，结构对不上）。
-CACHE_VERSION = 3
+#: 缓存结构版本。版本不一致时下一轮强制重拉（v4 起带抽卡资源过滤与分组）。
+CACHE_VERSION = 4
 
 #: 缓存有效期：20 小时（每天最多真正请求一次）
 CACHE_TTL_HOURS = 20
@@ -61,6 +61,19 @@ UNSUPPORTED: Tuple[Dict[str, str], ...] = (
         "reason": "官方只有公告且不含截止日期，没有可用的活动日历接口",
     },
 )
+
+#: 只留「抽卡资源」：每款游戏对应的可抽卡货币（标题/奖励名里包含即算数）
+GACHA_REWARDS: Dict[str, Tuple[str, ...]] = {
+    "genshin": ("原石",),
+    "starrail": ("星琼",),
+    "zzz": ("菲林",),
+    "arknights": ("合成玉", "源石"),
+}
+
+#: 拿不到奖励数据时怎么办。
+#: True（默认）= 保留，界面上标「奖励未公开」—— 宁可多看一条，也别漏掉大活动；
+#: False = 也过滤掉 —— 列表更干净，但接口某天少个字段就会误伤。
+KEEP_WHEN_REWARD_UNKNOWN = True
 
 GENSHIN_CAL_URL = (
     "https://api-takumi-record.mihoyo.com/game_record/app/genshin/api/act_calendar"
@@ -108,18 +121,23 @@ def _clean_text(text: Any) -> str:
 
 @dataclass
 class Activity:
-    """活动日历里的一条。"""
+    """活动日历里的一条。
+
+    ``start`` / ``end`` 允许为空：接口偶尔不给时间，这种条目仍然展示，
+    只是排在所在分组的末尾（绝不因为缺时间就把人蒙在鼓里）。
+    """
 
     game_id: str
     game_name: str
     title: str
-    start: datetime
-    end: datetime
+    start: Optional[datetime]
+    end: Optional[datetime]
     kind: str = "act"          # act=活动 challenge=固定挑战（深渊/忘却之庭）
     status: str = ""           # 进行中 / 未开启 / 已完成（没给就按时间算）
     progress: str = ""         # 36/36 这种进度，没有就空
-    icon: str = ""             # 活动图标（界面用）
+    icon: str = ""             # 活动官方图标（保留，界面已改用游戏头像）
     remote_id: str = ""        # 官方活动 id，用于生成稳定 uid
+    reward: str = ""           # 抽卡资源文案：原石 420 / 星琼 500 / 菲林 900
 
     @property
     def uid(self) -> str:
@@ -128,6 +146,8 @@ class Activity:
 
     @property
     def hours_left(self) -> float:
+        if self.end is None:
+            return 0.0
         return max((self.end - datetime.now()).total_seconds() / 3600.0, 0.0)
 
     @property
@@ -137,14 +157,20 @@ class Activity:
 
     @property
     def not_started(self) -> bool:
-        return datetime.now() < self.start
+        return self.start is not None and datetime.now() < self.start
+
+    @property
+    def group(self) -> str:
+        """ongoing=已开启，upcoming=未开启（界面用它分两段）。"""
+        return "upcoming" if self.not_started else "ongoing"
 
     def countdown_text(self) -> str:
         """界面上的倒计时文案：和 App 里「5天9小时」一个意思。"""
         now = datetime.now()
-        if self.not_started:
-            left = self.start - now
-            return f"{_human_gap(left)}后开启"
+        if self.start is not None and now < self.start:
+            return f"{_human_gap(self.start - now)}后开启"
+        if self.end is None:
+            return "时间待定"
         if self.end <= now:
             return "已结束"
         return f"剩 {_human_gap(self.end - now)}"
@@ -157,17 +183,23 @@ class Activity:
             "game_name": self.game_name,
             "title": self.title,
             "kind": self.kind,
-            "start": self.start.strftime("%Y-%m-%d %H:%M:%S"),
-            "end": self.end.strftime("%Y-%m-%d %H:%M:%S"),
+            "start": _fmt_dt(self.start),
+            "end": _fmt_dt(self.end),
             "hours_left": round(hours, 1),
             "days_left": self.days_left,
-            "ending_soon": 0 < hours <= ALERT_WINDOW_HOURS and not self.not_started,
+            "ending_soon": self.end is not None and 0 < hours <= ALERT_WINDOW_HOURS and not self.not_started,
             "not_started": self.not_started,
+            "group": self.group,
             "countdown": self.countdown_text(),
             "status": self.status or ("未开启" if self.not_started else "进行中"),
             "progress": self.progress,
             "icon": self.icon,
+            "reward": self.reward,
         }
+
+
+def _fmt_dt(moment: Optional[datetime]) -> str:
+    return moment.strftime("%Y-%m-%d %H:%M:%S") if moment else ""
 
 
 def _human_gap(delta: timedelta) -> str:
@@ -473,6 +505,75 @@ def _reward_icon(rewards: Any) -> str:
     return ""
 
 
+def _reward_items(raw: Dict[str, Any]) -> List[Tuple[str, int]]:
+    """把 reward_list 拆成 [(名字, 数量)]，坏数据直接丢掉。"""
+    out: List[Tuple[str, int]] = []
+    rewards = raw.get("reward_list")
+    if not isinstance(rewards, list):
+        return out
+    for item in rewards:
+        if not isinstance(item, dict):
+            continue
+        name = _clean_text(item.get("name"))
+        if not name:
+            continue
+        try:
+            num = int(item.get("num") or 0)
+        except (TypeError, ValueError):
+            num = 0
+        out.append((name, max(num, 0)))
+    return out
+
+
+def _gacha_reward(game_id: str, raw: Dict[str, Any], text: str = "") -> Tuple[Optional[bool], str]:
+    """这条活动给不给抽卡资源？
+
+    返回 ``(keep, label)``：
+    * ``keep is True``  → 命中抽卡货币，label 是可以显示的数量文案；
+    * ``keep is False`` → 明确没有抽卡资源，过滤掉；
+    * ``keep is None``  → **拿不到奖励数据**，按兜底保留（宁可多看一条，也别漏大活动）。
+
+    绝区零的接口没有 reward_list，只有 ``monochrome_cnt``（菲林池），
+    0 就是「这期不送菲林」；字段缺失/不是数字才算拿不到。
+    """
+    keywords = GACHA_REWARDS.get(game_id, ())
+    unknown: Optional[bool] = None if KEEP_WHEN_REWARD_UNKNOWN else False
+
+    if game_id == "zzz":
+        raw_count = raw.get("monochrome_cnt")
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            return unknown, ""
+        if count <= 0:
+            return False, ""
+        return True, f"菲林 {count}"
+
+    if game_id == "arknights":
+        # 方舟没有结构化奖励，只能在活动正文里找「合成玉 / 源石」
+        if not text:
+            return unknown, ""
+        for keyword in keywords:
+            if keyword in text:
+                return True, keyword
+        return False, ""
+
+    items = _reward_items(raw)
+    if not items:
+        return unknown, ""  # 奖励字段缺失或为空
+
+    hit = ""
+    total = 0
+    for name, num in items:
+        for keyword in keywords:
+            if keyword in name:
+                hit = keyword
+                total += num
+    if not hit:
+        return False, ""
+    return True, (f"{hit} {total}" if total > 0 else hit)
+
+
 def fetch_genshin_activities() -> List[Dict[str, Any]]:
     """原神 act_calendar：活动 + 固定挑战（渊月螺旋）。"""
     creds = _miyoushe_credentials("genshin")
@@ -493,6 +594,7 @@ def fetch_genshin_activities() -> List[Dict[str, Any]]:
         if not title or not start or not end or end <= now:
             continue
         finished = bool(raw.get("is_finished"))
+        keep, reward = _gacha_reward("genshin", raw)
         result.append({
             "game": "genshin", "game_name": "原神", "kind": "act", "title": title,
             "start": start.strftime("%Y-%m-%d %H:%M:%S"),
@@ -501,6 +603,7 @@ def fetch_genshin_activities() -> List[Dict[str, Any]]:
             "progress": "",
             "icon": _reward_icon(raw.get("reward_list")),
             "remote_id": str(raw.get("id") or ""),
+            "reward": reward, "reward_ok": keep is not False,
         })
 
     for raw in data.get("fixed_act_list") or []:
@@ -518,6 +621,7 @@ def fetch_genshin_activities() -> List[Dict[str, Any]]:
             got, total = tower.get("star_num"), tower.get("total_star_num")
             if total:
                 progress = f"{got or 0}/{total}"
+        keep, reward = _gacha_reward("genshin", raw)
         result.append({
             "game": "genshin", "game_name": "原神", "kind": "challenge", "title": title,
             "start": start.strftime("%Y-%m-%d %H:%M:%S"),
@@ -525,6 +629,7 @@ def fetch_genshin_activities() -> List[Dict[str, Any]]:
             "status": "", "progress": progress,
             "icon": _reward_icon(raw.get("reward_list")),
             "remote_id": str(raw.get("id") or ""),
+            "reward": reward, "reward_ok": keep is not False,
         })
     result.sort(key=lambda item: item["end"])
     return result
@@ -566,6 +671,7 @@ def fetch_starrail_activities() -> List[Dict[str, Any]]:
         total, current = raw.get("total_progress"), raw.get("current_progress")
         if isinstance(total, int) and total > 0:
             progress = f"{current or 0}/{total}"
+        keep, reward = _gacha_reward("starrail", raw)
         result.append({
             "game": "starrail", "game_name": "崩坏：星穹铁道", "kind": "act", "title": title,
             "start": start.strftime("%Y-%m-%d %H:%M:%S"),
@@ -574,6 +680,7 @@ def fetch_starrail_activities() -> List[Dict[str, Any]]:
             "progress": progress,
             "icon": _reward_icon(raw.get("reward_list")),
             "remote_id": str(raw.get("id") or ""),
+            "reward": reward, "reward_ok": keep is not False,
         })
 
     for raw in data.get("challenge_list") or []:
@@ -587,6 +694,7 @@ def fetch_starrail_activities() -> List[Dict[str, Any]]:
         total, current = raw.get("total_progress"), raw.get("current_progress")
         if isinstance(total, int) and total > 0:
             progress = f"{current or 0}/{total}"
+        keep, reward = _gacha_reward("starrail", raw)
         result.append({
             "game": "starrail", "game_name": "崩坏：星穹铁道", "kind": "challenge", "title": title,
             "start": start.strftime("%Y-%m-%d %H:%M:%S"),
@@ -594,6 +702,7 @@ def fetch_starrail_activities() -> List[Dict[str, Any]]:
             "status": "", "progress": progress,
             "icon": "",
             "remote_id": str(raw.get("group_id") or raw.get("challenge_type") or title),
+            "reward": reward, "reward_ok": keep is not False,
         })
     result.sort(key=lambda item: item["end"])
     return result
@@ -620,6 +729,7 @@ def fetch_zzz_activities() -> List[Dict[str, Any]]:
             progress = f"{got or 0}/{total}"
         state = str(raw.get("state") or "")
         status = "已完成" if state == "STATE_FINISHED" else ""
+        keep, reward = _gacha_reward("zzz", raw)
         result.append({
             "game": "zzz", "game_name": "绝区零", "kind": "act", "title": title,
             "start": start.strftime("%Y-%m-%d %H:%M:%S"),
@@ -627,6 +737,7 @@ def fetch_zzz_activities() -> List[Dict[str, Any]]:
             "status": status, "progress": progress,
             "icon": "",
             "remote_id": str(raw.get("activity_id") or ""),
+            "reward": reward, "reward_ok": keep is not False,
         })
     result.sort(key=lambda item: item["end"])
     return result
@@ -647,15 +758,20 @@ def _new_session():
     return session
 
 
-def _fetch_detail_window(session, url: str, base: datetime) -> Optional[Tuple[datetime, datetime]]:
-    """抓公告正文并解析活动时间；抓不到 / 没写清楚就返回 None（不猜）。"""
+def _fetch_detail_window(session, url: str, base: datetime) -> Tuple[Optional[Tuple[datetime, datetime]], str]:
+    """抓公告正文，返回 (活动时间窗, 纯文本正文)。
+
+    正文同时用来找「合成玉 / 源石」——一次请求办两件事，别为了奖励再抓一遍。
+    时间窗拿不到就是 None（不猜）。
+    """
     try:
         response = session.get(url, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
     except Exception as exc:  # noqa: BLE001 - 单条详情失败不影响其它活动
         logger.debug("读取活动正文失败 %s：%s", url, exc)
-        return None
-    return _window_from_text(_clean_text(response.text), base)
+        return None, ""
+    body = _clean_text(response.text)
+    return _window_from_text(body, base), body
 
 
 def fetch_arknights_activities() -> List[Dict[str, Any]]:
@@ -691,19 +807,21 @@ def fetch_arknights_activities() -> List[Dict[str, Any]]:
                 published = datetime.fromtimestamp(int(stamp))
             except (OSError, ValueError, OverflowError):
                 published = now
-        window = _fetch_detail_window(session, AK_NEWS_PAGE % cid, published)
+        window, body = _fetch_detail_window(session, AK_NEWS_PAGE % cid, published)
         if not window:
             logger.debug("方舟活动正文里没有明确的起止时间，跳过：%s", title)
             continue
         start, end = window
         if end <= now:
             continue
+        keep, reward = _gacha_reward("arknights", {}, body)
         result.append({
             "game": "arknights", "game_name": "明日方舟", "kind": "act", "title": title,
             "start": start.strftime("%Y-%m-%d %H:%M:%S"),
             "end": end.strftime("%Y-%m-%d %H:%M:%S"),
             "status": "", "progress": "", "icon": "",
             "remote_id": cid,
+            "reward": reward, "reward_ok": keep is not False,
         })
     result.sort(key=lambda item: item["end"])
     return result
@@ -750,10 +868,25 @@ def refresh(force: bool = False) -> Dict[str, Any]:
         logger.warning("活动缓存未更新（沿用旧数据）：%s", cache["last_error"])
         return summary()
 
+    # 只留给抽卡资源的活动。拿不到奖励数据的（reward_ok=True）一律保留，
+    # 宁可多看一条，也不能因为接口少个字段就把大活动藏了。
+    kept: List[Dict[str, Any]] = []
+    stats: Dict[str, Dict[str, int]] = {}
+    for item in collected:
+        bucket = stats.setdefault(str(item.get("game") or ""), {"total": 0, "kept": 0})
+        bucket["total"] += 1
+        if item.pop("reward_ok", True) is False:
+            continue
+        bucket["kept"] += 1
+        kept.append(item)
+    dropped = len(collected) - len(kept)
+
     # 黑名单只做「读时过滤」：缓存里保留全量，
     # 这样点「恢复全部」能立刻回来，不用等下一轮重新拉接口。
     cache["version"] = CACHE_VERSION
-    cache["items"] = collected
+    cache["items"] = kept
+    cache["stats"] = stats
+    cache["filtered_count"] = dropped
     cache["fetched_at"] = now_text
     cache["source"] = dict(SOURCES)
     if errors:
@@ -764,12 +897,12 @@ def refresh(force: bool = False) -> Dict[str, Any]:
     save_cache(cache)
     ignored = _ignored_ids()
     hidden = sum(
-        1 for item in collected
+        1 for item in kept
         if f"{item['game']}:{item.get('kind', 'act')}:{item.get('remote_id') or item['title']}" in ignored
     )
     logger.info(
-        "活动日历已更新：%d 个进行中（其中 %d 个在黑名单里，不展示不提醒）",
-        len(collected), hidden,
+        "活动日历已更新：%d 个带抽卡资源（过滤掉 %d 个材料活动，%d 个在黑名单里不展示）",
+        len(kept), dropped, hidden,
     )
     return summary()
 
@@ -788,8 +921,23 @@ def ensure_fresh() -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
+#: 排序时给「时间缺失」的占位值：保证它们落在所在分组的最后面
+_MAX_TIME = datetime.max
+
+
+def _activity_sort_key(act: Activity) -> Tuple[int, datetime, datetime]:
+    """第一组（进行中）按结束时间升序，第二组（未开启）按开启时间升序。"""
+    if act.group == "upcoming":
+        return (1, act.start or _MAX_TIME, act.end or _MAX_TIME)
+    return (0, act.end or _MAX_TIME, act.start or _MAX_TIME)
+
+
 def ongoing() -> List[Activity]:
-    """当前仍在进行中 / 即将开始的活动（只读缓存，不发请求）。"""
+    """还没结束的活动，已按界面顺序排好。
+
+    顺序 = 进行中（结束时间由近到远）→ 未开启（开启时间由近到远）；
+    已结束的直接丢掉，时间缺失的排在所在分组最后。
+    """
     cache = load_cache()
     now = datetime.now()
     ignored = _ignored_ids()
@@ -799,8 +947,8 @@ def ongoing() -> List[Activity]:
             continue
         start = _parse_time(item.get("start"))
         end = _parse_time(item.get("end"))
-        if not start or not end or end <= now:
-            continue
+        if end is not None and end <= now:
+            continue  # 已结束：不展示、也不提醒
         activity = Activity(
             game_id=str(item.get("game") or ""),
             game_name=str(item.get("game_name") or ""),
@@ -812,11 +960,12 @@ def ongoing() -> List[Activity]:
             progress=str(item.get("progress") or ""),
             icon=str(item.get("icon") or ""),
             remote_id=str(item.get("remote_id") or ""),
+            reward=str(item.get("reward") or ""),
         )
         if activity.uid in ignored:
             continue  # 黑名单兜底：即使缓存里还在，也不让它出现
         result.append(activity)
-    result.sort(key=lambda act: act.end)
+    result.sort(key=_activity_sort_key)
     return result
 
 
@@ -881,13 +1030,14 @@ def _prune_notified(notified: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def summary() -> Dict[str, Any]:
-    """给界面/接口用的汇总：进行中的活动 + 暂不支持的游戏 + 缓存状态。"""
+    """给界面/接口用的汇总：活动（已分好组）+ 暂不支持的游戏 + 缓存状态。"""
     cache = load_cache()
     fetched_at = str(cache.get("fetched_at") or "")
     age = _cache_age_hours(fetched_at)
     activities = [act.to_dict() for act in ongoing()]
     soon = [item for item in activities if item.get("ending_soon")]
     ignored = load_ignored()
+    upcoming = [item for item in activities if item.get("group") == "upcoming"]
     return {
         "ok": True,
         "has_data": bool(fetched_at),
@@ -899,5 +1049,9 @@ def summary() -> Dict[str, Any]:
         "items": activities,
         "unsupported": [dict(item) for item in UNSUPPORTED],
         "soon_count": len(soon),
+        "ongoing_count": len(activities) - len(upcoming),
+        "upcoming_count": len(upcoming),
+        "filtered_count": int(cache.get("filtered_count") or 0),
+        "stats": cache.get("stats") or {},
         "ignored_count": len(ignored.get("ids") or []),
     }

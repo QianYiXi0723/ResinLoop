@@ -47,6 +47,17 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 CONFIG_PATH = BASE_DIR / "config.json"
 
+#: 静态资源（游戏头像等），只允许读这个目录下的图片
+STATIC_DIR = BASE_DIR / "static"
+STATIC_TYPES: Dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+}
+
 logger = logging.getLogger("dailycheck.loginui")
 
 #: 米游社三款游戏：id -> 显示名
@@ -1587,30 +1598,39 @@ HTML_PAGE = r"""<!DOCTYPE html>
     white-space:nowrap}
   .live-card.err .lc-num{font-size:13px;color:var(--err);font-weight:500;line-height:1.5}
 
-  .act-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
-    padding:11px 0;border-bottom:1px dashed var(--line)}
+  /* ---------- 活动日历 ---------- */
+  .act-group{display:flex;align-items:center;gap:8px;margin:18px 0 2px;
+    font-size:11.5px;font-weight:700;letter-spacing:.06em;color:var(--muted)}
+  .act-group:first-child{margin-top:2px}
+  .act-group .cnt{font-weight:500;letter-spacing:0;opacity:.7}
+  .act-group::after{content:"";flex:1 1 auto;height:1px;background:var(--line)}
+
+  .act-row{display:flex;align-items:center;gap:11px;padding:10px 0;
+    border-bottom:1px dashed var(--line)}
   .act-row:last-child{border-bottom:none}
+  /* 36×36、8px 圆角、一点点阴影 —— 照着手机 App 图标的样子来 */
+  .act-icon{width:36px;height:36px;border-radius:8px;flex:none;object-fit:cover;
+    box-shadow:0 1px 3px rgba(16,24,40,.16),0 0 0 1px rgba(16,24,40,.05)}
+  .act-icon.ph{display:grid;place-items:center;font-size:12px;color:var(--muted);
+    background:var(--bg);box-shadow:none;border:1px solid var(--line)}
   .act-main{min-width:0;flex:1 1 auto}
-  .act-title{font-size:13.5px;line-height:1.45;overflow:hidden;
+  .act-title{font-size:13.5px;line-height:1.4;overflow:hidden;
     display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-  .act-sub{font-size:11.5px;color:var(--muted);margin-top:2px}
   .act-row.soon .act-title{font-weight:600}
-  .act-unsupported{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
-  .act-unsupported .au-title{font-size:12px;color:var(--muted);margin-bottom:6px}
-  .au-chip{display:inline-block;font-size:11.5px;color:var(--muted);background:var(--bg);
-    border:1px solid var(--line);border-radius:999px;padding:2px 9px;margin:0 6px 6px 0}
-  /* 活动行：左侧图标+名称，右侧进度/状态/删除 */
-  .act-side{display:flex;align-items:center;gap:8px;flex:none}
-  .act-icon{width:28px;height:28px;border-radius:8px;object-fit:cover;flex:none;
-    background:var(--bg);border:1px solid var(--line)}
-  .act-icon.ph{display:grid;place-items:center;font-size:12px;color:var(--muted)}
+  .act-sub{font-size:11.5px;color:var(--muted);margin-top:3px;
+    display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .act-count{font-variant-numeric:tabular-nums}
+  .act-count.soon{color:var(--warn);font-weight:700}
+  .act-side{display:flex;align-items:center;gap:7px;flex:none}
+  .act-reward{font-size:11px;padding:1px 7px;border-radius:999px;white-space:nowrap;
+    color:var(--violet);border:1px solid rgba(124,58,237,.26);
+    background:rgba(124,58,237,.08);font-variant-numeric:tabular-nums}
+  .act-reward.muted{color:var(--muted);border-color:var(--line);background:transparent}
   .act-progress{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;
     white-space:nowrap}
   .act-state{font-size:11px;padding:0 7px;border-radius:999px;border:1px solid var(--line);
     color:var(--muted);white-space:nowrap}
-  .act-state.on{color:var(--brand);border-color:rgba(37,99,235,.35);background:rgba(37,99,235,.06)}
   .act-state.done{color:var(--ok);border-color:var(--ok)}
-  .act-state.soon{color:var(--warn);border-color:var(--warn)}
   .act-del{width:22px;height:22px;padding:0;flex:none;border-radius:6px;border:1px solid transparent;
     background:transparent;color:var(--muted);font-size:16px;line-height:1;cursor:pointer;
     opacity:.5;transition:opacity .15s,background .15s,color .15s}
@@ -1619,10 +1639,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .act-restore{font-size:12px;color:var(--brand);cursor:pointer;text-decoration:none;
     margin-left:6px}
   .act-restore:hover{text-decoration:underline}
+  .act-unsupported{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+  .act-unsupported .au-title{font-size:12px;color:var(--muted);margin-bottom:6px}
+  .au-chip{display:inline-block;font-size:11.5px;color:var(--muted);background:var(--bg);
+    border:1px solid var(--line);border-radius:999px;padding:2px 9px;margin:0 6px 6px 0}
   @media (max-width:560px){
-    .act-row{flex-wrap:wrap;align-items:flex-start}
-    .act-main{flex:1 1 100%}
-    .act-side{width:100%;justify-content:flex-end}
+    .act-icon{width:32px;height:32px;border-radius:7px}
+    .act-side{flex-direction:column;align-items:flex-end;gap:4px}
   }
   .resin-row input[type=number]{
     width:100%;margin-top:4px;padding:8px 10px;border-radius:9px;
@@ -1652,7 +1675,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <button type="button" data-tab="notify">通知绑定</button>
         <button type="button" data-tab="schedule">定时与状态</button>
       </nav>
-      <div class="side-foot">v1.1.5 · 本地运行</div>
+      <div class="side-foot">v1.1.6 · 本地运行</div>
     </aside>
 
     <main class="main">
@@ -1989,14 +2012,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
     <section class="card">
       <div class="chan-head">
-        <h2><span class="dot" style="background:var(--warn)"></span>即将结束的活动</h2>
+        <h2><span class="dot" style="background:var(--warn)"></span>活动日历</h2>
         <button type="button" class="mini" id="btn-act-refresh">刷新</button>
       </div>
       <p class="desc">
-        与米游社「活动日历」同一份数据：原神 / 星铁 / 绝区零读账号的活动日历接口，
-        明日方舟取鹰角官网活动页，都带<b>真实起止时间</b>（缓存
-        <code>data/activities.json</code>，每 20 小时最多拉一次）。
-        剩余 ≤72 小时会在推送末尾提醒；<b>不想要的活动点右侧垃圾桶删掉</b>，之后永久不再提醒。
+        与米游社「活动日历」同一份数据（原神 / 星铁 / 绝区零读活动日历接口，明日方舟取鹰角官网）。
+        只留<b>给抽卡资源</b>的活动（原石 / 星琼 / 菲林 / 合成玉·源石），
+        按「进行中 → 未开启」两段排好，剩余 ≤72 小时会在推送末尾提醒。
+        <b>不想要的活动点右侧 × 删掉</b>，之后永久不再展示、不再提醒。
       </p>
       <div id="act-list"><div class="emptybox">读取中…</div></div>
       <p class="hint" id="act-hint"></p>
@@ -2959,6 +2982,12 @@ function renderActHint(d){
   } else if (d.fetched_at) {
     parts.push('数据更新于 ' + d.fetched_at + ' · 每 20 小时最多拉一次，也可以手动刷新');
   }
+  if (typeof d.ongoing_count === 'number') {
+    parts.push('进行中 ' + d.ongoing_count + ' 个 · 未开启 ' + (d.upcoming_count || 0) + ' 个');
+  }
+  if (d.filtered_count > 0) {
+    parts.push('已过滤 ' + d.filtered_count + ' 个只给材料的活动');
+  }
   if (typeof d.soon_count === 'number' && d.soon_count > 0) {
     parts.push('72 小时内结束 ' + d.soon_count + ' 个，会推送提醒');
   }
@@ -2971,25 +3000,51 @@ function renderActHint(d){
   if (restore) restore.addEventListener('click', restoreActivities);
 }
 
+/* 游戏头像：按 game_id 硬绑定。接口给的 reward icon 太杂（原石、材料、纯文字），
+   这里统一换成官方代表人物头像，看起来才像一套 App 图标。 */
+const GAME_ICON = {
+  genshin: '/static/icons/genshin.png',
+  starrail: '/static/icons/starrail.png',
+  zzz: '/static/icons/zzz.png',
+  arknights: '/static/icons/arknights.png'
+};
+
+function actIconHtml(it){
+  const src = GAME_ICON[it.game];
+  if (!src) {
+    return '<span class="act-icon ph">' +
+      escHtml(String(it.game_name || '?').slice(0, 1)) + '</span>';
+  }
+  return '<img class="act-icon" width="36" height="36" alt="' +
+    escHtml(it.game_name || '') + '" src="' + src +
+    '" srcset="' + src.replace(/\.png$/, '@2x.png') + ' 2x">';
+}
+
 function actRowHtml(it){
   const notStarted = !!it.not_started;
-  const done = it.status === '已完成';
   const soon = !!it.ending_soon && !notStarted;
-  const state = notStarted ? '未开启' : (done ? '已完成' : '进行中');
-  const stateCls = 'act-state' + (notStarted ? '' : (done ? ' done' : (soon ? ' soon' : ' on')));
-  const icon = it.icon
-    ? '<img class="act-icon" src="' + escHtml(it.icon) + '" alt="" loading="lazy">'
-    : '<span class="act-icon ph">' + escHtml(String(it.game_name || '?').slice(0, 1)) + '</span>';
+  const id = escHtml(it.id || '');
+  // reward 为空 = 接口没给奖励明细，被兜底规则保留下来的（别假装它有原石）
+  const reward = it.reward
+    ? '<span class="act-reward" title="这个活动给抽卡资源">' + escHtml(it.reward) + '</span>'
+    : '<span class="act-reward muted" title="接口没有给出奖励明细，按兜底规则保留">奖励未公开</span>';
+  const done = it.status === '已完成'
+    ? '<span class="act-state done">已完成</span>' : '';
   const progress = it.progress
     ? '<span class="act-progress">' + escHtml(it.progress) + '</span>' : '';
-  const id = escHtml(it.id || '');
-  return '<div class="act-row' + (soon ? ' soon' : '') + '" data-id="' + id + '">' + icon +
-    '<div class="act-main"><div class="act-title">' + escHtml(it.title) + '</div>' +
-      '<div class="act-sub">' + escHtml(it.game_name) + ' · ⏱ ' +
-      escHtml(it.countdown || '') +
-      (it.kind === 'challenge' ? ' · 周期挑战' : '') + '</div></div>' +
-    '<div class="act-side">' + progress +
-      '<span class="' + stateCls + '">' + escHtml(state) + '</span>' +
+  return '<div class="act-row' + (soon ? ' soon' : '') + '" data-id="' + id + '">' +
+    actIconHtml(it) +
+    '<div class="act-main">' +
+      '<div class="act-title">' + escHtml(it.title) + '</div>' +
+      '<div class="act-sub">' +
+        '<span>' + escHtml(it.game_name) +
+          (it.kind === 'challenge' ? ' · 周期挑战' : '') + '</span>' +
+        '<span class="act-count' + (soon ? ' soon' : '') + '">' +
+          escHtml(it.countdown || '') + '</span>' +
+        progress +
+      '</div>' +
+    '</div>' +
+    '<div class="act-side">' + reward + done +
       '<button type="button" class="act-del" data-del="' + id +
         '" title="删除，之后不再提醒">×</button>' +
     '</div></div>';
@@ -3003,12 +3058,21 @@ function renderActivities(d){
   const items = d.items || [];
   if (!items.length) {
     list.innerHTML = '<div class="emptybox">' +
-      (d.has_data ? '当前没有进行中的活动。' : '还没拉取过活动数据，点右上角「刷新」。') +
+      (d.has_data ? '当前没有给抽卡资源的进行中活动。' : '还没拉取过活动数据，点右上角「刷新」。') +
       '</div>';
   } else {
-    // 四款游戏合起来二十多条，全都列出来：按结束时间截断会把后排的游戏整个藏掉
-    let html = items.map(actRowHtml).join('');
-    html += '<p class="hint">共 ' + items.length + ' 个进行中的活动 / 挑战。</p>';
+    // 后端已经排好序（进行中按结束时间、未开启按开启时间），这里只负责分段
+    const ongoing = items.filter(function(x){ return x.group !== 'upcoming'; });
+    const upcoming = items.filter(function(x){ return x.group === 'upcoming'; });
+    let html = '';
+    if (ongoing.length) {
+      html += '<div class="act-group">进行中<span class="cnt">' + ongoing.length +
+        '</span></div>' + ongoing.map(actRowHtml).join('');
+    }
+    if (upcoming.length) {
+      html += '<div class="act-group">未开启<span class="cnt">' + upcoming.length +
+        '</span></div>' + upcoming.map(actRowHtml).join('');
+    }
     list.innerHTML = html;
   }
   renderActHint(d);
@@ -3037,7 +3101,8 @@ async function deleteActivity(btn){
       return;
     }
     if (row) row.remove();
-    renderActHint(d);
+    // 整块重画：分组标题上的计数也要跟着变
+    renderActivities(d);
     toast('已删除，之后不会再提醒');
   } catch (e) {
     btn.disabled = false;
@@ -3235,17 +3300,37 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:  # 静音默认访问日志
         logger.debug("%s - %s", self.address_string(), fmt % args)
 
-    def _send(self, code: int, body: bytes, ctype: str) -> None:
+    def _send(self, code: int, body: bytes, ctype: str, cache: str = "no-store") -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         self.send_header("X-Frame-Options", "DENY")
         self.end_headers()
         try:
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def _serve_static(self, path: str) -> None:
+        """只吐 static/ 下的图片，别的路径一律 404（顺手挡住 ../ 穿越）。"""
+        rel = path[len("/static/"):]
+        target = (STATIC_DIR / rel).resolve()
+        try:
+            target.relative_to(STATIC_DIR.resolve())
+        except ValueError:
+            self._send(404, b"not found", "text/plain; charset=utf-8")
+            return
+        ctype = STATIC_TYPES.get(target.suffix.lower())
+        if ctype is None or not target.is_file():
+            self._send(404, b"not found", "text/plain; charset=utf-8")
+            return
+        try:
+            body = target.read_bytes()
+        except OSError:
+            self._send(404, b"not found", "text/plain; charset=utf-8")
+            return
+        self._send(200, body, ctype, cache="public, max-age=86400")
 
     def _json(self, payload: Dict[str, Any], code: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -3372,6 +3457,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 logger.exception("实时查询失败")
                 self._json({"ok": False, "message": f"实时查询失败：{exc}", "games": []}, 500)
+            return
+
+        if parsed.path.startswith("/static/"):
+            self._serve_static(parsed.path)
             return
 
         self._send(404, b"not found", "text/plain; charset=utf-8")
