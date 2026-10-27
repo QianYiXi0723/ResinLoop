@@ -1198,16 +1198,49 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .switch{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);
           cursor:pointer;white-space:nowrap;user-select:none}
   .switch input{width:15px;height:15px;accent-color:var(--brand);cursor:pointer;margin:0}
-  /* 开机自启：一整行可点，右边挂状态徽标 */
-  .autostart-row{display:flex;align-items:center;gap:9px;margin-top:14px;
-    padding:10px 12px;border:1px solid var(--line);border-radius:10px;
-    background:var(--bg);font-size:14px;cursor:pointer;user-select:none}
-  .autostart-row input{width:16px;height:16px;accent-color:var(--brand);
-    cursor:pointer;margin:0;flex:none}
-  .autostart-row span{flex:1}
-  .autostart-row .badge{flex:none}
-  .autostart-row input:disabled{cursor:not-allowed}
-  .autostart-row:has(input:disabled){opacity:.55;cursor:not-allowed}
+  /* 开机自启：左文字 + 右拨动开关，整行可点 */
+  .autostart-row{display:flex;align-items:center;justify-content:space-between;
+    gap:12px;margin-top:14px;padding:11px 14px;border:1px solid var(--line);
+    border-radius:10px;background:var(--bg);font-size:14px;cursor:pointer;
+    user-select:none;transition:border-color .15s}
+  .autostart-row:hover{border-color:var(--brand)}
+  .autostart-row > span:first-child{flex:1;min-width:0}
+
+  /* 现代拨动开关（纯 CSS，无图片） */
+  .toggle{position:relative;display:inline-block;width:42px;height:24px;flex:none}
+  .toggle input{position:absolute;opacity:0;width:0;height:0;margin:0}
+  .toggle i{position:absolute;inset:0;border-radius:999px;background:var(--line);
+    transition:background .18s ease;pointer-events:none}
+  .toggle i::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;
+    border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(16,24,40,.25);
+    transition:transform .18s ease}
+  .toggle input:checked + i{background:var(--brand)}
+  .toggle input:checked + i::after{transform:translateX(18px)}
+  .toggle input:focus-visible + i{box-shadow:0 0 0 3px rgba(37,99,235,.25)}
+  .toggle input:disabled + i{opacity:.45}
+
+  /* 守护进程核心信息：两行并排 */
+  .daemon-core{display:grid;grid-template-columns:1fr 1fr;gap:10px 18px;
+    margin-top:2px;font-size:13.5px}
+  @media (max-width:520px){ .daemon-core{grid-template-columns:1fr} }
+  .daemon-core > div{display:flex;justify-content:space-between;gap:10px;
+    padding:8px 0;border-bottom:1px dashed var(--line)}
+  .daemon-core span{color:var(--muted);white-space:nowrap}
+  .daemon-core b{font-weight:600;text-align:right;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+
+  /* 高级运行信息：原生 details，默认收起 */
+  .adv{margin-top:14px;border-top:1px solid var(--line);padding-top:4px}
+  .adv summary{cursor:pointer;list-style:none;padding:8px 0;font-size:12.5px;
+    color:var(--muted);user-select:none;display:flex;align-items:center;gap:6px}
+  .adv summary::-webkit-details-marker{display:none}
+  .adv summary::before{content:"▸";font-size:10px;transition:transform .15s;display:inline-block}
+  .adv[open] summary::before{transform:rotate(90deg)}
+  .adv summary:hover{color:var(--fg)}
+  .adv[open] summary{margin-bottom:2px}
+
+  /* 已运行时"启动"按钮置灰，但仍保留占位不让布局跳动 */
+  #btn-daemon-start:disabled{opacity:.5;cursor:not-allowed}
   .field{margin-top:4px}
   .field input,.field textarea{width:100%;padding:10px 12px;border-radius:9px;
                border:1px solid var(--line);background:var(--bg);color:var(--fg);
@@ -1223,15 +1256,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
   @media (max-width:520px){ .row{grid-template-columns:1fr} }
   /* ---------- 每日报表 ---------- */
-  .hstats{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(148px,1fr))}
+  .hstats{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(128px,1fr))}
+  /* 极简卡：上游戏名、下大数字，垂直居中；本月明细走 title 悬浮提示 */
   .hstat{background:var(--bg);border:1px solid var(--line);border-radius:10px;
-         padding:10px 12px}
-  .hstat .name{font-size:12.5px;color:var(--muted);margin-bottom:3px;
+         padding:12px 8px;display:flex;flex-direction:column;align-items:center;
+         justify-content:center;gap:3px;text-align:center;cursor:default;
+         transition:border-color .15s,background .15s}
+  .hstat:hover{border-color:var(--brand)}
+  .hstat .name{font-size:12px;color:var(--muted);max-width:100%;
                overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .hstat .big{font-size:20px;font-weight:600;line-height:1.25}
-  .hstat .big small{font-size:12px;font-weight:400;color:var(--muted);margin-left:2px}
-  .hstat .sub2{font-size:11.5px;color:var(--muted);margin-top:2px}
-  .hstat .sub2 .bad{color:var(--err)}
+  .hstat .big{font-size:24px;font-weight:600;line-height:1.1;letter-spacing:-.02em}
+  .hstat .big small{font-size:11.5px;font-weight:400;color:var(--muted);margin-left:3px}
+  .hstat.is-off{opacity:.55}
   .htable{width:100%;border-collapse:collapse;font-size:13px;margin-top:2px}
   .htable th,.htable td{padding:7px 4px;border-bottom:1px solid var(--line);
                         text-align:center}
@@ -1463,32 +1499,44 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <h2><span class="dot" id="d-dot"></span>守护进程</h2>
         <span class="badge" id="d-state">读取中</span>
       </div>
-      <p class="desc">常驻后台，到点自动检查并推送。托盘图标在右下角。</p>
-      <div class="kv2">
-        <div><span>参与检查</span><b id="d-games">-</b></div>
-        <div><span>进程 PID</span><b id="d-pid">-</b></div>
-        <div><span>启动时间</span><b id="d-since">-</b></div>
+
+      <!-- 主界面只留两行：下次提醒 / 最近一次 -->
+      <div class="daemon-core">
         <div><span>下次提醒</span><b id="d-next">-</b></div>
         <div><span>最近一次</span><b id="d-last">-</b></div>
       </div>
+
       <div class="row">
         <button id="btn-daemon-start">启动守护进程</button>
         <button id="btn-daemon-stop" class="alt">停止守护进程</button>
       </div>
 
-      <!-- 开机自启：写 HKCU\...\Run，登录时静默拉起 daemon.py（托盘） -->
-      <label class="autostart-row">
-        <input type="checkbox" id="autostart-toggle">
-        <span>开机自动启动控制台</span>
-        <b class="badge" id="autostart-state">读取中</b>
+      <!-- 开机自启：右侧拨动开关，说明放 title 悬浮提示 -->
+      <label class="autostart-row"
+             title="开启后静默挂载在托盘，彻底关闭需点停止守护进程">
+        <span>开机自动启动</span>
+        <span class="toggle">
+          <input type="checkbox" id="autostart-toggle">
+          <i></i>
+        </span>
       </label>
-      <p class="hint" id="autostart-hint">
-        开启后每次开机静默挂载在右下角托盘，不影响前台。
-      </p>
-      <p class="hint">
-        启动后关掉本网页也不影响提醒；要彻底停掉就点「停止守护进程」，
-        或在右下角托盘图标上右键 → 退出程序。
-      </p>
+
+      <!-- 技术细节收进原生折叠面板，默认不展开 -->
+      <details class="adv">
+        <summary>查看高级运行信息</summary>
+        <div class="kv2">
+          <div><span>进程 PID</span><b id="d-pid">-</b></div>
+          <div><span>启动时间</span><b id="d-since">-</b></div>
+          <div><span>参与检查</span><b id="d-games">-</b></div>
+          <div><span>开机自启</span><b class="badge" id="autostart-state">读取中</b></div>
+        </div>
+        <p class="hint" id="autostart-hint">
+          开启后每次开机静默挂载在右下角托盘，不影响前台。
+        </p>
+        <p class="hint">
+          关掉本网页不影响提醒；要彻底停掉就点「停止守护进程」，或在托盘图标上右键 → 退出程序。
+        </p>
+      </details>
     </section>
 
     <section class="card">
@@ -2075,11 +2123,19 @@ function renderDaemon(st){
   document.getElementById('d-pid').textContent = st.pid || '-';
   document.getElementById('d-since').textContent = st.started_at || '-';
 
+  // 「最近一次」只留结论 + 月-日 时:分，别把秒和完整年份糊在脸上
   const last = st.last_run || {};
   document.getElementById('d-last').textContent =
-    last.at ? (last.at + '（' + (last.exit === 0 ? '成功' : '退出码 ' + last.exit) + '）') : '还没跑过';
+    last.at ? (last.exit === 0 ? '成功' : '退出码 ' + last.exit) + ' (' + shortStamp(last.at) + ')'
+            : '还没跑过';
   document.getElementById('btn-daemon-start').disabled = running;
   document.getElementById('btn-daemon-stop').disabled = !running;
+}
+
+function shortStamp(text){
+  // "2026-10-27 01:23:43" -> "10-27 01:23"
+  const m = String(text || '').match(/^\d{4}-(\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+  return m ? (m[1] + ' ' + m[2]) : String(text || '');
 }
 
 function renderSchedule(d){
@@ -2097,18 +2153,15 @@ function renderSchedule(d){
   document.getElementById('d-count').textContent = times.length + ' 个';
   document.getElementById('d-next').textContent = d.next_run || '-';
 
-  // 参与检查的账号：列表来自后端当前配置，页面里不写死任何游戏
+  // 参与检查的账号：折叠面板里只给数量，完整清单走 title（来自后端，不写死）
   const gamesBox = document.getElementById('d-games');
   if (gamesBox) {
     const infos = d.accounts_info || [];
     if (!infos.length) {
-      gamesBox.textContent = '没有启用的账号';
+      gamesBox.textContent = '无';
       gamesBox.title = 'config.json 里 accounts 的 enabled 全为 false';
     } else {
-      const short = infos.map(function(it){
-        return it.id === 'arknights' ? '方舟' : (it.name || it.id);
-      });
-      gamesBox.textContent = infos.length + ' 个 · ' + short.join('、');
+      gamesBox.textContent = infos.length + ' 个';
       gamesBox.title = infos.map(function(it){
         return (it.name || it.id) + (it.nickname ? '（' + it.nickname + '）' : '');
       }).join('\n');
@@ -2312,12 +2365,29 @@ function renderHistoryEmpty(message, detail){
     '</div>';
 }
 
+/* 极简统计卡：只留「游戏名 + X 天连续」，本月明细塞进 title 悬浮提示 */
+function escHtml(v){
+  return String(v == null ? '' : v).replace(/[&<>"']/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+function gameBaseName(g){
+  // 只取游戏基础名：去掉「 · 角色昵称」。
+  // 后端已经把 game_name / nickname 分开了，这里再兜一层 ——
+  // 老存档里的 game_name 可能混进过昵称。
+  var raw = String((g && (g.game_name || g.game)) || '');
+  var cut = raw.indexOf('·');
+  if (cut > 0) raw = raw.slice(0, cut);
+  return raw.trim() || String((g && g.game) || '');
+}
+
 function renderHistory(d){
   d = d || {};
   const monthBadge = document.getElementById('h-month');
   if (monthBadge) monthBadge.textContent = (d.month || '-') + ' 本月';
 
-  // --- 统计卡片：连续完成天数 / 本月未完成天数 ---
+  // --- 统计卡片：一排大数字（本月明细放 title，鼠标悬停才出现）---
   const statsBox = document.getElementById('h-stats');
   if (statsBox) {
     const games = d.games || [];
@@ -2325,14 +2395,12 @@ function renderHistory(d){
       statsBox.innerHTML = '';
     } else {
       statsBox.innerHTML = games.map(function(g){
-        const missed = g.month_missed;
-        return '<div class="hstat">' +
-          '<div class="name">' + (g.game_name || g.game) +
-            (g.nickname ? ' · ' + g.nickname : '') + '</div>' +
-          '<div class="big">' + g.streak + '<small> 天连续</small></div>' +
-          '<div class="sub2">本月完成 ' + g.month_done + ' 天 · ' +
-            (missed ? '<span class="bad">未完成 ' + missed + ' 天</span>' : '未完成 0 天') +
-          '</div>' +
+        const done = Number(g.month_done || 0);
+        const missed = Number(g.month_missed || 0);
+        const tip = '本月完成：' + done + ' 天 | 未完成：' + missed + ' 天';
+        return '<div class="hstat" title="' + escHtml(tip) + '">' +
+          '<div class="name">' + escHtml(gameBaseName(g)) + '</div>' +
+          '<div class="big">' + Number(g.streak || 0) + '<small> 天连续</small></div>' +
         '</div>';
       }).join('');
     }
