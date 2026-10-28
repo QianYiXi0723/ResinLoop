@@ -1154,6 +1154,30 @@ def save_activity_alert(enabled: Any = None, days: Any = None) -> Dict[str, Any]
 #: 实时查询结果缓存（秒）。切页签不该每次都重新打 5 个游戏的接口。
 _LIVE_TTL_SECONDS = 45
 _LIVE_CACHE: Dict[str, Any] = {"at": 0.0, "payload": None}
+#: 磁盘缓存：服务重启后也能秒回上一次的结果，页面冷启动绝不该现场打接口
+_LIVE_DISK_CACHE = BASE_DIR / "data" / "live_cache.json"
+
+
+def _live_disk_read() -> Optional[Dict[str, Any]]:
+    """读上一次成功查询落盘的结果；没有或坏了返回 None。"""
+    try:
+        data = json.loads(_LIVE_DISK_CACHE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not data.get("games"):
+        return None
+    return data
+
+
+def _live_disk_write(payload: Dict[str, Any]) -> None:
+    """成功查询后原子落盘；写失败只影响下次秒开，不影响本次返回。"""
+    try:
+        _LIVE_DISK_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _LIVE_DISK_CACHE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(_LIVE_DISK_CACHE)
+    except OSError:
+        logger.exception("实时查询磁盘缓存写入失败")
 
 
 def _split_progress(text: Any) -> Tuple[Optional[int], Optional[int]]:
@@ -1168,16 +1192,26 @@ def _split_progress(text: Any) -> Tuple[Optional[int], Optional[int]]:
 
 
 def live_status(force: bool = False) -> Dict[str, Any]:
-    """跑一次实时查询，返回每款游戏的体力 / 理智看板。
+    """返回每款游戏的体力 / 理智看板。
 
-    与定时检查共用 ``collect_statuses``：不写历史、不推送。结果在进程内缓存 45 秒，
-    避免来回切页签时反复打接口。
+    三级缓存：进程内 45 秒 → 磁盘 data/live_cache.json → 现场查询。
+    默认（页面加载）只回缓存，绝不现场打接口 —— 秒开是铁律；
+    真正的实时查询只发生在「刷新」按钮（force=1），日常数据由定时守护进程落盘。
     """
     cached = _LIVE_CACHE.get("payload")
     if (not force) and cached is not None and (time.time() - float(_LIVE_CACHE.get("at") or 0)) < _LIVE_TTL_SECONDS:
         payload = dict(cached)
         payload["cached"] = True
         return payload
+
+    if not force:
+        # 进程缓存不在有效期：直接回上一次落盘的结果（标 stale，前端提示可手动刷新）。
+        disk = _live_disk_read()
+        if disk is not None:
+            payload = dict(disk)
+            payload["cached"] = True
+            payload["stale"] = True
+            return payload
 
     from core.config import RESOURCE_TASK_NAMES, load_config
     from main import collect_statuses
@@ -1227,6 +1261,7 @@ def live_status(force: bool = False) -> Dict[str, Any]:
     }
     _LIVE_CACHE["at"] = time.time()
     _LIVE_CACHE["payload"] = payload
+    _live_disk_write(payload)
     return payload
 
 
@@ -1839,6 +1874,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .kpi-value.err,.value.err{color:var(--err)}
   .kpi-sub{font-size:11px;color:var(--muted);margin-top:1px;
            white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* KPI 静默刷新态：数字变淡 + 右侧一枚极小转圈，真实数据到手后平滑恢复 */
+  .kpi-value.refreshing{opacity:.45}
+  .kpi-value.refreshing::after{content:"";display:inline-block;width:10px;height:10px;
+    margin-left:8px;border:2px solid var(--btn-bg);border-top-color:var(--brand);
+    border-radius:50%;animation:s .8s linear infinite;vertical-align:3px}
   @media (max-width:1000px){ .kpi-bar{grid-template-columns:repeat(2,1fr)} }
   @media (max-width:520px){ .kpi-bar{grid-template-columns:1fr} }
 
@@ -2717,6 +2757,48 @@ async function postJSON(url, payload){
     body: JSON.stringify(payload || {})
   });
   return r.json();
+}
+
+/* =========================== 秒开缓存（localStorage） ===========================
+   机制：每次成功拉到数据就落一份到 localStorage；页面一打开先用缓存把 KPI /
+   报表 / 实时面板画出来（绝不让用户看 0/0 白屏），真实请求随后在后台静默刷新。
+   key 带版本号，结构变更时旧缓存整体失效。 */
+const CACHE_V = 'rl-cache-v1';
+
+function cacheGet(key){
+  try {
+    const raw = localStorage.getItem(CACHE_V + ':' + key);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+
+function cacheSet(key, val){
+  try { localStorage.setItem(CACHE_V + ':' + key, JSON.stringify(val)); } catch (e) {}
+}
+
+/* KPI 静默刷新态计数：history 与 live 两路并发，最后一个到手才摘掉转圈 */
+let kpiBusyCount = 0;
+function kpiBusy(on){
+  kpiBusyCount = Math.max(0, kpiBusyCount + (on ? 1 : -1));
+  ['k-today', 'k-resin', 'k-cred'].forEach(function(id){
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('refreshing', kpiBusyCount > 0);
+  });
+}
+
+/* 秒开：用上次缓存先把界面画出来。缓存结构异常就当没有，走正常加载。 */
+function renderCachedData(){
+  const ch = cacheGet('history');
+  if (ch && ch.has_data) {
+    try {
+      renderHistory(ch);
+      renderKpiToday(ch);
+    } catch (e) { console.warn('缓存报表渲染失败，走正常加载', e); }
+  }
+  const cl = cacheGet('live');
+  if (cl && cl.ok !== false && (cl.games || []).length) {
+    try { renderLive(cl); } catch (e) { console.warn('缓存实时面板渲染失败', e); }
+  }
 }
 
 function escHtml(v){
@@ -3739,7 +3821,8 @@ document.getElementById('btn-dev-reset').addEventListener('click', resetDevice);
 
 
 /* ========================= 信息查询 ========================= */
-let liveLoaded = false;
+let liveLoaded = false;    // 本次会话已经发起过实时请求
+let liveRendered = false;  // 页面上已有可展示的数据（缓存或实时），占位符不再覆盖
 
 function loadQuery(){
   loadActivities();
@@ -3790,10 +3873,14 @@ function renderLive(d){
   const hint = document.getElementById('live-hint');
   if (!box) return;
   if (!d || d.ok === false) {
-    box.innerHTML = '<div class="emptybox">' + escHtml((d && d.message) || '查询失败，请重试') + '</div>';
-    if (hint) hint.textContent = '';
+    /* 已有数据在展示时，失败的刷新静默忽略，不把页面打成空态 */
+    if (!liveRendered) {
+      box.innerHTML = '<div class="emptybox">' + escHtml((d && d.message) || '查询失败，请重试') + '</div>';
+      if (hint) hint.textContent = '';
+    }
     return;
   }
+  liveRendered = true;
   window.__liveMap = Object.assign(window.__liveMap || {}, buildLiveMap(d));
   const games = d.games || [];
   if (!games.length) {
@@ -3828,7 +3915,8 @@ function renderLive(d){
       }).join('') + '</tbody></table>';
   }
   if (hint) {
-    hint.textContent = '查询时间 ' + (d.generated_at || '-') + (d.cached ? '（45 秒内缓存）' : '');
+    hint.textContent = '查询时间 ' + (d.generated_at || '-') +
+      (d.cached ? (d.stale ? '（历史缓存 · 点「刷新」获取实时）' : '（45 秒内缓存）') : '');
   }
   // 迷你卡的体力行用最新数据重绘（报表页当前可见时才有意义）
   const statsBox = document.getElementById('h-stats');
@@ -3846,14 +3934,21 @@ function loadLive(force){
   const btn = document.getElementById('btn-live-refresh');
   const box = document.getElementById('live-grid');
   if (btn) { btn.disabled = true; btn.textContent = '查询中…'; }
-  if (box) box.innerHTML = '<div class="emptybox">正在查询，请稍候…</div>';
+  /* 已有缓存渲染的表格时不再打占位符 —— 静默刷新，数据到了平滑替换 */
+  if (box && !liveRendered) box.innerHTML = '<div class="emptybox">正在查询，请稍候…</div>';
+  kpiBusy(true);
   fetch('/api/live' + (force ? '?refresh=1' : ''))
     .then(function(r){ return r.json(); })
-    .then(function(d){ liveLoaded = true; renderLive(d); })
+    .then(function(d){
+      liveLoaded = true;
+      renderLive(d);
+      if (d && d.ok !== false) cacheSet('live', d);   // 落缓存，下次秒开
+    })
     .catch(function(){
-      if (box) box.innerHTML = '<div class="emptybox">查询失败，请稍后重试。</div>';
+      if (box && !liveRendered) box.innerHTML = '<div class="emptybox">查询失败，请稍后重试。</div>';
     })
     .then(function(){
+      kpiBusy(false);
       if (btn) { btn.disabled = false; btn.textContent = '刷新'; }
     });
 }
@@ -4259,6 +4354,7 @@ function renderHeatmap(d){
 }
 
 function loadHistory(){
+  kpiBusy(true);
   fetch('/api/history?days=7')
     .then(function(r){
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -4266,6 +4362,7 @@ function loadHistory(){
     })
     .then(function(d){
       try {
+        cacheSet('history', d);   // 落缓存，下次秒开
         renderHistory(d);
         renderKpiToday(d);
       } catch (e) {
@@ -4275,9 +4372,13 @@ function loadHistory(){
     })
     .catch(function(err){
       console.error('读取历史记录失败', err);
-      renderHistoryEmpty('暂无历史记录，等待下一次定时检查写入。',
-                         err && err.message ? '（' + err.message + '）' : '');
-    });
+      /* 有缓存时静默失败：上次的数据还在页面上，不打断用户 */
+      if (!lastHistory) {
+        renderHistoryEmpty('暂无历史记录，等待下一次定时检查写入。',
+                           err && err.message ? '（' + err.message + '）' : '');
+      }
+    })
+    .then(function(){ kpiBusy(false); });
 }
 
 document.getElementById('btn-history-refresh').addEventListener('click', loadHistory);
@@ -4692,6 +4793,9 @@ document.getElementById('btn-console-refresh').addEventListener('click', functio
 });
 
 /* =========================== 启动 =========================== */
+/* 秒开：先把 localStorage 里的上次数据画出来（KPI/报表/实时面板），
+   下面的 switchTab 会发起真实请求做后台静默刷新，数据到手平滑替换 */
+renderCachedData();
 const hash = (location.hash || '').replace('#', '');
 switchTab(PANEL_NAMES.indexOf(hash) >= 0 ? hash : 'history');
 refreshNotice();
