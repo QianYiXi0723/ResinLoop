@@ -2008,6 +2008,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
     background:var(--btn-bg);color:var(--muted);cursor:pointer;font-size:12px;line-height:1}
   .modal-x:hover{background:var(--btn-hover);color:var(--fg)}
 
+  /* ---------- 两步式扫码：第一步「选择游戏」弹窗 ---------- */
+  .pick-list{display:flex;flex-direction:column;gap:6px;margin:4px 0 2px;text-align:left}
+  .pick-row{display:flex;align-items:center;gap:12px;padding:10px 12px;
+    border-radius:6px;cursor:pointer;transition:background-color .2s ease}
+  .pick-row:hover{background:var(--hover)}
+  .pick-row input{width:15px;height:15px;accent-color:var(--brand);cursor:pointer;margin:0}
+  .pick-row .sel-ico{width:30px;height:30px;font-size:13px}
+  .pick-name{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.4;
+    font-size:13px;font-weight:600}
+  .pick-name small{color:var(--muted);font-size:11px;font-weight:400}
+  .pick-note{margin-top:10px;font-size:11.5px;color:var(--muted);line-height:1.6;text-align:left}
+
   #test-result{margin-top:4px;padding:8px 12px;font-size:12.5px}
   .spin{display:inline-block;width:11px;height:11px;border:2px solid var(--line);
         border-top-color:var(--brand);border-radius:50%;animation:s .8s linear infinite;
@@ -2439,6 +2451,22 @@ HTML_PAGE = r"""<!DOCTYPE html>
           </div>
         </div>
       </details>
+    </div>
+
+    <!-- 第一步：选择要登录的游戏 -->
+    <div class="modal-mask" id="pick-modal" hidden>
+      <div class="modal">
+        <div class="modal-head">
+          <b id="pick-title">选择要登录的游戏</b>
+          <button type="button" class="modal-x" onclick="closePick()" title="关闭">✕</button>
+        </div>
+        <div class="pick-list" id="pick-list"></div>
+        <div class="pick-note" id="pick-note"></div>
+        <div class="toolbar" style="justify-content:flex-end">
+          <button class="btn" onclick="closePick()">取消</button>
+          <button class="btn primary" id="btn-pick-next" onclick="confirmPick()">下一步：生成二维码</button>
+        </div>
+      </div>
     </div>
 
     <!-- 扫码浮层（modal） -->
@@ -2884,6 +2912,9 @@ function updateLoginButtons(){
 function loadAccounts(){
   fetch('/api/accounts').then(function(r){ return r.json(); }).then(function(d){
     if (!d || !d.ok) return;
+    /* 存一份映射，扫码选择弹窗按它显示游戏名与凭证状态 */
+    window.__accounts = {};
+    (d.items || []).forEach(function(it){ window.__accounts[it.id] = it; });
     (d.items || []).forEach(function(it){
       const box = document.querySelector(
         'input[name="m"][value="' + it.id + '"],input[name="s"][value="' + it.id + '"]');
@@ -3066,19 +3097,70 @@ async function start(provider, targets){
   }
 }
 
-/* 扫码目标：优先当前开启监控的游戏；一个都没开则扫该平台全部游戏 */
-function providerTargets(group){
+/* ---------- 两步式扫码：第一步先选游戏，第二步才生成二维码 ---------- */
+const PROVIDER_OF = { m: 'mihoyo', s: 'skland' };
+const PROVIDER_LABEL = { m: '米游社', s: '森空岛' };
+let pickGroup = null;
+
+/* 点胶囊 → 打开选择弹窗（默认勾选已绑定凭证的游戏，未绑定不勾） */
+function openPickModal(group){
+  pickGroup = group;
+  const accs = window.__accounts || {};
   const boxes = [...document.querySelectorAll('input[name="' + group + '"]')];
-  const on = boxes.filter(function(b){ return b.checked; }).map(function(b){ return b.value; });
-  return on.length ? on : boxes.map(function(b){ return b.value; });
+  document.getElementById('pick-list').innerHTML = boxes.map(function(b){
+    const it = accs[b.value] || {};
+    const name = it.name || b.value;
+    const bound = it.has_credential === true;
+    const known = it.has_credential === true || it.has_credential === false;
+    const stateText = bound ? '已绑定凭证' : (known ? '未绑定' : '凭证状态未知');
+    return '<label class="pick-row">' +
+      '<input type="checkbox" value="' + escHtml(b.value) + '"' + (bound ? ' checked' : '') + '>' +
+      selIconHtml(b.value, name) +
+      '<span class="pick-name">' + escHtml(name) +
+        '<small>' + stateText + '</small></span>' +
+      '</label>';
+  }).join('');
+  document.getElementById('pick-title').textContent =
+    '选择要登录的游戏 · ' + (PROVIDER_LABEL[group] || '');
+  document.getElementById('pick-note').textContent = group === 's'
+    ? '森空岛勾选多款时将依次弹出二维码，逐款扫码确认即可。'
+    : '一次扫码，登录凭证将写入所有勾选的游戏。';
+  updatePickNext();
+  document.getElementById('pick-modal').hidden = false;
+}
+
+/* 取消/关闭：只收起弹窗，此时还没创建任何扫码会话，无副作用 */
+function closePick(){
+  document.getElementById('pick-modal').hidden = true;
+  pickGroup = null;
+}
+
+function pickedGames(){
+  return [...document.querySelectorAll('#pick-list input:checked')].map(function(i){
+    return i.value;
+  });
+}
+
+function updatePickNext(){
+  const btn = document.getElementById('btn-pick-next');
+  if (btn) btn.disabled = pickedGames().length === 0;
+}
+
+/* 第二步：拿勾选结果去申请二维码（进入原有的扫码浮层流程） */
+function confirmPick(){
+  const targets = pickedGames();
+  if (!targets.length || !pickGroup) return;
+  const group = pickGroup;
+  closePick();
+  start(PROVIDER_OF[group], targets);
 }
 
 function startMihoyo(){
-  start('mihoyo', providerTargets('m'));
+  openPickModal('m');
 }
 
 function startSkland(){
-  start('skland', providerTargets('s'));
+  openPickModal('s');
 }
 
 function showError(msg){
@@ -4829,6 +4911,9 @@ document.addEventListener('click', function(e){
   });
   if (card) card.classList.add('active');
 });
+/* 扫码选择弹窗：勾选变化时同步「下一步」按钮可用性（至少勾一款） */
+const pickList = document.getElementById('pick-list');
+if (pickList) pickList.addEventListener('change', updatePickNext);
 /* 秒开：先把 localStorage 里的上次数据画出来（KPI/报表/实时面板），
    下面的 switchTab 会发起真实请求做后台静默刷新，数据到手平滑替换 */
 renderCachedData();
