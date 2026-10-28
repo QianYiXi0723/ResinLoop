@@ -14,6 +14,10 @@
     同一天可能检查多次（08:30 / 20:30 / 手动跑），
     只要**任意一次**查到"全部完成"，这一天就算完成 —— 日常当天补完也算。
     查询失败的那次不算"未完成"（避免把网络抖动记成漏做），只计入 known。
+
+    「一天」按**游戏日期**算：游戏日常在凌晨 04:00 刷新，所以逻辑日期
+    以 04:00 为界 —— 真实时刻 00:00~03:59 的检查/补发归属前一天
+    （见 :func:`game_moment` / :func:`game_date_key`）。
 """
 
 from __future__ import annotations
@@ -41,10 +45,32 @@ KEEP_DAYS = 180
 #: 报表默认展示天数
 DEFAULT_DAYS = 7
 
+#: 游戏日常在凌晨 04:00 刷新：逻辑日期（Game Date）以 04:00 为界。
+#: 真实时刻 00:00~03:59 之间发生的一切（检查、补发、手动跑）都归属"昨天"。
+GAME_DAY_OFFSET = timedelta(hours=4)
+
 #: 列的固定顺序（没见过的游戏排在后面）
 GAME_ORDER = ("genshin", "starrail", "zzz", "arknights", "endfield")
 
 _WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+# --------------------------------------------------------------------------- #
+# 游戏日期（04:00 日界）
+# --------------------------------------------------------------------------- #
+
+
+def game_moment(now: Optional[datetime] = None) -> datetime:
+    """游戏逻辑时刻 = 真实时刻 - 4 小时；取 ``.date()`` 即逻辑日期。
+
+    全项目所有"今天算哪天"的判定都必须走这里，禁止各处自行 strftime。
+    """
+    return (now or datetime.now()) - GAME_DAY_OFFSET
+
+
+def game_date_key(now: Optional[datetime] = None) -> str:
+    """当前的游戏日期（YYYY-MM-DD）：凌晨 04:00 前算前一天。"""
+    return game_moment(now).strftime("%Y-%m-%d")
 
 
 # --------------------------------------------------------------------------- #
@@ -123,7 +149,7 @@ def empty_payload(days: int = DEFAULT_DAYS, *, today: Optional[datetime] = None)
     照常渲染就是一张全 `–` 的空表。
     """
     days = max(1, min(int(days or DEFAULT_DAYS), 60))
-    now = today or datetime.now()
+    now = today or game_moment()   # 报表口径 = 游戏日期（04:00 日界）
     today_key = now.strftime("%Y-%m-%d")
     month = now.strftime("%Y-%m")
 
@@ -197,7 +223,7 @@ def record(report: Any, *, at: Optional[datetime] = None) -> Dict[str, Any]:
         return load()
 
     moment = at or getattr(report, "generated_at", None) or datetime.now()
-    date_key = moment.strftime("%Y-%m-%d")
+    date_key = game_date_key(moment)   # 04:00 日界：凌晨跑的检查归属昨天
     time_text = moment.strftime("%H:%M")
 
     data = load()
@@ -349,12 +375,58 @@ def summary(
     不会因为一份坏存档变成 HTTP 500（前端那种"红字弹窗"正是 500 引起的）。
     """
     days = max(1, min(int(days or DEFAULT_DAYS), 60))
-    now = today or datetime.now()
+    now = today or game_moment()   # 「今天」= 游戏日期（04:00 日界），KPI/热力图全靠它
     try:
         return _summary_unsafe(days, now, enabled_games)
     except Exception as exc:  # noqa: BLE001 - 统计永远不该让页面挂掉
         logger.exception("生成历史报表失败，返回空报表：%s", exc)
         return empty_payload(days, today=now)
+
+
+def weekly_digest(days: int = DEFAULT_DAYS) -> Dict[str, Any]:
+    """过去 N 个游戏日的逐游戏完成统计（daemon 周报与报表页「本周汇总」同口径）。
+
+    一天的口径与 record() 一致：known = 当天查到过数据；done = 当天完成；
+    missed = known - done（查过但没做完）。整天没查过的游戏不进结果，
+    整周没有任何数据时 games 为空列表。任何异常兜底成空结构 ——
+    周报不发可以，守护进程不能挂。
+    """
+    days = max(1, min(int(days or DEFAULT_DAYS), 60))
+    try:
+        data = load()
+        store = data.get("days") or {}
+        if not isinstance(store, dict):
+            store = {}
+        keys = sorted(
+            k for k, v in store.items() if isinstance(k, str) and isinstance(v, dict)
+        )[-days:]
+        stats: Dict[str, Dict[str, int]] = {}
+        for key in keys:
+            for game, cell in store[key].items():
+                if not isinstance(cell, dict) or not cell.get("known"):
+                    continue
+                st = stats.setdefault(game, {"known": 0, "done": 0})
+                st["known"] += 1
+                if cell.get("finished"):
+                    st["done"] += 1
+    except Exception:  # noqa: BLE001
+        logger.exception("统计周报数据失败，返回空周报")
+        return {"days_count": 0, "games": []}
+
+    games: List[Dict[str, Any]] = []
+    ordered = [g for g in GAME_ORDER if g in stats] + sorted(
+        g for g in stats if g not in GAME_ORDER
+    )
+    for game in ordered:
+        st = stats[game]
+        games.append({
+            "game": game,
+            "name": KNOWN_GAMES.get(game, game),
+            "done_days": st["done"],
+            "known_days": st["known"],
+            "missed_days": st["known"] - st["done"],
+        })
+    return {"days_count": len(keys), "games": games}
 
 
 def _summary_unsafe(

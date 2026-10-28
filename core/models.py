@@ -22,12 +22,16 @@ class TaskItem:
         counted: 是否参与"完成度/未完成"判定。
             False 表示"仅展示"的资源类数据（树脂/体力/电量/派遣等），
             只在控制台打印，绝不进未完成列表、也不触发推送。
+        recover_seconds: 距满秒数（仅资源类任务有值）。
+            由查询器把接口的恢复字段（剩余秒数 / 满员时间戳）统一换算成
+            "还差多少秒满"；API 未提供时为 None，前端走常数速率表估算。
     """
 
     name: str
     done: bool
     progress: str = ""
     counted: bool = True
+    recover_seconds: Optional[int] = None
 
     @property
     def status_text(self) -> str:
@@ -45,6 +49,7 @@ class TaskItem:
             "done": self.done,
             "progress": self.progress,
             "counted": self.counted,
+            "recover_seconds": self.recover_seconds,
         }
 
 

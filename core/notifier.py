@@ -18,8 +18,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import logging
+import os
+import tempfile
+import threading
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 
@@ -36,6 +42,121 @@ from .config import (
 from .models import PushResult
 
 logger = logging.getLogger("dailycheck.notifier")
+
+
+# --------------------------------------------------------------------------- #
+# 推送历史（data/push_history.json）
+# --------------------------------------------------------------------------- #
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+PUSH_HISTORY_PATH = BASE_DIR / "data" / "push_history.json"
+#: 最多保留多少条（一次检查最多几个渠道，50 条足够回看一周以上）
+PUSH_HISTORY_KEEP = 50
+_PUSH_WRITE_LOCK = threading.Lock()
+
+
+def record_push_history(
+    channel: str, ok: bool, message: str = "", at: Optional[datetime] = None
+) -> None:
+    """每次**真实**推送（成功/失败都算）追加一条结构化记录。
+
+    「最近推送」直接读这份 json，不再解析纯文本日志 ——
+    console 与 daemon 的推送日志分别落在 desktop.log / dailycheck.log，
+    按文件捞日志的前端永远筛不中，这就是"最近没有推送记录"bug 的根源。
+    """
+    entry = {
+        "ts": (at or datetime.now()).strftime("%Y-%m-%d %H:%M:%S"),
+        "channel": str(channel or ""),
+        "ok": bool(ok),
+        "message": str(message or "")[:160],
+    }
+    with _PUSH_WRITE_LOCK:
+        try:
+            raw = PUSH_HISTORY_PATH.read_text(encoding="utf-8")
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                data = {}
+        except FileNotFoundError:
+            data = {}
+        except Exception as exc:  # noqa: BLE001 - 文件坏了就重建，绝不影响推送本身
+            logger.warning("推送历史损坏，重建（%s）", exc)
+            data = {}
+        items = data.get("items")
+        if not isinstance(items, list):
+            items = []
+        items.append(entry)
+        data = {"version": 1, "items": items[-PUSH_HISTORY_KEEP:]}
+        try:
+            PUSH_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            text = json.dumps(data, ensure_ascii=False, indent=2)
+            json.loads(text)  # 复检：写出去的必须是合法 JSON
+            fd, tmp = tempfile.mkstemp(dir=str(PUSH_HISTORY_PATH.parent),
+                                       prefix=".pushhist-", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+                handle.write("\n")
+            os.replace(tmp, PUSH_HISTORY_PATH)
+        except OSError as exc:
+            logger.warning("写推送历史失败（%s）", exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("写推送历史出现未预期错误（%s）", exc)
+
+
+def load_push_history(limit: int = 8) -> List[Dict[str, Any]]:
+    """给 /api/push_history 用的最近 limit 条（最新在前）。"""
+    try:
+        raw = PUSH_HISTORY_PATH.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            items = []
+    except FileNotFoundError:
+        return []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读推送历史失败（%s）", exc)
+        return []
+    clean = [it for it in items if isinstance(it, dict)]
+    return list(reversed(clean[-max(1, int(limit)):]))
+
+
+def backfill_push_history_from_log(log_dir: Optional[Path] = None) -> int:
+    """一次性迁移：把既有日志里的推送终态捞进 json，返回补录条数。
+
+    只认终态行（推送成功 / 推送失败 / 请求异常 / HTTP n / 接口返回失败），
+    "推送中…"这类过程行不算。补录完成后，运行时**不再碰任何日志文件**。
+    """
+    import re
+
+    log_dir = log_dir or BASE_DIR / "logs"
+    pattern = re.compile(
+        r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?\[(?P<ch>bark|serverchan|qmsg|dingtalk|feishu)\]"
+        r".*?(推送成功|推送失败|请求异常|HTTP \d{3}|接口返回失败|未预期异常)",
+        re.IGNORECASE,
+    )
+    seen: set = set()
+    found: List[Dict[str, Any]] = []
+    for log_file in sorted(log_dir.glob("*.log*")):
+        try:
+            lines = log_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            m = pattern.match(line)
+            if not m:
+                continue
+            ok = "推送成功" in line
+            tail = line.split(f"[{m.group('ch')}] ", 1)[-1]
+            key = (m.group("ts"), m.group("ch"), ok)
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append({"ts": m.group("ts"), "channel": m.group("ch"),
+                          "ok": ok, "message": tail[:160]})
+    found.sort(key=lambda it: it["ts"])
+    for it in found:
+        record_push_history(it["channel"], it["ok"], it["message"],
+                            at=datetime.strptime(it["ts"], "%Y-%m-%d %H:%M:%S"))
+    return len(found)
 
 
 class PushError(Exception):
@@ -611,4 +732,7 @@ def push_all(
             logger.exception("[%s] 未预期异常", notifier.name)
             result = PushResult(notifier.name, ok=False, message=f"未预期异常：{exc}")
         results.append(result)
+        if not dry_run:
+            # 成功/失败都落一条结构化记录（data/push_history.json），「最近推送」直接读
+            record_push_history(result.channel, result.ok, result.message)
     return results

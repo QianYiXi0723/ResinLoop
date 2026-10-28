@@ -18,7 +18,7 @@ from typing import List
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "release" / "resinloop"
 ZIP_DIR = ROOT / "dist"
-ZIP_NAME = "ResinLoop_v1.1.8"
+ZIP_NAME = "ResinLoop_v1.2.0"
 
 
 def collect_secrets() -> List[str]:
@@ -279,6 +279,15 @@ def main() -> None:
         (OUT / "static" / "icons").mkdir(parents=True, exist_ok=True)
         for icon in sorted(icons_src.glob("*.png")):
             shutil.copy2(icon, OUT / "static" / "icons" / icon.name)
+
+    # 1.055) ui/：前端三件套（index.html / style.css / app.js）
+    #        login_ui 启动时从这里装配 HTML_PAGE，缺任何一个进程都起不来
+    ui_src = ROOT / "ui"
+    if ui_src.is_dir():
+        (OUT / "ui").mkdir(parents=True, exist_ok=True)
+        for ui_file in sorted(ui_src.glob("*")):
+            if ui_file.is_file():
+                shutil.copy2(ui_file, OUT / "ui" / ui_file.name)
 
     # 1.1) tools/：手机端 APK（体积大，不进 git，但必须进发布包）
     tools_src = ROOT / "tools"

@@ -35,7 +35,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -329,6 +329,11 @@ def pending_slots(
       * 落在 ±``tolerance`` 内 → 正常到点（迟到约 0）
       * 超出容差但仍在 ``catch_up_minutes`` 窗口内 → 补发（合盖睡过去醒来的情况）
       * 超过补发窗口 → 当天不再触发
+
+    跨 0 点补发：23:59 这类深夜班次错过后的补发窗口会延续到第二天凌晨
+    （23:59 + 180 分钟 = 次日 02:59）。目标时刻按"昨天同刻"重建并计入
+    昨天的槽位键，凌晨补跑的检查经 history.record 的游戏日期（04:00 日界）
+    自然归属昨天 —— 槽位键与数据归属两边口径一致。
     """
     current = now or datetime.now()
     times = check_times if check_times is not None else read_check_times()
@@ -349,15 +354,27 @@ def pending_slots(
         target = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
         delta = int((current - target).total_seconds())
 
-        if abs(delta) > tolerance:
-            # 睡过头了：只在补发窗口内、且还没跑过时才补一次
-            if delta <= 0 or delta > catch_up_seconds:
-                continue
-
-        key = f"{today} {text}"
-        if key in fired:
+        if abs(delta) <= tolerance:
+            # 正常到点（含 ±tolerance 内的轻微抖动）
+            key = f"{today} {text}"
+            if key not in fired:
+                pending.append((key, delta))
             continue
-        pending.append((key, delta))
+
+        if 0 < delta <= catch_up_seconds:
+            # 睡过头了：今天的班，只在补发窗口内、且还没跑过时才补一次
+            key = f"{today} {text}"
+            if key not in fired:
+                pending.append((key, delta))
+            continue
+
+        # 跨 0 点的补发窗口：昨天的这一班还在窗口里（比如 00:30 补 23:59）
+        y_target = target - timedelta(days=1)
+        y_delta = int((current - y_target).total_seconds())
+        if 0 < y_delta <= catch_up_seconds:
+            key = f"{y_target.strftime('%Y-%m-%d')} {text}"
+            if key not in fired:
+                pending.append((key, y_delta))
     return pending
 
 
@@ -379,6 +396,128 @@ def due_slots(
             catch_up_minutes=catch_up_minutes,
         )
     ]
+
+
+# --------------------------------------------------------------------------- #
+# 每周报告（每周日 21:00 后发送，常开无开关；错过自动补发）
+# --------------------------------------------------------------------------- #
+
+WEEKLY_STATE_FILE = LOGS_DIR / ".last_weekly"
+
+
+def weekly_slot_week(now: datetime) -> str:
+    """最近一个已过去的「周日 21:00」槽位所属的 ISO 周键（如 "2026-W44"）。
+
+    周日 21:00 之前指的是上一周的槽位（那时该补发的是上周报告），
+    21:00 起切换到本周。纯函数，rl_test_weekly 覆盖边界。
+    """
+    last_sunday = now.date() - timedelta(days=(now.weekday() - 6) % 7)
+    slot = datetime.combine(last_sunday, datetime.min.time()).replace(hour=21)
+    if now < slot:
+        last_sunday -= timedelta(days=7)
+    iso = last_sunday.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def weekly_due(now: datetime, state: Optional[Dict[str, Any]] = None) -> bool:
+    """本周槽位还没发过周报 → True。"""
+    return (state or {}).get("week") != weekly_slot_week(now)
+
+
+def load_weekly_state() -> Dict[str, Any]:
+    try:
+        data = json.loads(WEEKLY_STATE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 - 状态丢了顶多发一次，不影响主流程
+        return {}
+
+
+def save_weekly_state(state: Dict[str, Any]) -> None:
+    """原子落盘；失败只影响去重，不影响守护进程。"""
+    try:
+        WEEKLY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = WEEKLY_STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(WEEKLY_STATE_FILE)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("写周报状态失败（下周可能重发一次）：%s", exc)
+
+
+def format_weekly_body(digest: Dict[str, Any]) -> str:
+    """周报正文（纯函数）：「本周：原神 7 天全勤，星铁完成 5 天、漏做 1 次…」"""
+    parts: List[str] = []
+    total_days = int(digest.get("days_count", 7))
+    for game in digest.get("games") or []:
+        if int(game.get("known_days", 0)) <= 0:
+            continue  # 整周没查到数据的游戏不进周报
+        name = str(game.get("name") or game.get("game") or "?")
+        done = int(game.get("done_days", 0))
+        missed = int(game.get("missed_days", 0))
+        if done >= total_days and missed == 0:
+            parts.append(f"{name} {done} 天全勤")
+        elif missed > 0:
+            parts.append(f"{name} 完成 {done} 天、漏做 {missed} 次")
+        else:
+            parts.append(f"{name} 完成 {done} 天")
+    if not parts:
+        return ""
+    missed_any = any(
+        int(g.get("missed_days", 0)) > 0 for g in (digest.get("games") or [])
+    )
+    tail = "有漏做，下周继续加油！" if missed_any else "全部完成，可以安心摆烂了。"
+    return "本周：" + "，".join(parts) + "。" + tail
+
+
+def run_weekly_report() -> bool:
+    """组装并发送周报；返回是否有通道真正发成功。任何异常都吞掉写日志。"""
+    try:
+        from core.config import load_config
+        from core import history
+        from core.notifier import build_notifiers, push_all
+
+        config = load_config(CONFIG_PATH, auto_create=False)
+    except Exception:  # noqa: BLE001
+        logger.exception("周报：读取配置失败，本轮跳过")
+        return False
+    try:
+        digest = history.weekly_digest(days=7)
+        body = format_weekly_body(digest)
+        if not body:
+            logger.info("周报：过去 7 天没有任何已检查数据，跳过发送")
+            return False
+        notifiers = build_notifiers(config.push)
+        if not notifiers:
+            logger.warning("周报：没有可用推送通道（push.channels 为空或 Key 未配置），跳过")
+            return False
+        results = push_all(notifiers, "📊 ResinLoop 周报", body, dry_run=False)
+        ok_count = sum(1 for r in results if r.ok)
+        logger.info("周报已发送（%d/%d 通道成功）：%s", ok_count, len(results), body)
+        return ok_count > 0
+    except Exception:  # noqa: BLE001 - 周报失败绝不弄死守护进程
+        logger.exception("周报发送失败")
+        return False
+
+
+def _maybe_weekly_report() -> None:
+    """周报推送入口（_loop 每 30 秒调一次，内部自判周）。
+
+    与每日槽位「先记账、后执行」同一哲学：无论发送成败都落 state，
+    防止每 30 秒重试轰炸推送通道；失败详情在日志里，下周槽位自动再试。
+    """
+    try:
+        now = datetime.now()
+        state = load_weekly_state()
+        if not weekly_due(now, state):
+            return
+        week_key = weekly_slot_week(now)
+        sent = run_weekly_report()
+        save_weekly_state({
+            "week": week_key,
+            "sent_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "ok": bool(sent),
+        })
+    except Exception:  # noqa: BLE001 - 兜底：循环自身出问题也不许死
+        logger.exception("周报流程异常（已忽略，继续运行）")
 
 
 # --------------------------------------------------------------------------- #
@@ -503,6 +642,7 @@ def _loop(stop_event: threading.Event) -> None:
         except Exception:  # noqa: BLE001 - 兜底：循环自身出问题也不许死
             logger.exception("轮询异常（已忽略，继续运行）")
         write_heartbeat()
+        _maybe_weekly_report()   # 周日 21:00 后的周度推送（常开，错过自动补发）
         _wait(TICK_SECONDS, stop_event)
     logger.info("轮询线程已退出")
 

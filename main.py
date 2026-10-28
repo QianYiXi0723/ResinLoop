@@ -419,9 +419,51 @@ def cmd_init(config_path: Path) -> int:
     return 0
 
 
-def collect_statuses(config: AppConfig) -> List[GameStatus]:
-    """遍历启用账号，逐个查询；单个账号失败不影响其它账号。"""
+def _query_account(account, provider: str) -> GameStatus:
+    """查询单个账号（线程内执行，第二阶段提速的并行单元）。
+
+    失败兜底与原串行版逐字一致：UnknownProviderError / 任意异常都只会
+    变成该账号自己的 error GameStatus —— 绝不上抛、绝不影响其它账号。
+    """
     import logging
+
+    logger = logging.getLogger("dailycheck.main")
+    try:
+        querier = get_querier(account.game, provider=provider)
+        logger.debug(
+            "%s -> 数据源 %s（%s）",
+            account.game_name, type(querier).__name__, getattr(querier, "source", "?"),
+        )
+        return querier.fetch(account)
+    except UnknownProviderError as exc:
+        logger.error("查询器不可用：%s", exc)
+        return GameStatus(
+            game_id=account.game,
+            game_name=account.game_name,
+            nickname=account.nickname,
+            error=str(exc),
+        )
+    except Exception as exc:  # 兜底，绝不让查询异常打断整轮
+        logger.exception("%s 查询异常", account.game_name)
+        return GameStatus(
+            game_id=account.game,
+            game_name=account.game_name,
+            nickname=account.nickname,
+            error=f"查询异常：{exc}",
+        )
+
+
+def collect_statuses(config: AppConfig) -> List[GameStatus]:
+    """并行遍历启用账号查询；单个账号失败不影响其它账号。
+
+    第二阶段提速：5 个游戏的网络请求用线程池并行执行（网络密集型，
+    GIL 不构成瓶颈），总耗时从"各游戏耗时之和"压到"最慢一个游戏"。
+    结果按 accounts 顺序回填 —— 数据结构与顺序和原串行版完全一致。
+    """
+    import logging
+
+    from concurrent.futures import ThreadPoolExecutor
+    from time import monotonic
 
     from core.config import MIHOYO_GAMES
 
@@ -468,38 +510,31 @@ def collect_statuses(config: AppConfig) -> List[GameStatus]:
         config.test_mode,
     )
 
-    statuses: List[GameStatus] = []
-    total = len(accounts)
     for index, account in enumerate(accounts, start=1):
         logger.debug(
             "[%d/%d] 准备查询 %s（game=%s，凭证字段=%s）",
-            index, total, account.game_name, account.game,
+            index, len(accounts), account.game_name, account.game,
             sorted((account.credential or {}).keys()),
         )
-        try:
-            querier = get_querier(account.game, provider=config.query.provider)
-            logger.debug(
-                "%s -> 数据源 %s（%s）",
-                account.game_name, type(querier).__name__, getattr(querier, "source", "?"),
-            )
-            status = querier.fetch(account)
-        except UnknownProviderError as exc:
-            logger.error("查询器不可用：%s", exc)
-            status = GameStatus(
-                game_id=account.game,
-                game_name=account.game_name,
-                nickname=account.nickname,
-                error=str(exc),
-            )
-        except Exception as exc:  # 兜底，绝不让查询异常打断整轮
-            logger.exception("%s 查询异常", account.game_name)
-            status = GameStatus(
-                game_id=account.game,
-                game_name=account.game_name,
-                nickname=account.nickname,
-                error=f"查询异常：{exc}",
-            )
 
+    # 并行查询：每个账号一个线程；单账号失败兜底在 _query_account 内闭合，
+    # future.result() 永远拿得到 GameStatus（成功或 error 态），不会上抛。
+    # 结果按提交顺序收集 —— 与 config 的账号顺序严格一致。
+    started = monotonic()
+    with ThreadPoolExecutor(
+        max_workers=max(1, min(len(accounts), 8)), thread_name_prefix="query"
+    ) as pool:
+        futures = [
+            pool.submit(_query_account, account, config.query.provider)
+            for account in accounts
+        ]
+        results = [future.result() for future in futures]
+    elapsed = monotonic() - started
+    logger.info("并行查询完成：%d 个账号，耗时 %.1f 秒", len(results), elapsed)
+
+    statuses: List[GameStatus] = []
+    # 逐状态日志放回主线程按原顺序补发，日志叙事与串行版完全一致
+    for account, status in zip(accounts, results):
         if status.ok and not getattr(status, "tasks", None):
             logger.warning(
                 "%s 查询成功但没返回任何日常项（数据源可能改版），明细为空", status.game_name

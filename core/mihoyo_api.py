@@ -21,6 +21,7 @@ import logging
 import random
 import re
 import string
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -686,9 +687,11 @@ def _load_fp_cache() -> Dict[str, Dict[str, str]]:
 def _save_fp_cache(cache: Dict[str, Dict[str, str]]) -> None:
     try:
         _FP_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _FP_CACHE_PATH.write_text(
+        tmp = _FP_CACHE_PATH.with_name(_FP_CACHE_PATH.name + ".tmp")
+        tmp.write_text(
             json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        tmp.replace(_FP_CACHE_PATH)   # 原子替换：并行读取方永远不会读到半截 JSON
     except OSError as exc:
         logger.warning("设备指纹缓存写入失败（不影响本次运行）：%s", exc)
 
@@ -703,15 +706,26 @@ def _load_binding_cache() -> Dict[str, Dict[str, str]]:
 def _save_binding_cache(cache: Dict[str, Dict[str, str]]) -> None:
     try:
         _BINDING_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _BINDING_CACHE_PATH.write_text(
+        tmp = _BINDING_CACHE_PATH.with_name(_BINDING_CACHE_PATH.name + ".tmp")
+        tmp.write_text(
             json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        tmp.replace(_BINDING_CACHE_PATH)
     except OSError as exc:
         logger.warning("设备注册缓存写入失败（不影响本次运行）：%s", exc)
 
 
 def _get_device_info(game_id: str) -> Tuple[str, str, str]:
     """取（或生成并缓存）某游戏的 (device_id, device_fp, user_agent)。
+
+    并行查询下必须串行化：见 _DEVICE_LOCK 注释。
+    """
+    with _DEVICE_LOCK:
+        return _get_device_info_locked(game_id)
+
+
+def _get_device_info_locked(game_id: str) -> Tuple[str, str, str]:
+    """_get_device_info 的实体，必须在 _DEVICE_LOCK 内调用。
 
     缓存条目同时记录 UA / 代理 / 机型档案：
       - 代理一变，出口 IP 就变了，必须重新签发指纹（getFp 按 IP 签发）；
@@ -744,6 +758,13 @@ def _get_device_info(game_id: str) -> Tuple[str, str, str]:
     return device_id, device_fp, USER_AGENT
 
 
+#: 设备身份串行锁：并行查询时，多个米游社系游戏同时走到 _get_device_info 会
+#: 各自生成不同的 uuid/device_fp 并互覆缓存 —— 每次运行指纹都在变，正是风控
+#: 雷区（服务器会看到"同一 IP 下的多台陌生设备"）。加锁后首线程签发、其余
+#: 线程命中缓存，与串行版行为完全一致。
+_DEVICE_LOCK = threading.RLock()
+
+
 def _device_env_tag() -> Dict[str, str]:
     """指纹缓存的环境标签：任一变化都要重新签发，避免"环境不一致"。"""
     return {
@@ -769,18 +790,19 @@ def bind_device(
     下的游戏会平白换一次设备身份，反而可能触发风控。
     """
     targets = tuple(games) if games else ("genshin", "starrail", "zzz")
-    cache = _load_fp_cache()
-    fps: Dict[str, str] = {}
-    env_tag = _device_env_tag()
-    for game_id in targets:
-        device_fp = generate_fake_fp(device_id)
-        cache[game_id] = {
-            "device_id": device_id,
-            "device_fp": device_fp,
-            **env_tag,
-        }
-        fps[game_id] = device_fp
-    _save_fp_cache(cache)
+    with _DEVICE_LOCK:   # 扫码重签与并行查询共用一把锁，避免指纹互相覆盖
+        cache = _load_fp_cache()
+        fps: Dict[str, str] = {}
+        env_tag = _device_env_tag()
+        for game_id in targets:
+            device_fp = generate_fake_fp(device_id)
+            cache[game_id] = {
+                "device_id": device_id,
+                "device_fp": device_fp,
+                **env_tag,
+            }
+            fps[game_id] = device_fp
+        _save_fp_cache(cache)
     logger.info(
         "已将扫码设备 %s… 绑定到 %s 并重签指纹", device_id[:8], "、".join(targets)
     )

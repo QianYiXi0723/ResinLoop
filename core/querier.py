@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable, Dict, List, Optional, Type
 
 from .config import KNOWN_GAMES, AccountConfig
@@ -75,6 +76,29 @@ def _optional_int(data: Any, *path: str) -> Optional[int]:
         return int(node)
     except (TypeError, ValueError):
         return None
+
+
+def normalize_recover_seconds(value: Any, *, now: Optional[float] = None) -> Optional[int]:
+    """把接口的"恢复"字段统一换算成**距满秒数**（None 原样返回）。
+
+    各接口给的形态不一：
+        米游社 recovery_time            剩余秒数（原神 resin_recovery_time / 崩铁 stamina_recover_time）
+        终末地 detail.dungeon.maxTs     满员时刻的时间戳（秒或毫秒级，按量级判别）
+    >1e12 视为毫秒时间戳、>1e9 视为秒时间戳（减 now 得剩余秒数），
+    其余视为"已经是剩余秒数"直接用；时间戳在过去/已满返回 0。
+    """
+    if value is None:
+        return None
+    try:
+        ts = int(value)
+    except (TypeError, ValueError):
+        return None
+    now_s = time.time() if now is None else now
+    if ts > 1e12:      # 毫秒时间戳
+        return max(0, int(ts / 1000 - now_s))
+    if ts > 1e9:       # 秒时间戳
+        return max(0, int(ts - now_s))
+    return max(0, ts)  # 已是剩余秒数
 
 
 class BaseQuerier:
@@ -250,7 +274,7 @@ class MiyousheQuerier(BaseQuerier):
 
         字段以 2026-10-26 实测真实返回为准：
             每日委托  finished_task_num / total_task_num（旧版为 done_task，保留兼容）
-            树脂      current_resin / max_resin
+            树脂      current_resin / max_resin + resin_recovery_time（距满秒数）
             派遣      current_expedition_num / max_expedition_num / expeditions[].status
         """
         tasks: List[TaskItem] = []
@@ -270,6 +294,8 @@ class MiyousheQuerier(BaseQuerier):
             tasks.append(TaskItem(
                 "原粹树脂", current_resin >= max_resin,
                 f"{current_resin}/{max_resin}", counted=_resource_counted(),
+                recover_seconds=normalize_recover_seconds(
+                    _optional_int(data, "resin_recovery_time")),
             ))
 
         current_exp = _optional_int(data, "current_expedition_num")
@@ -310,6 +336,8 @@ class MiyousheQuerier(BaseQuerier):
             tasks.append(TaskItem(
                 "开拓力", current_stamina >= max_stamina, f"{current_stamina}/{max_stamina}",
                 counted=_resource_counted(),
+                recover_seconds=normalize_recover_seconds(
+                    _optional_int(data, "stamina_recover_time")),
             ))
 
         rogue_cur = _optional_int(data, "rogue_tourn_weekly_cur")
@@ -516,6 +544,8 @@ class SklandQuerier(BaseQuerier):
             if cur is not None and max_:
                 tasks.append(TaskItem(
                     "理智", cur >= max_, f"{cur}/{max_}", counted=False,
+                    recover_seconds=normalize_recover_seconds(
+                        _optional_int(dungeon, "maxTs")),
                 ))
         return tasks
 
