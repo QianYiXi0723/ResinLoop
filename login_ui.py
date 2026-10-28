@@ -2263,19 +2263,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <section class="card">
         <div class="card-head">
           <h2>🔑 扫码登录</h2>
-          <span class="q" data-tip="米游社一次扫码更新所选游戏；森空岛每款需单独扫码。胶囊上的黄点 = 该平台有游戏未绑定凭证"></span>
+          <span class="q" data-tip="点击胶囊开始扫码，更新所选游戏的登录凭证；同一平台的多个游戏可能绑定在不同账号上。黄点 = 该平台有游戏未绑定凭证"></span>
         </div>
         <div class="card-body">
           <div class="caps-row">
             <button type="button" class="scan-cap" id="cap-m" onclick="startMihoyo()">
               <span class="cap-dot" id="cap-dot-m"></span>
               <span class="cap-ico">⭐</span>
-              <span class="cap-txt"><b>米游社</b><small>一次扫码 · 更新所选游戏</small></span>
+              <span class="cap-txt"><b>米游社</b><small>更新所选游戏凭证</small></span>
             </button>
             <button type="button" class="scan-cap" id="cap-s" onclick="startSkland()">
               <span class="cap-dot" id="cap-dot-s"></span>
               <span class="cap-ico">🏝️</span>
-              <span class="cap-txt"><b>森空岛</b><small>逐款扫码 · 每款单独确认</small></span>
+              <span class="cap-txt"><b>森空岛</b><small>更新所选游戏凭证</small></span>
             </button>
           </div>
           <div class="btn-note">扫码只更新登录凭证；是否参与每日巡检由下方监控开关决定。</div>
