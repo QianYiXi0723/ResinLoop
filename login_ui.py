@@ -1589,7 +1589,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .tbl td.wrap{white-space:normal;word-break:break-all}
   /* 每日报表页：下方「最近 7 天」热力图卡拉伸填满视口剩余高度 */
   #tab-history .card:last-child{display:flex;flex-direction:column}
-  #tab-history .card:last-child > div:not(.card-head){flex:1;min-height:0}
+  /* 拉伸容器：内容超高可滚动；底部留 20px 呼吸间距，图例不贴边框 */
+  #tab-history .card:last-child > div:not(.card-head){flex:1;min-height:0;
+    overflow-y:auto;padding-bottom:20px}
   .gdot{display:inline-block;width:8px;height:8px;border-radius:50%;
         margin-right:8px;vertical-align:1px}
   .pill{display:inline-block;padding:2px 12px;border-radius:999px;
