@@ -1487,6 +1487,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     --btn-bg:#333333; --btn-hover:#3d3d3d; --nav-on:#333333; --nav-on-fg:#ffffff;
     --focus-ring:rgba(74,155,232,.45);
     --card-shadow:inset 0 1px 0 rgba(255,255,255,0.04), 0 2px 8px rgba(0,0,0,0.35);
+    --card-border:1px solid transparent;
     --ring-shadow:0 0 0 1px var(--accent-blue), 0 4px 12px rgba(0,0,0,0.35);
     --border-subtle:rgba(255,255,255,0.06); --border-strong:rgba(255,255,255,0.12);
     --text-secondary:#a0a0a0; --text-tertiary:#666666;
@@ -1504,6 +1505,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     --btn-bg:#eef0f4; --btn-hover:#e2e6ec; --nav-on:#e8f0fe; --nav-on-fg:var(--brand);
     --focus-ring:rgba(11,103,194,.30);
     --card-shadow:0 2px 8px rgba(0,0,0,0.04);
+    --card-border:1px solid #eaeaea;
     --ring-shadow:0 0 0 1px var(--accent-blue), 0 4px 12px rgba(0,0,0,0.05);
     --border-subtle:rgba(0,0,0,0.08); --border-strong:rgba(0,0,0,0.14);
     --text-secondary:#5c636e; --text-tertiary:#9aa1ab;
@@ -1575,7 +1577,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                   grid-template-rows:auto minmax(0,1fr)}
 
   /* ---------- 卡片（Bento 基础卡）：--bg-card + 微光描边 + 写死阴影 ---------- */
-  .card{background:var(--bg-card);border:none;border-radius:10px;
+  .card{background:var(--bg-card);border:var(--card-border);border-radius:10px;
         box-shadow:var(--card-shadow);
         transition:box-shadow .2s ease, background-color .2s ease, padding 400ms ease-out}
   /* ---------- 交互规范（三态统一，box-shadow 描边零布局抖动） ----------
@@ -1634,10 +1636,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .tbl td.mono,.mono{font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12px;
                      font-variant-numeric:tabular-nums}
   .tbl td.wrap{white-space:normal;word-break:break-all}
-  /* 每日报表页：下方「最近 7 天」热力图卡拉伸填满视口剩余高度 */
-  #tab-history .card:last-child{display:flex;flex-direction:column}
+  /* 每日报表页：下方「最近 7 天」热力图卡拉伸填满视口剩余高度。
+     必须用 > 限定直接子元素 —— 不然会误伤 .gcards 里恰好是末位的游戏迷你卡
+     （终末地），把它撑爆还塞进一条滚动条 */
+  #tab-history > .card:last-child{display:flex;flex-direction:column}
   /* 拉伸容器：内容超高可滚动；底部留 20px 呼吸间距，图例不贴边框 */
-  #tab-history .card:last-child > div:not(.card-head){flex:1;min-height:0;
+  #tab-history > .card:last-child > div:not(.card-head){flex:1;min-height:0;
     overflow-y:auto;padding-bottom:20px}
   .gdot{display:inline-block;width:8px;height:8px;border-radius:50%;
         margin-right:8px;vertical-align:1px}
@@ -2056,6 +2060,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
          min-height:120px;justify-content:space-between;
          padding:14px 16px;font-size:12.5px;
          background:var(--bg-raise)}
+  /* 最紧急 1 张：2x2 英雄卡（占 2 条轨道宽 × 2 行），内部文字放大撑满大卡 */
+  .acard.hero{grid-column:span 2;grid-row:span 2;padding:18px 20px}
+  .acard.hero .acard-title{font-size:1.5em;-webkit-line-clamp:3}
+  .acard.hero .act-time{font-size:1.1em}
+  .acard.hero .act-cd{font-size:2em;font-weight:800}
+  /* 窄容器只有 1 条轨道时英雄卡改整行，防止 span 2 生成隐式列撑破网格 */
+  @media (max-width:660px){ .acard.hero{grid-column:1/-1} }
   /* 头部（图标+游戏名）独立色块 + 底边框，与时间/正文分层 */
   .acard-top{display:flex;align-items:center;gap:8px;min-width:0;
     background:var(--bg-head);margin:-14px -16px 0;padding:10px 16px 8px;
@@ -2115,9 +2126,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .au-title{margin-bottom:4px}
 
   /* ---------- 游戏迷你卡（每日报表概览） ---------- */
-  .gcards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-  @media (max-width:1500px){ .gcards{grid-template-columns:repeat(2,1fr)} }
-  @media (max-width:860px){ .gcards{grid-template-columns:1fr} }
+  .gcards{display:grid;
+          grid-template-columns:repeat(auto-fill, minmax(320px, 1fr));
+          gap:16px;align-content:start}
   .gcard{border-radius:8px;padding:14px 16px;min-width:0;
          display:flex;flex-direction:column;gap:10px;
          background:var(--bg-raise);box-shadow:var(--card-shadow);
@@ -4019,15 +4030,16 @@ function shortRange(s){
 }
 
 /* 最紧急 1 张的紧迫度标记（只改颜色不改尺寸）：剩余 ≤24h = critical（红边+呼吸）；≤72h（ending_soon）= warn（琥珀数字） */
-function actUrgencyAttr(it, urgent){
-  if (!urgent || it.not_started) return '';
+function actUrgencyAttr(it, isHero){
+  if (!isHero || it.not_started) return '';
   const hl = +it.hours_left || 0;
   if (it.ending_soon && hl > 0 && hl <= 24) return ' data-urgency="critical"';
   if (it.ending_soon) return ' data-urgency="warn"';
   return '';
 }
 
-function actCardHtml(it, urgent){
+/* isHero：最紧急的 1 张 → 2x2 英雄卡（hero class）+ 紧迫感描边 */
+function actCardHtml(it, isHero){
   const id = escHtml(it.id || '');
   const st = shortRange(it.start), en = shortRange(it.end);
   const ended = it.status === '已完成';
@@ -4039,8 +4051,8 @@ function actCardHtml(it, urgent){
     : '';
   const cdCls = ended ? 'ended' : (soon ? 'soon' : '');
   const prog = actProgHtml(it);
-  return '<div class="card acard"' +
-    actUrgencyAttr(it, urgent) + ' data-id="' + id + '">' +
+  return '<div class="card acard' + (isHero ? ' hero' : '') + '"' +
+    actUrgencyAttr(it, isHero) + ' data-id="' + id + '">' +
     '<div class="acard-top"><span class="act-game">' + actIconHtml(it) +
       escHtml(it.game_name) + '</span>' +
       '<button type="button" class="act-del" data-del="' + id +
@@ -4064,7 +4076,7 @@ function actProgHtml(it){
     '<span class="mono">' + a + '/' + b + '</span></div>';
 }
 
-/* 找最紧急的 1 张（剩余小时最小且 >0；没有进行中就取未开启第一张），只用于 data-urgency 标记 */
+/* 找最紧急的 1 张（剩余小时最小且 >0），做 2x2 英雄卡 + data-urgency 标记 */
 function pickHeroIndex(pool){
   if (!pool.length) return -1;
   let best = 0;
@@ -4096,8 +4108,8 @@ function renderActivities(d){
 
     let html = '<div class="act-grid">';
     if (ongoing.length) {
-      const urgentIdx = pickHeroIndex(ongoing);
-      html += ongoing.map(function(it, i){ return actCardHtml(it, i === urgentIdx); }).join('');
+      const heroIdx = pickHeroIndex(ongoing);
+      html += ongoing.map(function(it, i){ return actCardHtml(it, i === heroIdx); }).join('');
     }
     if (upcoming.length) {
       html += upcoming.map(function(it){ return actCardHtml(it, !ongoing.length && it === upcoming[0]); }).join('');
