@@ -1496,6 +1496,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     --hover:rgba(255,255,255,.06); --zebra:rgba(255,255,255,.03); --sel:#33333a;
     --ok-bg:rgba(74,186,138,.15); --err-bg:rgba(224,96,85,.15);
     --brand:#4a9be8; --brand-hover:#5dabf2; --ok:#4aba8a; --warn:#e0a040; --err:#e06055;
+    --switch-on:#3d82d2;
     --violet:#a78bfa;
   }
   /* 浅色 Token 组：背景/卡片浅色，--fg 深色 —— 黑字永远压浅底 */
@@ -1514,6 +1515,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     --hover:rgba(0,0,0,.045); --zebra:rgba(0,0,0,.018); --sel:#e7eef8;
     --ok-bg:rgba(10,125,67,.10); --err-bg:rgba(192,57,43,.10);
     --brand:#0b67c2; --brand-hover:#0857a5; --ok:#0a7d43; --warn:#b45309; --err:#c0392b;
+    --switch-on:#0b67c2;
     --violet:#6d3fc0;
   }
   *{box-sizing:border-box}
@@ -1620,7 +1622,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   /* 账号绑定改版：rem/cred 小徽章作废（状态改由选择卡开关与凭证健康列表表达） */
   /* 复选框区（提醒）与扫码按钮区（凭证）之间的分割线 */
   .v-sep{margin:12px 0 6px}
-  .btn-note{margin-top:6px;font-size:11px;color:var(--muted);line-height:1.6}
+  .btn-note{margin-top:6px;font-size:11px;color:var(--fg);opacity:.72;line-height:1.6}
 
   /* ---------- 表格：行高 40-44px，表头 12px 灰字 ---------- */
   .tbl{width:100%;border-collapse:collapse;font-size:12.5px}
@@ -1721,7 +1723,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   /* ---------- 账号绑定：监控选择卡（Selector Card） ----------
      未选中 = 半透明去色；开关开启（.on）单独覆盖，绝不被滤镜变灰 */
   .sel-grid{display:grid;
-            grid-template-columns:repeat(auto-fill, minmax(300px, 1fr));gap:16px}
+            grid-template-columns:repeat(2, 1fr);gap:16px}
   .sel-card{position:relative;display:flex;align-items:center;justify-content:space-between;
     gap:12px;width:100%;min-height:72px;
     padding:12px 14px;border:none;border-radius:8px;
@@ -1740,7 +1742,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     position:relative;transition:background .2s ease}
   .switch i{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
     background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.35);transition:left .2s ease}
-  .sel-card.on .switch{background:var(--brand)}
+  .sel-card.on .switch{background:var(--switch-on)}
   .sel-card.on .switch i{left:18px}
 
   /* ---------- 账号绑定：扫码胶囊 ---------- */
@@ -1762,9 +1764,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .cap-dot.on{opacity:1}
 
   /* ---------- 账号绑定：凭证健康紧凑列表（绿/黄/红圆点 + 相对时间） ---------- */
-  .cred-list{display:flex;flex-direction:column;padding:6px 12px 10px}
-  .cred-row{display:flex;align-items:center;gap:10px;padding:9px 10px;
-    min-height:44px;border-radius:6px;
+  .cred-list{display:flex;flex-direction:column;padding:4px 8px 8px}
+  .cred-row{display:flex;align-items:center;gap:10px;padding:6px 8px;
+    min-height:38px;border-radius:6px;
     transition:background-color .2s ease, box-shadow .2s ease}
   /* 列表行 Hover：淡灰底 + 左侧 3px 蓝条（inset 阴影实现，不挤动布局） */
   .cred-row:hover{background:var(--hover);box-shadow:inset 3px 0 0 var(--accent-blue)}
@@ -1780,6 +1782,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .cred-dot.ok{background:var(--ok)}
   .cred-dot.warn{background:var(--urgency-warn)}
   .cred-dot.err{background:var(--err)}
+  /* 超过 7 天未更新：时间文字转警告色 */
+  .cred-row.stale .cred-time{color:var(--warn)}
   .cred-time{flex:none;font-size:11.5px;color:var(--muted);
     font-variant-numeric:tabular-nums;min-width:56px;text-align:right}
 
@@ -2347,12 +2351,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <button type="button" class="scan-cap" id="cap-m" onclick="startMihoyo()">
               <span class="cap-dot" id="cap-dot-m"></span>
               <span class="cap-ico">⭐</span>
-              <span class="cap-txt"><b>米游社</b><small>更新所选游戏凭证</small></span>
+              <span class="cap-txt"><b>米游社</b><small>更新凭证</small></span>
             </button>
             <button type="button" class="scan-cap" id="cap-s" onclick="startSkland()">
               <span class="cap-dot" id="cap-dot-s"></span>
               <span class="cap-ico">🏝️</span>
-              <span class="cap-txt"><b>森空岛</b><small>更新所选游戏凭证</small></span>
+              <span class="cap-txt"><b>森空岛</b><small>更新凭证</small></span>
             </button>
           </div>
           <div class="btn-note">扫码只更新登录凭证；是否参与每日巡检由下方监控开关决定。</div>
@@ -2410,7 +2414,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <section class="card">
         <div class="card-head">
           <h2>🔐 凭证健康
-            <span class="q" data-tip="绿点 = 已绑定 · 黄点 = 早期绑定（无更新记录）· 红点 = 未绑定；时间为相对时间，更早绑定的账号没有时间记录，下次扫码后会开始记录"></span>
+            <span class="q" data-tip="绿点 = 已绑定 · 黄点 = 超过 7 天未更新 · 红点 = 未绑定；时间为相对时间，从未扫码更新的显示「从未更新」，下次扫码后开始记录"></span>
           </h2>
           <span class="spacer"></span>
           <span class="badge" id="cred-health-badge">-</span>
@@ -2421,7 +2425,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <!-- 设备伪装：details 折叠，默认收起 -->
       <details class="card" id="dev-card">
         <summary>
-          <h2>📱 设备伪装
+          <h2>🛡️ 设备伪装
             <span class="q" data-tip="米游社按设备指纹判断风险；用手机真实档案通过率最高，不填则用内置通用机型"></span>
           </h2>
           <span class="spacer"></span>
@@ -2946,8 +2950,8 @@ function renderCapsuleDots(d){
   });
 }
 
-/* 凭证健康：紧凑列表。绿点 = 已绑定 · 黄点 = 早期绑定（无更新记录）· 红点 = 未绑定
-   色彩纪律：正常 = 灰字，异常（未绑定）= 红字小标 */
+/* 凭证健康：紧凑列表。绿点 = 已绑定（含从未更新）· 黄点 = 超过 7 天未更新 · 红点 = 未绑定
+   色彩纪律：健康一律绿点灰字，只有「过期/未绑定」才给警示色 */
 function relTime(text){
   // "2026-10-27 22:00:33" -> "3天前"
   const m = String(text || '').match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
@@ -2963,6 +2967,13 @@ function relTime(text){
   const d = Math.floor(h / 24);
   if (d < 30) return d + '天前';
   return m[2] + '-' + m[3];
+}
+
+function credAgeDays(text){
+  const m = String(text || '').match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!m) return null;
+  const t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime();
+  return (Date.now() - t) / 86400000;
 }
 
 function renderCredHealth(d){
@@ -2982,18 +2993,25 @@ function renderCredHealth(d){
   }
   box.innerHTML = '<div class="cred-list">' +
     items.map(function(it){
-      const st = !it.has_credential ? 'err'
-               : (it.credential_updated_at ? 'ok' : 'warn');
-      const stText = st === 'err' ? '未绑定' : (st === 'warn' ? '早期绑定' : '已绑定');
-      return '<div class="cred-row' + (st === 'err' ? ' bad' : '') + '">' +
+      const age = it.has_credential ? credAgeDays(it.credential_updated_at) : null;
+      let st, stText, timeTxt;
+      if (!it.has_credential) {
+        st = 'err'; stText = '未绑定'; timeTxt = '—';
+      } else if (age == null) {
+        st = 'ok'; stText = '已绑定'; timeTxt = '从未更新';
+      } else if (age > 7) {
+        st = 'warn'; stText = '超过 7 天未更新'; timeTxt = relTime(it.credential_updated_at);
+      } else {
+        st = 'ok'; stText = '已绑定'; timeTxt = relTime(it.credential_updated_at);
+      }
+      return '<div class="cred-row' + (st === 'err' ? ' bad' : '') +
+             (st === 'warn' ? ' stale' : '') + '">' +
         selIconHtml(it.id, it.name || it.id) +
         '<div class="cred-info"><b>' + escHtml(it.name || it.id) + '</b>' +
         '<small>' + stText +
           (it.nickname ? ' · ' + escHtml(it.nickname) : '') + '</small></div>' +
         '<span class="cred-dot ' + st + '"></span>' +
-        '<span class="cred-time">' +
-          (it.credential_updated_at ? relTime(it.credential_updated_at) : '—') +
-        '</span>' +
+        '<span class="cred-time">' + escHtml(timeTxt) + '</span>' +
         '</div>';
     }).join('') + '</div>';
 }
