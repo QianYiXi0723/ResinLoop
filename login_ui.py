@@ -1995,10 +1995,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
     box-shadow:inset 0 2px 6px rgba(0,0,0,.18)}
   .dev-text:focus{outline:none;border-color:var(--brand)}
 
-  /* ---------- 活动日历卡片流（auto-fill 自适应网格 + 2x2 英雄卡） ---------- */
+  /* ---------- 活动日历卡片流（auto-fill 等高卡片流，所有卡片一律等大） ---------- */
   .act-grid{display:grid;
             grid-template-columns:repeat(auto-fill, minmax(min(320px, 100%), 1fr));
-            gap:16px;grid-auto-flow:dense;grid-auto-rows:minmax(120px,auto)}
+            gap:16px;grid-auto-flow:dense;grid-auto-rows:1fr}
   .act-grid > *{min-width:0}
   /* 卡片底色比页面卡面再提亮一档 + 更明显的描边，避免"陷进黑泥" */
   .acard{display:flex;flex-direction:column;gap:8px;
@@ -2012,14 +2012,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .acard-top .act-icon{flex:none}
   /* 抽屉里的已完成卡更矮更扁 */
   .act-drawer .acard{min-height:80px}
-  /* 最紧急的 1 张：2x2 英雄卡 —— 品牌蓝渐变提亮 + 蓝描边 + 外发光，一眼区分 */
-  .acard.hero{grid-column:span 4;grid-row:span 2;font-size:1.3em;
-    background:linear-gradient(150deg, rgba(91,156,245,.16), var(--bg-raise) 55%);
-    border-color:rgba(91,156,245,.40);
-    box-shadow:inset 0 1px 0 rgba(255,255,255,0.12), inset 0 -1px 0 rgba(0,0,0,0.3),
-               0 2px 10px rgba(0,0,0,0.45), 0 0 0 1px rgba(91,156,245,.14)}
-  /* 窄容器轨道不足 4 条时英雄卡改整行，避免 span 4 溢出网格 */
-  @media (max-width:1400px){ .acard.hero{grid-column:1/-1} }
+  /* 等高纪律：grid-auto-rows:1fr 让所有行同高；卡内 space-between 让标题/时间/进度各占其位 */
   @media (max-width:640px){ .act-grid > *{grid-column:1/-1} }
   .acard-top .act-game{flex:1;min-width:0;font-weight:600;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -2053,7 +2046,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .act-drawer.open .act-drawer-handle::after{transform:rotate(180deg)}
   .act-drawer-body{max-height:0;overflow:hidden;transition:max-height .3s ease}
   .act-drawer.open .act-drawer-body{max-height:40vh;overflow-y:auto;padding:2px 12px 12px}
-  .act-drawer .act-grid{grid-auto-rows:minmax(80px,auto)}
+  .act-drawer .act-grid{grid-auto-rows:1fr}
   .act-drawer .acard{opacity:.5}
   .act-drawer .acard .act-prog{display:none}
   .acard .act-del{flex:none}
@@ -3915,16 +3908,16 @@ function shortRange(s){
   return m ? m[1] + '-' + m[2] + ' ' + m[3] : '';
 }
 
-/* 英雄卡的紧迫度：剩余 ≤24h = critical（红边+呼吸）；≤72h（ending_soon）= warn（琥珀数字） */
-function actUrgencyAttr(it, isHero){
-  if (!isHero || it.not_started) return '';
+/* 最紧急 1 张的紧迫度标记（只改颜色不改尺寸）：剩余 ≤24h = critical（红边+呼吸）；≤72h（ending_soon）= warn（琥珀数字） */
+function actUrgencyAttr(it, urgent){
+  if (!urgent || it.not_started) return '';
   const hl = +it.hours_left || 0;
   if (it.ending_soon && hl > 0 && hl <= 24) return ' data-urgency="critical"';
   if (it.ending_soon) return ' data-urgency="warn"';
   return '';
 }
 
-function actCardHtml(it, isHero){
+function actCardHtml(it, urgent){
   const id = escHtml(it.id || '');
   const st = shortRange(it.start), en = shortRange(it.end);
   const ended = it.status === '已完成';
@@ -3936,8 +3929,8 @@ function actCardHtml(it, isHero){
     : '';
   const cdCls = ended ? 'ended' : (soon ? 'soon' : '');
   const prog = actProgHtml(it);
-  return '<div class="card acard' + (isHero ? ' hero' : '') + '"' +
-    actUrgencyAttr(it, isHero) + ' data-id="' + id + '">' +
+  return '<div class="card acard"' +
+    actUrgencyAttr(it, urgent) + ' data-id="' + id + '">' +
     '<div class="acard-top"><span class="act-game">' + actIconHtml(it) +
       escHtml(it.game_name) + '</span>' +
       '<button type="button" class="act-del" data-del="' + id +
@@ -3961,7 +3954,7 @@ function actProgHtml(it){
     '<span class="mono">' + a + '/' + b + '</span></div>';
 }
 
-/* 最紧急的 1 张做 2x2 英雄卡：进行中按剩余小时取最小（>0），没有进行中就取未开启的第一张 */
+/* 找最紧急的 1 张（剩余小时最小且 >0；没有进行中就取未开启第一张），只用于 data-urgency 标记 */
 function pickHeroIndex(pool){
   if (!pool.length) return -1;
   let best = 0;
@@ -3993,8 +3986,8 @@ function renderActivities(d){
 
     let html = '<div class="act-grid">';
     if (ongoing.length) {
-      const hero = pickHeroIndex(ongoing);
-      html += ongoing.map(function(it, i){ return actCardHtml(it, i === hero); }).join('');
+      const urgentIdx = pickHeroIndex(ongoing);
+      html += ongoing.map(function(it, i){ return actCardHtml(it, i === urgentIdx); }).join('');
     }
     if (upcoming.length) {
       html += upcoming.map(function(it){ return actCardHtml(it, !ongoing.length && it === upcoming[0]); }).join('');
