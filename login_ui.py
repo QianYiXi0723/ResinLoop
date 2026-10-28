@@ -1447,8 +1447,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
   }
   /* 深色 Token 组 */
   html[data-theme="dark"]{
-    --bg-base:#0d0d0d; --bg-sub:#151515; --bg-card:#1a1a1a; --bg-elevated:#222;
-    --bg-raise:#202020; --bg-head:#191919;
+    --bg-base:#1a1a1a; --bg-sub:#141414; --bg-card:#252526; --bg-elevated:#252526;
+    --bg-raise:#2d2d2d; --bg-head:#2b2b2b; --bg-side:#161616; --bg-input:#111111;
+    --btn-bg:#333333; --btn-hover:#3d3d3d; --nav-on:#333333; --nav-on-fg:#ffffff;
+    --focus-ring:rgba(74,155,232,.45);
+    --card-shadow:inset 0 1px 0 rgba(255,255,255,0.04), 0 2px 8px rgba(0,0,0,0.35);
     --border-subtle:rgba(255,255,255,0.06); --border-strong:rgba(255,255,255,0.12);
     --text-secondary:#a0a0a0; --text-tertiary:#666666;
     --bg:var(--bg-base); --surface:var(--bg-card); --subtle:var(--bg-sub); --fg:#e8e8e8;
@@ -1460,8 +1463,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
   }
   /* 浅色 Token 组：背景/卡片浅色，--fg 深色 —— 黑字永远压浅底 */
   html[data-theme="light"]{
-    --bg-base:#f3f3f3; --bg-sub:#ebebee; --bg-card:#ffffff; --bg-elevated:#ffffff;
-    --bg-raise:#ffffff; --bg-head:#f6f6f8;
+    --bg-base:#f4f6f9; --bg-sub:#eef0f4; --bg-card:#ffffff; --bg-elevated:#ffffff;
+    --bg-raise:#ffffff; --bg-head:#f7f8fa; --bg-side:#ffffff; --bg-input:#f5f5f5;
+    --btn-bg:#eef0f4; --btn-hover:#e2e6ec; --nav-on:#e8f0fe; --nav-on-fg:var(--brand);
+    --focus-ring:rgba(11,103,194,.30);
+    --card-shadow:0 2px 8px rgba(0,0,0,0.04);
     --border-subtle:rgba(0,0,0,0.08); --border-strong:rgba(0,0,0,0.14);
     --text-secondary:#5c636e; --text-tertiary:#9aa1ab;
     --bg:var(--bg-base); --surface:var(--bg-card); --subtle:var(--bg-sub); --fg:#1b1f24;
@@ -1479,7 +1485,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   /* ---------- 布局：整体纵向（上方=侧栏+内容，底部=日志台），日志不再挤占/悬浮 ---------- */
   .app{height:100vh;display:flex;flex-direction:column;overflow:hidden}
   .app-body{flex:1;display:flex;min-height:0}
-  .side{width:200px;flex:none;background:var(--bg);border-right:1px solid var(--line);
+  .side{width:200px;flex:none;background:var(--bg-side);
         display:flex;flex-direction:column;padding:10px 8px}
   .brand{display:flex;align-items:center;gap:8px;padding:6px 8px 12px}
   .logo{width:26px;height:26px;border-radius:4px;background:var(--brand);color:#fff;
@@ -1493,10 +1499,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         position:relative;white-space:nowrap}
   .nav button .nav-ico{font-size:13px;width:18px;text-align:center;flex:none}
   .nav button:hover{background:var(--hover)}
-  .nav button.on{background:var(--sel);font-weight:600}
-  .nav button.on::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:3px;
-        background:var(--brand);border-radius:0 2px 2px 0}
-  .side-foot{margin-top:auto;padding:10px 8px 4px;border-top:1px solid var(--line);
+  .nav button.on{background:var(--nav-on);color:var(--nav-on-fg);font-weight:600}
+  .nav button.on .nav-ico{color:var(--nav-on-fg)}
+  .side-foot{margin-top:auto;padding:10px 8px 4px;
         font-size:11px;color:var(--muted)}
   .theme-btn{display:block;width:100%;text-align:left;padding:0;border:none;
         background:transparent;color:var(--muted);font-size:11px;cursor:pointer}
@@ -1505,12 +1510,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
         display:flex;flex-direction:column;min-height:0;overflow-y:auto}
   @media (max-width:760px){
     .app-body{flex-direction:column}
-    .side{width:100%;flex-direction:row;align-items:center;border-right:none;
-          border-bottom:1px solid var(--line)}
+    .side{width:100%;flex-direction:row;align-items:center}
     .brand{padding:4px 8px}
     .nav{flex-direction:row;overflow-x:auto;scrollbar-width:none}
     .nav::-webkit-scrollbar{display:none}
-    .nav button.on::before{display:none}
     .side-foot{display:none}
     .main{padding:12px}
   }
@@ -1535,8 +1538,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                   grid-template-rows:auto minmax(0,1fr)}
 
   /* ---------- 卡片（Bento 基础卡）：--bg-card + 微光描边 + 写死阴影 ---------- */
-  .card{background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;
-        box-shadow:inset 0 1px 0 rgba(255,255,255,0.09), inset 0 -1px 0 rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.6);
+  .card{background:var(--bg-card);border:none;border-radius:10px;
+        box-shadow:var(--card-shadow);
         transition:box-shadow 400ms ease-out, padding 400ms ease-out}
 
   /* ---------- 紧迫感系统（data-urgency：warn 只染数字；critical 红边+呼吸） ---------- */
@@ -1559,25 +1562,25 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .card .act-cd{transition:color 400ms ease-out, opacity 400ms ease-out}
   @keyframes breathe{0%,100%{opacity:0.85}50%{opacity:1}}
   .card-head{display:flex;align-items:center;gap:8px;min-height:50px;
-              padding:12px 22px;border-bottom:1px solid var(--line)}
+              padding:12px 22px;background:var(--bg-head);
+              border-radius:10px 10px 0 0}
   .card-head h2{font-size:14px;font-weight:600;margin:0;display:flex;
                  align-items:center;gap:6px}
   .card-head .spacer{flex:1}
   .card-body{padding:18px 22px}
   /* 标题下方的显眼提示条（灰底小字） */
   .card-tip{padding:8px 16px;font-size:11.5px;color:var(--muted);line-height:1.6;
-             border-bottom:1px solid var(--line);background:var(--subtle)}
+             background:var(--subtle)}
   /* 账号绑定改版：rem/cred 小徽章作废（状态改由选择卡开关与凭证健康列表表达） */
   /* 复选框区（提醒）与扫码按钮区（凭证）之间的分割线 */
-  .v-sep{border-top:1px solid var(--line);margin:10px 0 8px}
+  .v-sep{margin:12px 0 6px}
   .btn-note{margin-top:6px;font-size:11px;color:var(--muted);line-height:1.6}
 
   /* ---------- 表格：行高 40-44px，表头 12px 灰字 ---------- */
   .tbl{width:100%;border-collapse:collapse;font-size:12.5px}
-  .tbl th,.tbl td{padding:9px 12px;border-bottom:1px solid var(--line);
+  .tbl th,.tbl td{padding:10px 12px;
                   text-align:left;white-space:nowrap;vertical-align:middle;line-height:1.5}
   .tbl th{font-size:12px;font-weight:600;color:var(--muted);background:var(--subtle)}
-  .tbl tbody tr:last-child td{border-bottom:none}
   .tbl tbody tr:nth-child(even){background:var(--zebra)}
   .tbl tbody tr:hover{background:var(--hover)}
   .tbl th.num,.tbl td.num{text-align:center;font-variant-numeric:tabular-nums}
@@ -1621,27 +1624,27 @@ HTML_PAGE = r"""<!DOCTYPE html>
   /* ---------- 按钮：细边框、小圆角 ---------- */
   button{font-family:inherit}
   .btn{display:inline-flex;align-items:center;justify-content:center;height:40px;
-       padding:0 18px;font-size:13.5px;line-height:1;border-radius:4px;
-       border:1px solid var(--line);background:var(--surface);
+       padding:0 18px;font-size:13.5px;line-height:1;border-radius:6px;
+       border:none;background:var(--btn-bg);
        color:var(--fg);cursor:pointer;white-space:nowrap;font-weight:500}
-  .btn:hover{background:var(--subtle)}
-  .btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+  .btn:hover{background:var(--btn-hover)}
+  .btn.primary{background:var(--brand);color:#fff}
   .btn.primary:hover{background:var(--brand-hover)}
   .btn.sm{height:30px;padding:0 12px;font-size:12px}
   .btn:disabled{opacity:.45;cursor:not-allowed}
-  .mini{padding:3px 10px;font-size:11.5px;border-radius:4px;border:1px solid var(--line);
-        background:var(--surface);color:var(--fg);cursor:pointer;white-space:nowrap}
-  .mini:hover{background:var(--subtle)}
-  .mini:disabled{background:var(--line);color:var(--muted);border-color:transparent;
+  .mini{padding:3px 10px;font-size:11.5px;border-radius:4px;border:none;
+        background:var(--btn-bg);color:var(--fg);cursor:pointer;white-space:nowrap}
+  .mini:hover{background:var(--btn-hover)}
+  .mini:disabled{background:var(--line);color:var(--muted);
         opacity:1;cursor:not-allowed}
   .toolbar{display:flex;gap:8px;margin:12px 0}
 
   /* ---------- 徽章 / 状态点 / (?) 提示 ---------- */
-  .badge{font-size:11px;padding:1px 8px;border-radius:3px;border:1px solid var(--line);
+  .badge{font-size:11px;padding:1px 8px;border-radius:3px;background:var(--subtle);
          color:var(--muted);white-space:nowrap}
-  .badge.ok{color:var(--ok);border-color:var(--ok)}
-  .badge.warn{color:var(--warn);border-color:var(--warn)}
-  .badge.err{color:var(--err);border-color:var(--err)}
+  .badge.ok{color:var(--ok);background:var(--ok-bg)}
+  .badge.warn{color:var(--warn);background:rgba(224,160,64,.15)}
+  .badge.err{color:var(--err);background:var(--err-bg)}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);display:inline-block;flex:none}
   .q{display:inline-grid;place-items:center;width:14px;height:14px;border-radius:50%;
      background:var(--muted);color:#fff;font-size:9.5px;font-weight:700;line-height:1;
@@ -1651,7 +1654,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .q:hover{background:var(--brand)}
   /* 全局 Tooltip 气泡：JS 定位的单个悬浮层，深底白字、瞬间显示 0.2s 淡入 */
   #tip{position:fixed;left:0;top:0;background:#24272c;color:#fff;
-       padding:7px 11px;border-radius:4px;border:1px solid rgba(255,255,255,.08);
+       padding:7px 11px;border-radius:4px;
        font-size:11.5px;line-height:1.6;font-weight:400;text-align:left;
        max-width:300px;width:max-content;box-shadow:0 4px 14px rgba(0,0,0,.28);
        opacity:0;visibility:hidden;pointer-events:none;z-index:999;
@@ -1669,12 +1672,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .sel-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
   .sel-grid .sel-card:last-child:nth-child(odd){grid-column:1/-1}
   .sel-card{position:relative;display:flex;align-items:center;gap:12px;
-    padding:12px 14px;border:1px solid var(--line);border-radius:8px;
-    background:var(--bg-raise);cursor:pointer;user-select:none;
+    padding:12px 14px;border:none;border-radius:8px;
+    background:var(--bg-input);cursor:pointer;user-select:none;
     opacity:.6;filter:grayscale(.5);
-    transition:opacity .2s ease,filter .2s ease,border-color .2s ease}
-  .sel-card:hover{border-color:var(--border-strong)}
-  .sel-card.on{opacity:1;filter:none;border-color:var(--border-strong)}
+    transition:opacity .2s ease,filter .2s ease,background .2s ease}
+  .sel-card:hover{background:var(--btn-hover)}
+  .sel-card.on{opacity:1;filter:none;background:var(--sel)}
   .sel-card input{position:absolute;opacity:0;pointer-events:none}
   .sel-ico{width:34px;height:34px;border-radius:8px;object-fit:cover;flex:none}
   .sel-ico.ph{display:grid;place-items:center;background:var(--subtle);
@@ -1691,11 +1694,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   /* ---------- 账号绑定：扫码胶囊 ---------- */
   .caps-row{display:flex;gap:12px;flex-wrap:wrap}
   .scan-cap{position:relative;display:flex;align-items:center;gap:10px;
-    padding:10px 20px;border-radius:999px;border:1px solid var(--line);
-    background:var(--surface);color:var(--fg);cursor:pointer;font-family:inherit;
-    transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease,
-               background .15s ease}
-  .scan-cap:hover{border-color:var(--brand);background:var(--subtle);
+    padding:10px 20px;border-radius:999px;border:none;
+    background:var(--btn-bg);color:var(--fg);cursor:pointer;font-family:inherit;
+    transition:transform .15s ease,box-shadow .15s ease,background .15s ease}
+  .scan-cap:hover{background:var(--btn-hover);
     transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.25)}
   .scan-cap:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
   .cap-ico{font-size:18px;line-height:1}
@@ -1710,7 +1712,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   /* ---------- 账号绑定：凭证健康紧凑列表（绿/黄/红圆点 + 相对时间） ---------- */
   .cred-list{display:flex;flex-direction:column;padding:6px 18px 10px}
   .cred-row{display:flex;align-items:center;gap:10px;padding:9px 0;
-    border-bottom:1px solid var(--line);min-height:44px}
+    min-height:44px}
   .cred-row:last-child{border-bottom:none}
   .cred-row .sel-ico{width:28px;height:28px;border-radius:6px}
   .cred-row .sel-ico.ph{font-size:12px}
@@ -1728,46 +1730,45 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   /* ---------- 表单 ---------- */
   .field{margin:2px 0}
-  .field input{width:100%;height:42px;padding:0 16px;border-radius:4px;
-               border:1px solid var(--input-line);background:var(--surface);color:var(--fg);
+  .field input{width:100%;height:42px;padding:0 16px;border-radius:6px;
+               border:none;background:var(--bg-input);color:var(--fg);
                font-size:14px;font-family:ui-monospace,Consolas,"Courier New",monospace}
-  .field textarea{width:100%;padding:10px 14px;border-radius:4px;
-               border:1px solid var(--input-line);background:var(--surface);color:var(--fg);
+  .field textarea{width:100%;padding:10px 14px;border-radius:6px;
+               border:none;background:var(--bg-input);color:var(--fg);
                font:12.5px/1.55 ui-monospace,Consolas,"Courier New",monospace;
                   resize:vertical;min-height:112px}
-  .field input:focus,.field textarea:focus{outline:none;border-color:var(--brand)}
+  .field input:focus,.field textarea:focus{outline:none;
+               box-shadow:0 0 0 2px var(--focus-ring)}
   input::placeholder,textarea::placeholder{color:var(--muted);opacity:.6}
   .hint{margin:0;padding:6px 12px;font-size:11.5px;color:var(--muted);line-height:1.6}
   .card-body .hint{padding:6px 0 0}
   .hint:empty{display:none}
   .hint b{color:var(--fg)}
-  .hint code{background:var(--subtle);padding:0 4px;border-radius:2px;font-size:11px;
-             border:1px solid var(--line)}
+  .hint code{background:var(--subtle);padding:0 4px;border-radius:2px;font-size:11px}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
   @media (max-width:520px){ .row{grid-template-columns:1fr} }
   .row3{display:grid;grid-template-columns:1fr auto;gap:10px;margin-top:10px;
         align-items:stretch}
   .row3 .btn,.row3 .mini{border-radius:4px}
   input[type=time],input[type=number]{width:100%;height:42px;padding:0 14px;
-                   border-radius:4px;border:1px solid var(--input-line);
-                   background:var(--surface);color:var(--fg);
+                   border-radius:6px;border:none;
+                   background:var(--bg-input);color:var(--fg);
                    font-size:14px;font-family:ui-monospace,Consolas,monospace}
-  input[type=time]:focus,input[type=number]:focus{outline:none;border-color:var(--brand)}
+  input[type=time]:focus,input[type=number]:focus{outline:none;
+                   box-shadow:0 0 0 2px var(--focus-ring)}
 
   /* ---------- 提醒时间点 chips ---------- */
   .chips{display:flex;flex-wrap:wrap;gap:6px}
   .chip{display:inline-flex;align-items:center;gap:5px;background:var(--subtle);
-        border:1px solid var(--line);border-radius:3px;padding:2px 3px 2px 9px;
+        border-radius:3px;padding:2px 3px 2px 9px;
         font-size:12.5px;font-family:ui-monospace,Consolas,monospace}
   .chip button{width:18px;height:18px;padding:0;border-radius:2px;background:transparent;
                color:var(--muted);border:none;font-size:14px;line-height:1;cursor:pointer}
   .chip button:hover{background:var(--err);color:#fff}
-  .chip.empty{color:var(--muted);border-style:dashed;padding:2px 9px;font-family:inherit}
+  .chip.empty{color:var(--muted);background:transparent;padding:2px 9px;font-family:inherit}
 
   /* ---------- Win11 设置行（定时与状态）：左 240px 说明 · 中留白 · 右控件 ---------- */
   .set-card > .card-body{padding:0}
-  .set-item{border-bottom:1px solid var(--line)}
-  .set-item:last-child{border-bottom:none}
   .set-head{display:flex;align-items:center;gap:16px;padding:13px 22px;min-height:52px;
     cursor:pointer;user-select:none;list-style:none;
     -webkit-tap-highlight-color:transparent}
@@ -1787,7 +1788,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     border-left:4.5px solid transparent;border-right:4.5px solid transparent;
     border-top:5.5px solid var(--muted);transition:transform .15s ease}
   .set-item[open] > .set-head::after{transform:rotate(180deg)}
-  .set-body{padding:12px 22px 16px 272px;border-top:1px dashed var(--line)}
+  .set-body{padding:12px 22px 16px 272px}
   .set-body .hint{font-size:11px;padding:8px 0 0}
   .set-item.is-off .set-body{opacity:.55}
   .set-item.is-off .set-body:focus-within{opacity:1}
@@ -1827,7 +1828,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .kpi-bar.compact .kpi.keep{display:block}
   .kpi-bar.compact .kpi-value{font-size:24px}
   .kpi-bar.compact .kpi-sub{display:none}
-  .kpi{background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:8px;
+  .kpi{background:var(--bg-elevated);border:none;border-radius:8px;
        padding:12px 18px;min-width:0}
   .kpi-label{font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:6px}
   .kpi-value,.value{font-size:28px;font-weight:700;line-height:1.3;margin-top:2px;
@@ -1844,7 +1845,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
   /* ---------- 底部日志控制台：固定底栏（不随内容滚动、不悬浮遮挡） ----------
      收缩 48px（只有把手）/ 展开 200px（把手 48 + 日志体 152） */
   .console{flex-shrink:0;background:var(--surface);
-           border:1px solid var(--line);border-bottom:none;border-left:none;border-right:none;
            border-radius:0;overflow:hidden}
   .console-head{display:flex;align-items:center;gap:12px;padding:0 18px;
                 height:48px;min-height:48px;
@@ -1855,7 +1855,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .console-last{flex:1;min-width:0;font-family:ui-monospace,Consolas,monospace;
                 font-size:11.5px;color:var(--muted);white-space:nowrap;
                 overflow:hidden;text-overflow:ellipsis;text-align:right}
-  .console-body{border-top:1px solid var(--line);background:var(--bg-sub);
+  .console-body{background:var(--bg-sub);
                 font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:11.5px;
                 line-height:1.8;padding:10px 16px;height:152px;overflow-y:auto;
                 font-variant-numeric:tabular-nums}
@@ -1867,15 +1867,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   /* ---------- 辅助卡片：巡检动态 / 推送预览 / 活动空状态 ---------- */
   .log-row{display:flex;align-items:center;gap:10px;padding:9px 0;
-           border-bottom:1px dashed var(--line);font-size:12.5px;flex-wrap:wrap}
-  .log-row:last-child{border-bottom:none}
+           font-size:12.5px;flex-wrap:wrap}
   .log-date{font-weight:600;white-space:nowrap}
   .log-time{color:var(--muted);font-family:ui-monospace,Consolas,monospace;font-size:12px}
   .log-detail{color:var(--muted);font-size:11.5px}
   .act-empty{display:flex;flex-direction:column;align-items:center;gap:8px;
              padding:36px 16px;color:var(--muted);font-size:12.5px}
   .act-empty-icon{font-size:30px;line-height:1}
-  .phone-mock{background:#1b1e23;border:1px solid var(--line);border-radius:10px;
+  .phone-mock{background:#1b1e23;border-radius:10px;
               padding:14px}
   .pv-bubble{background:#2b3037;color:#e8eaed;border-radius:8px;padding:10px 12px;
              max-width:440px}
@@ -1903,8 +1902,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .kv-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 24px;font-size:12.5px}
   @media (max-width:520px){ .kv-grid{grid-template-columns:1fr} }
   .kv-grid > div{display:flex;justify-content:space-between;gap:10px;
-    padding:6px 0;border-bottom:1px dashed var(--line)}
-  .kv-grid > div:nth-last-child(-n+2){border-bottom:none}
+    padding:6px 0}
   .kv-grid span{color:var(--muted);white-space:nowrap}
   .kv-grid b{font-weight:500;text-align:right;overflow:hidden;text-overflow:ellipsis;
     white-space:nowrap;font-family:ui-monospace,Consolas,monospace;font-size:12px}
@@ -1916,25 +1914,25 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .resin-row input[type=number]{margin-top:3px}
 
   /* ---------- 通知 / 警告条 ---------- */
-  .notice{margin-bottom:12px;padding:8px 12px;border:1px solid var(--warn);border-radius:4px;
+  .notice{margin-bottom:12px;padding:8px 12px;border-radius:6px;
           font-size:12.5px;line-height:1.7;background:rgba(217,119,6,.07)}
   .notice b{color:var(--warn)}
-  .notice.info{border-color:var(--line);background:var(--subtle)}
+  .notice.info{background:var(--subtle)}
   .notice.info b{color:var(--fg)}
   .notice a{color:var(--brand);text-decoration:none;font-weight:500;
             border-bottom:1px solid currentColor;cursor:pointer}
 
   /* ---------- 扫码登录区 ---------- */
   .stage{padding:18px;text-align:center}
-  .qrbox{display:inline-flex;padding:10px;background:#fff;border:1px solid var(--line);
-         border-radius:4px;min-height:224px;min-width:224px;align-items:center;
-         justify-content:center}
+  .qrbox{display:inline-flex;padding:10px;background:#fff;
+         border-radius:8px;min-height:224px;min-width:224px;align-items:center;
+         justify-content:center;box-shadow:0 2px 10px rgba(0,0,0,.2)}
   .qrbox img{width:224px;height:224px;display:block;image-rendering:pixelated}
   .qrbox .ph{color:var(--muted);font-size:12.5px;padding:0 20px}
   .status{margin-top:12px;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
   #msg{margin:0;font-size:13px}
   .kv{margin-top:12px;font-size:12.5px;color:var(--muted);text-align:left;
-      border-top:1px solid var(--line);padding-top:10px}
+      padding-top:10px}
   .kv code{background:var(--subtle);padding:0 5px;border-radius:2px;font-size:11.5px}
   .res{display:flex;flex-direction:column;gap:3px;margin-top:6px;text-align:left}
   .res div{display:flex;align-items:center;gap:6px}
@@ -1944,17 +1942,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .modal-mask{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.55);
     display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px)}
   .modal-mask[hidden]{display:none}
-  .modal{background:var(--bg-card);border:1px solid var(--border-strong);border-radius:10px;
+  .modal{background:var(--bg-card);border:none;border-radius:10px;
     padding:18px 22px 20px;max-width:min(420px,92vw);text-align:center;
     box-shadow:0 16px 48px rgba(0,0,0,.5)}
   .modal-head{display:flex;align-items:center;justify-content:space-between;gap:20px;
     margin-bottom:14px}
   .modal-head b{font-size:14px;font-weight:600}
-  .modal-x{width:26px;height:26px;border-radius:5px;border:1px solid var(--line);
-    background:var(--surface);color:var(--muted);cursor:pointer;font-size:12px;line-height:1}
-  .modal-x:hover{background:var(--subtle);color:var(--fg)}
+  .modal-x{width:26px;height:26px;border-radius:5px;border:none;
+    background:var(--btn-bg);color:var(--muted);cursor:pointer;font-size:12px;line-height:1}
+  .modal-x:hover{background:var(--btn-hover);color:var(--fg)}
 
-  #test-result{margin-top:4px;padding:8px 12px;border-top:1px solid var(--line);font-size:12.5px}
+  #test-result{margin-top:4px;padding:8px 12px;font-size:12.5px}
   .spin{display:inline-block;width:11px;height:11px;border:2px solid var(--line);
         border-top-color:var(--brand);border-radius:50%;animation:s .8s linear infinite;
         vertical-align:-1px;margin-right:4px}
@@ -1966,7 +1964,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   #dev-card summary::-webkit-details-marker{display:none}
   #dev-card summary h2{font-size:14px;font-weight:600;margin:0;
     display:flex;align-items:center;gap:6px}
-  #dev-card[open] summary{border-bottom:1px solid var(--line)}
+  #dev-card[open] summary{background:var(--bg-head)}
   .dev-arrow{flex:none;width:14px;height:14px;color:var(--muted);
     transition:transform .25s ease}
   #dev-card[open] .dev-arrow{transform:rotate(90deg)}
@@ -1980,35 +1978,36 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .dstep{position:relative;display:flex;gap:8px;align-items:flex-start;
     font-size:12.5px;color:var(--muted);line-height:1.5}
   .dstep b{position:absolute;left:-30px;top:0;width:18px;height:18px;border-radius:50%;
-    background:var(--subtle);border:1px solid var(--line);color:var(--muted);
+    background:var(--btn-bg);color:var(--muted);
     font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center}
   .apk{text-align:center}
-  .apk-qr{display:inline-block;padding:6px;background:#fff;border:1px solid var(--line);
-          border-radius:4px}
+  .apk-qr{display:inline-block;padding:6px;background:#fff;
+          border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.15)}
   .apk-qr img{width:126px;height:126px;display:block}
   .apk-meta{font-size:11px;color:var(--muted);margin-top:5px;line-height:1.5;word-break:break-all}
   /* 代码粘贴框：等宽字体 + 内阴影质感 */
-  .dev-text{width:100%;min-height:132px;padding:10px 14px;border-radius:4px;
-    border:1px solid var(--input-line);background:var(--surface);color:var(--fg);
+  .dev-text{width:100%;min-height:132px;padding:10px 14px;border-radius:6px;
+    border:none;background:var(--bg-input);color:var(--fg);
     font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12px;
     line-height:1.6;resize:vertical;
     box-shadow:inset 0 2px 6px rgba(0,0,0,.18)}
-  .dev-text:focus{outline:none;border-color:var(--brand)}
+  .dev-text:focus{outline:none;
+    box-shadow:inset 0 2px 6px rgba(0,0,0,.18),0 0 0 2px var(--focus-ring)}
 
   /* ---------- 活动日历卡片流（auto-fill 等高卡片流，所有卡片一律等大） ---------- */
   .act-grid{display:grid;
             grid-template-columns:repeat(auto-fill, minmax(min(320px, 100%), 1fr));
             gap:16px;grid-auto-flow:dense;grid-auto-rows:1fr}
   .act-grid > *{min-width:0}
-  /* 卡片底色比页面卡面再提亮一档 + 更明显的描边，避免"陷进黑泥" */
+  /* 卡片底色比页面卡面再提亮一档，靠色阶分层，不用描边 */
   .acard{display:flex;flex-direction:column;gap:8px;
          min-height:120px;justify-content:space-between;
          padding:14px 16px;font-size:12.5px;
-         background:var(--bg-raise);border-color:var(--border-strong)}
+         background:var(--bg-raise)}
   /* 头部（图标+游戏名）独立色块 + 底边框，与时间/正文分层 */
   .acard-top{display:flex;align-items:center;gap:8px;min-width:0;
     background:var(--bg-head);margin:-14px -16px 0;padding:10px 16px 8px;
-    border-bottom:1px solid var(--border-subtle);border-radius:7px 7px 0 0}
+    border-radius:10px 10px 0 0}
   .acard-top .act-icon{flex:none}
   /* 抽屉里的已完成卡更矮更扁 */
   .act-drawer .acard{min-height:80px}
@@ -2034,7 +2033,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .act-prog .sbar{max-width:220px;height:6px;border-radius:999px}
   .act-prog .sbar i{border-radius:999px}
   /* 底部「已完成」抽屉：48px 把手 + 40vh 展开体，内部卡片半透明无进度条 */
-  .act-drawer{margin-top:16px;border:1px solid var(--border-subtle);border-radius:8px;
+  .act-drawer{margin-top:16px;border:none;border-radius:8px;
               background:var(--bg-card);overflow:hidden}
   .act-drawer-handle{display:flex;align-items:center;gap:8px;width:100%;height:48px;
     padding:0 18px;background:transparent;border:none;color:var(--text-secondary);
@@ -2060,7 +2059,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .act-unsupported{padding:6px 12px;font-size:11.5px;color:var(--muted)}
   .act-unsupported:empty{display:none}
   .au-chip{display:inline-block;font-size:11.5px;color:var(--muted);background:var(--subtle);
-    border:1px solid var(--line);border-radius:3px;padding:1px 8px;margin:0 6px 4px 0}
+    border-radius:3px;padding:1px 8px;margin:0 6px 4px 0}
   .au-title{margin-bottom:4px}
 
   /* ---------- 游戏迷你卡（每日报表概览） ---------- */
@@ -2072,7 +2071,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .gcard-head{display:flex;align-items:center;gap:10px;min-width:0}
   .gcard-ico{width:40px;height:40px;border-radius:8px;object-fit:cover;flex:none}
   .gcard-ico.ph{display:grid;place-items:center;background:var(--subtle);
-    border:1px solid var(--line);color:var(--muted);font-size:16px}
+    color:var(--muted);font-size:16px}
   .gcard-name{flex:1;min-width:0}
   .gcard-name b{display:block;font-size:14px;line-height:1.35;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -2093,7 +2092,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .sbar{flex:1;position:relative;height:6px;background:var(--line);border-radius:999px;min-width:0}
   .sbar i{display:block;height:100%;background:var(--brand);border-radius:999px}
   .sbar i.hot{background:var(--warn)}
-  .gcard-foot{font-size:11.5px;color:var(--muted);border-top:1px dashed var(--line);
+  .gcard-foot{font-size:11.5px;color:var(--muted);
               padding-top:8px;margin-top:auto}
   .gcard-foot b{color:var(--fg)}
 
@@ -2112,8 +2111,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .hm-row:not(.hm-head) .hm-cell.today{box-shadow:inset 0 0 0 2px var(--brand)}
   .hm-cell.ok{background:var(--ok);color:#fff}
   .hm-cell.err{background:var(--err);color:#fff}
-  .hm-cell.na{background:var(--subtle);border:1px solid var(--line);color:var(--muted)}
-  .hm-cell.na.wait{border-style:dashed}
+  .hm-cell.na{background:var(--subtle);color:var(--muted)}
+  .hm-cell.na.wait{background:repeating-linear-gradient(135deg,
+    var(--subtle) 0 4px, var(--hover) 4px 8px)}
   .hm-legend{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);
     margin-top:8px;flex-wrap:wrap}
   .hm-legend .hm-cell{min-height:18px;min-width:20px;padding:0 5px;font-size:10.5px}
@@ -2122,9 +2122,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .stack{display:flex;flex-direction:column;gap:16px;min-width:0}
   .ch-list{display:flex;flex-direction:column;gap:8px}
   .ch-item{display:flex;align-items:center;gap:10px;padding:11px 12px;
-    border:1px solid var(--line);border-radius:6px;cursor:pointer;user-select:none;min-width:0}
+    border:none;border-radius:6px;cursor:pointer;user-select:none;min-width:0;
+    background:var(--subtle)}
   .ch-item:hover{background:var(--hover)}
-  .ch-item.on{border-color:var(--brand);background:var(--sel)}
+  .ch-item.on{background:var(--sel)}
   .ch-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
   .ch-dot.bad{background:var(--warn)}
   .ch-item > div{flex:1;min-width:0}
@@ -2136,9 +2137,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   /* 编辑区输入框固定宽度，不拉满 */
   #ed-serverchan .field,#ed-qmsg .field{max-width:420px}
   .recent{display:flex;flex-direction:column;font-size:11px;color:var(--muted);min-width:0}
-  .recent div{padding:6px 0;border-bottom:1px dashed var(--line);
+  .recent div{padding:6px 0;
     font-family:ui-monospace,Consolas,monospace;word-break:break-all}
-  .recent div:last-child{border-bottom:none}
 
   /* ---------- 空状态 / Toast ---------- */
   .emptybox{padding:20px 12px;text-align:center;color:var(--muted);font-size:12.5px;line-height:1.8}
