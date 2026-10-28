@@ -1487,6 +1487,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     --btn-bg:#333333; --btn-hover:#3d3d3d; --nav-on:#333333; --nav-on-fg:#ffffff;
     --focus-ring:rgba(74,155,232,.45);
     --card-shadow:inset 0 1px 0 rgba(255,255,255,0.04), 0 2px 8px rgba(0,0,0,0.35);
+    --ring-shadow:0 0 0 1px var(--accent-blue), 0 4px 12px rgba(0,0,0,0.35);
     --border-subtle:rgba(255,255,255,0.06); --border-strong:rgba(255,255,255,0.12);
     --text-secondary:#a0a0a0; --text-tertiary:#666666;
     --bg:var(--bg-base); --surface:var(--bg-card); --subtle:var(--bg-sub); --fg:#e8e8e8;
@@ -1503,6 +1504,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     --btn-bg:#eef0f4; --btn-hover:#e2e6ec; --nav-on:#e8f0fe; --nav-on-fg:var(--brand);
     --focus-ring:rgba(11,103,194,.30);
     --card-shadow:0 2px 8px rgba(0,0,0,0.04);
+    --ring-shadow:0 0 0 1px var(--accent-blue), 0 4px 12px rgba(0,0,0,0.05);
     --border-subtle:rgba(0,0,0,0.08); --border-strong:rgba(0,0,0,0.14);
     --text-secondary:#5c636e; --text-tertiary:#9aa1ab;
     --bg:var(--bg-base); --surface:var(--bg-card); --subtle:var(--bg-sub); --fg:#1b1f24;
@@ -1575,7 +1577,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
   /* ---------- 卡片（Bento 基础卡）：--bg-card + 微光描边 + 写死阴影 ---------- */
   .card{background:var(--bg-card);border:none;border-radius:10px;
         box-shadow:var(--card-shadow);
-        transition:box-shadow 400ms ease-out, padding 400ms ease-out}
+        transition:box-shadow .2s ease, background-color .2s ease, padding 400ms ease-out}
+  /* ---------- 交互规范（三态统一，box-shadow 描边零布局抖动） ----------
+     Hover 悬浮 / Active 点击保持 / Focus-within 输入聚焦 → 同一蓝色描边 */
+  .card:hover, .card.active, .card:focus-within{box-shadow:var(--ring-shadow)}
+  /* 控件（图标/按钮/行头）：Hover 不描边，只做背景微变 */
+  .btn,.mini,.modal-x,.chip button,.act-del,.set-head,.console-head,
+  .ch-item,.nav button,.theme-btn,.sel-card,.act-drawer-handle{
+    transition:background-color .2s ease, color .2s ease}
 
   /* ---------- 紧迫感系统（data-urgency：warn 只染数字；critical 红边+呼吸） ---------- */
   .card[data-urgency="warn"] .value{color:var(--urgency-warn)}
@@ -1745,9 +1754,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .cap-dot.on{opacity:1}
 
   /* ---------- 账号绑定：凭证健康紧凑列表（绿/黄/红圆点 + 相对时间） ---------- */
-  .cred-list{display:flex;flex-direction:column;padding:6px 18px 10px}
-  .cred-row{display:flex;align-items:center;gap:10px;padding:9px 0;
-    min-height:44px}
+  .cred-list{display:flex;flex-direction:column;padding:6px 12px 10px}
+  .cred-row{display:flex;align-items:center;gap:10px;padding:9px 10px;
+    min-height:44px;border-radius:6px;
+    transition:background-color .2s ease, box-shadow .2s ease}
+  /* 列表行 Hover：淡灰底 + 左侧 3px 蓝条（inset 阴影实现，不挤动布局） */
+  .cred-row:hover{background:var(--hover);box-shadow:inset 3px 0 0 var(--accent-blue)}
   .cred-row:last-child{border-bottom:none}
   .cred-row .sel-ico{width:28px;height:28px;border-radius:6px}
   .cred-row .sel-ico.ph{font-size:12px}
@@ -2107,7 +2119,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   @media (max-width:1500px){ .gcards{grid-template-columns:repeat(2,1fr)} }
   @media (max-width:860px){ .gcards{grid-template-columns:1fr} }
   .gcard{border-radius:8px;padding:14px 16px;min-width:0;
-         display:flex;flex-direction:column;gap:10px}
+         display:flex;flex-direction:column;gap:10px;
+         background:var(--bg-raise);box-shadow:var(--card-shadow);
+         transition:box-shadow .2s ease, background-color .2s ease}
+  .gcard:hover, .gcard.active{box-shadow:var(--ring-shadow)}
   .gcard-head{display:flex;align-items:center;gap:10px;min-width:0}
   .gcard-ico{width:40px;height:40px;border-radius:8px;object-fit:cover;flex:none}
   .gcard-ico.ph{display:grid;place-items:center;background:var(--subtle);
@@ -4793,6 +4808,15 @@ document.getElementById('btn-console-refresh').addEventListener('click', functio
 });
 
 /* =========================== 启动 =========================== */
+/* 点击保持高亮：点卡片/折叠框加 .active（蓝描边常驻），点其他区域清除。
+   details 折叠框同样适用（dev-card 也是 .card） */
+document.addEventListener('click', function(e){
+  const card = e.target.closest('.card');
+  document.querySelectorAll('.card.active').forEach(function(c){
+    if (c !== card) c.classList.remove('active');
+  });
+  if (card) card.classList.add('active');
+});
 /* 秒开：先把 localStorage 里的上次数据画出来（KPI/报表/实时面板），
    下面的 switchTab 会发起真实请求做后台静默刷新，数据到手平滑替换 */
 renderCachedData();
