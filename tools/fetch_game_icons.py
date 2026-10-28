@@ -36,6 +36,7 @@ BUNDLES = {
     "starrail": "com.miHoYo.hkrpg",
     "zzz": "com.miHoYo.Nap",
     "arknights": "com.hypergryph.arknights",
+    "endfield": "com.hypergryph.endfield",
 }
 
 #: 游戏 id → 米哈游启动器里的 ico 文件名（不带后缀）。

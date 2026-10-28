@@ -1633,6 +1633,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .tbl td.num b{font-size:13.5px}
   .tbl td.bad{color:var(--err)}
   .tbl td.dim,.dim{color:var(--muted)}
+  /* 表格游戏列的 22px 小图标（游戏监控页）；gcard-ico 默认 40px，表格里缩一格 */
+  .tbl .gcard-ico{width:22px;height:22px;border-radius:5px;margin-right:8px;vertical-align:-5px}
+  .tbl .gcard-ico.ph{display:inline-grid;place-items:center;background:var(--subtle);font-size:11px}
   .tbl td.mono,.mono{font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12px;
                      font-variant-numeric:tabular-nums}
   .tbl td.wrap{white-space:normal;word-break:break-all}
@@ -2995,7 +2998,7 @@ function renderCredHealth(d){
     }).join('') + '</div>';
 }
 
-/* 选择卡/凭证行的游戏图标：有官方图用图，没有（终末地）退回首字占位 */
+/* 选择卡/凭证行的游戏图标：五款游戏都有官方图（终末地自 v1.1.8 起用 App Store 图） */
 function selIconHtml(gid, name){
   const base = GAME_ICON[gid];
   if (!base) {
@@ -4000,7 +4003,7 @@ function renderLive(d){
       games.map(function(g){
         const name = escHtml(g.game_name || g.game);
         if (!g.ok) {
-          return '<tr><td>' + name + '</td>' +
+          return '<tr><td>' + gameIconHtml(g.game) + name + '</td>' +
             '<td><span class="badge err">失败</span></td>' +
             '<td class="wrap err-t">' + escHtml(g.error || '未知错误') + '</td>' +
             '<td>—</td></tr>';
@@ -4010,12 +4013,12 @@ function renderLive(d){
           ? '<span class="dim">已完成</span>'
           : '<span class="badge warn">未完成</span>';
         if (!r || r.current == null) {
-          return '<tr><td>' + name + '</td><td>' + st + '</td>' +
+          return '<tr><td>' + gameIconHtml(g.game) + name + '</td><td>' + st + '</td>' +
             '<td class="dim">—</td><td class="dim">暂不支持</td></tr>';
         }
         const pct = (r.percent == null) ? 0 : r.percent;
         const max = (r.maximum == null) ? '?' : r.maximum;
-        return '<tr><td>' + name + '</td><td>' + st + '</td>' +
+        return '<tr><td>' + gameIconHtml(g.game) + name + '</td><td>' + st + '</td>' +
           '<td class="mono">' + r.current + ' <span class="dim">/ ' + max +
           ' · ' + escHtml(r.name) + '</span></td>' +
           '<td><span class="bar"><i class="' + (pct >= 85 ? 'hot' : '') +
@@ -4088,7 +4091,8 @@ const GAME_ICON = {
   genshin: '/static/icons/genshin',
   starrail: '/static/icons/starrail',
   zzz: '/static/icons/zzz',
-  arknights: '/static/icons/arknights'
+  arknights: '/static/icons/arknights',
+  endfield:  '/static/icons/endfield'
 };
 
 /* 图标定义就绪后，把账号绑定页选择卡的静态占位换成官方图标 */
@@ -4341,13 +4345,14 @@ function renderHistory(d){
   renderHeatmap(d);
 }
 
-function gameIconHtml(gid){
+function gameIconHtml(gid, cls){
+  const klass = cls || 'gcard-ico';
   const base = GAME_ICON[gid];
   if (!base) {
-    return '<span class="gcard-ico ph">' + escHtml(String(gid).slice(0, 1).toUpperCase()) + '</span>';
+    return '<span class="' + klass + ' ph">' + escHtml(String(gid).slice(0, 1).toUpperCase()) + '</span>';
   }
   const v = ICON_STAMP.indexOf('__') === 0 ? '' : '?v=' + ICON_STAMP;
-  return '<img class="gcard-ico" width="40" height="40" alt="" src="' + base + '.png' + v +
+  return '<img class="' + klass + '" width="40" height="40" alt="" src="' + base + '.png' + v +
          '" srcset="' + base + '@2x.png' + v + ' 2x">';
 }
 
