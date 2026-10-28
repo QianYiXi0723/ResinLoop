@@ -1717,9 +1717,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   /* ---------- 账号绑定：监控选择卡（Selector Card） ----------
      未选中 = 半透明去色；开关开启（.on）单独覆盖，绝不被滤镜变灰 */
-  .sel-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
-  .sel-grid .sel-card:last-child:nth-child(odd){grid-column:1/-1}
-  .sel-card{position:relative;display:flex;align-items:center;gap:12px;
+  .sel-grid{display:grid;
+            grid-template-columns:repeat(auto-fill, minmax(300px, 1fr));gap:16px}
+  .sel-card{position:relative;display:flex;align-items:center;justify-content:space-between;
+    gap:12px;width:100%;min-height:72px;
     padding:12px 14px;border:none;border-radius:8px;
     background:var(--bg-input);cursor:pointer;user-select:none;
     opacity:.6;filter:grayscale(.5);
