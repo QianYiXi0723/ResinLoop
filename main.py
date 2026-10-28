@@ -540,7 +540,9 @@ def run_once(config: AppConfig, dry_run: bool = False) -> int:
             from core import activities
 
             activities.ensure_fresh()
-            activity_alerts = activities.pending_alerts()
+            activity_alerts = activities.pending_alerts(
+                hours=config.activity_alert_days * 24
+            )
         except Exception as exc:  # noqa: BLE001 - 活动提醒坏了也不能影响日常检查
             logger.warning("读取活动提醒失败（不影响本轮检查）：%s", exc)
 

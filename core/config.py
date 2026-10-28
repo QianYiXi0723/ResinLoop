@@ -60,8 +60,11 @@ CATCH_UP_MINUTES_MAX = 720
 #: 关掉后各自的时间 / 阈值参数会原样保留，重新打开即恢复，不用重新填一遍。
 CATCH_UP_ENABLED_DEFAULT = True
 RESOURCE_ALERT_ENABLED_DEFAULT = True
-#: 「活动结束提醒」总开关：活动剩 <=72 小时时在推送末尾追加提醒（默认开）
+#: 「活动结束提醒」总开关：活动结束前 N 天开始在推送末尾追加提醒（默认开）
 ACTIVITY_ALERT_ENABLED_DEFAULT = True
+#: 活动结束提前提醒天数：1~30，默认 3 天（约等于旧的 72 小时窗口）
+ACTIVITY_ALERT_DAYS_DEFAULT = 3
+ACTIVITY_ALERT_DAYS_MAX = 30
 
 #: 体力溢出预警阈值：当前值 >= 阈值就强制推一条（0 = 关闭该游戏的预警）。
 #: 判定完全复用定时检查那一次查询的结果，**不额外发任何请求**。
@@ -605,6 +608,8 @@ class AppConfig:
     resource_alert_enabled: bool = RESOURCE_ALERT_ENABLED_DEFAULT
     # 活动结束提醒总开关：false 时不读活动缓存、不追加任何活动警告
     activity_alert_enabled: bool = ACTIVITY_ALERT_ENABLED_DEFAULT
+    # 活动结束提前提醒天数：结束前 N 天开始提醒（1~30，默认 3）
+    activity_alert_days: int = ACTIVITY_ALERT_DAYS_DEFAULT
     # 体力溢出预警：当前值 >= 阈值则强制推送（0 = 关闭）。只看已有查询结果，不额外请求。
     genshin_resin_threshold: int = RESOURCE_THRESHOLD_DEFAULT["genshin"]
     starrail_stamina_threshold: int = RESOURCE_THRESHOLD_DEFAULT["starrail"]
@@ -664,6 +669,7 @@ class AppConfig:
                 "catch_up_enabled": bool(self.catch_up_enabled),
                 "resource_alert_enabled": bool(self.resource_alert_enabled),
                 "activity_alert_enabled": bool(self.activity_alert_enabled),
+                "activity_alert_days": int(self.activity_alert_days),
                 "genshin_resin_threshold": int(self.genshin_resin_threshold),
                 "starrail_stamina_threshold": int(self.starrail_stamina_threshold),
                 "zzz_energy_threshold": int(self.zzz_energy_threshold),
@@ -726,6 +732,19 @@ def _parse_catch_up_minutes(raw: Any) -> int:
     return min(value, CATCH_UP_MINUTES_MAX)
 
 
+def _parse_activity_days(raw: Any) -> int:
+    """解析活动提前提醒天数：留空 -> 默认 3；非法 -> 报错；越界收敛到 1~30。"""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return ACTIVITY_ALERT_DAYS_DEFAULT
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ConfigError(
+            f"app.activity_alert_days = {raw!r} 非法，请填 1~{ACTIVITY_ALERT_DAYS_MAX} 之间的整数"
+        )
+    return max(1, min(value, ACTIVITY_ALERT_DAYS_MAX))
+
+
 def _parse_threshold(raw: Any, label: str, game: str) -> int:
     """解析体力溢出阈值：留空 -> 该游戏的默认值；0 或负数 -> 关闭；非法 -> 报错。"""
     default = RESOURCE_THRESHOLD_DEFAULT.get(game, 0)
@@ -779,6 +798,7 @@ def parse_config(data: Dict[str, Any], source: Optional[Path] = None) -> AppConf
         activity_alert_enabled=_parse_bool(
             app_section.get("activity_alert_enabled"), "activity_alert_enabled",
             ACTIVITY_ALERT_ENABLED_DEFAULT),
+        activity_alert_days=_parse_activity_days(app_section.get("activity_alert_days")),
         genshin_resin_threshold=_parse_threshold(
             app_section.get("genshin_resin_threshold"), "genshin_resin_threshold", "genshin"),
         starrail_stamina_threshold=_parse_threshold(

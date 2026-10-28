@@ -9,6 +9,7 @@
     "catch_up_enabled": true,
     "resource_alert_enabled": true,
     "activity_alert_enabled": true,
+    "activity_alert_days": 3,
     "genshin_resin_threshold": 160,
     "starrail_stamina_threshold": 240,
     "zzz_energy_threshold": 200,
