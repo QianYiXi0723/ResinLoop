@@ -382,14 +382,17 @@
 
   <!-- ======================= 定时与状态 ======================= -->
   <section class="tabpanel" id="tab-schedule">
-    <section class="card s6 sch-times">
-      <div class="card-head">
+
+    <!-- A 卡：提醒时间点（底部折入守护进程状态条，DOM ID 与原 JS 钩子全部保留） -->
+    <section class="card card--times sch-times">
+      <div class="card-head card__header">
         <h2>⏰ 提醒时间点
           <span class="q" data-tip="每天到点检查一次并推送；修改立即生效，无需重启"></span>
         </h2>
+        <span class="spacer"></span>
         <span class="badge" id="d-count">-</span>
       </div>
-      <div class="card-body">
+      <div class="card__body">
         <div class="ruler" id="d-ruler"></div>
         <div class="chips" id="d-times"></div>
         <div class="row3">
@@ -397,134 +400,134 @@
           <button id="btn-add-time" class="btn">添加</button>
         </div>
       </div>
-    </section>
-
-    <section class="card s6 sch-feed">
-      <div class="card-head">
-        <h2>🧾 今日巡检动态
-          <span class="q" data-tip="来自每日巡检写入的历史记录：最近 3 次有数据的检查结果"></span>
-        </h2>
-        <span class="spacer"></span>
-        <button type="button" class="btn sm" id="btn-log-refresh">刷新</button>
-      </div>
-      <div id="run-log"><div class="emptybox">读取中…</div></div>
-    </section>
-
-    <section class="card s6 sch-daemon">
-      <div class="card-head">
-        <h2><i class="dot" id="d-dot"></i>🛡️ 守护进程</h2>
+      <div class="daemon-bar">
+        <span class="daemon-title"><i class="dot" id="d-dot"></i>🛡️ 守护进程</span>
         <span class="badge" id="d-state">读取中</span>
+        <span class="daemon-kv"><span>下次</span><b id="d-next">-</b></span>
+        <span class="daemon-kv"><span>最近</span><b id="d-last">-</b></span>
+        <span class="daemon-kv daemon-kv--opt"><span>PID</span><b id="d-pid">-</b></span>
+        <span class="daemon-kv daemon-kv--opt"><span>运行</span><b id="d-since">-</b></span>
+        <span class="daemon-kv"><span>参与检查</span><b id="d-games">-</b></span>
+        <span class="daemon-kv"><span>心跳</span><b id="d-heart">-</b></span>
         <span class="spacer"></span>
         <button type="button" class="mini" id="btn-daemon-start">启动</button>
         <button type="button" class="mini" id="btn-daemon-stop">停止</button>
       </div>
-      <div class="card-body">
-        <div class="kv-grid">
-          <div><span>下次提醒</span><b id="d-next">-</b></div>
-          <div><span>最近一次</span><b id="d-last">-</b></div>
-          <div><span>进程 PID</span><b id="d-pid">-</b></div>
-          <div><span>已运行</span><b id="d-since">-</b></div>
-          <div><span>参与检查</span><b id="d-games">-</b></div>
-          <div><span>心跳</span><b id="d-heart">-</b></div>
-        </div>
-      </div>
     </section>
 
-    <section class="card s6 set-card">
-      <div class="card-head">
+    <!-- B 卡：规则列表（三段式行，列表限宽 720px，卡体内滚动） -->
+    <section class="card card--rules set-card">
+      <div class="card-head card__header">
         <h2>⚙️ 开机与提醒行为</h2>
+        <span class="spacer"></span>
         <span class="q" data-tip="点击任意一行展开详细设置"></span>
       </div>
-      <details class="set-item" id="acc-autostart">
-        <summary class="set-head">
-          <span class="set-lead"><i class="set-ico">💻</i>
-            <span class="set-txt"><b>下次开机自动运行</b>
-              <small>开机后自动启动并挂载托盘</small></span>
-          </span>
-          <span class="set-end">
-            <span class="badge" id="autostart-state">读取中</span>
-            <label class="toggle"><input type="checkbox" id="autostart-toggle"><i></i></label>
-          </span>
-        </summary>
-        <div class="set-body">
-          <div class="hint" id="autostart-hint">读取中…</div>
-        </div>
-      </details>
+      <div class="card__body">
+        <div class="rule-list">
+          <details class="set-item" id="acc-autostart">
+            <summary class="set-head">
+              <span class="set-lead"><i class="set-ico">💻</i>
+                <span class="set-txt"><b>下次开机自动运行</b>
+                  <small>开机后自动启动并挂载托盘</small></span>
+              </span>
+              <span class="set-end">
+                <span class="badge" id="autostart-state">读取中</span>
+                <label class="toggle"><input type="checkbox" id="autostart-toggle"><i></i></label>
+              </span>
+            </summary>
+            <div class="set-body">
+              <div class="hint" id="autostart-hint">读取中…</div>
+            </div>
+          </details>
 
-      <details class="set-item" id="acc-catchup">
-        <summary class="set-head">
-          <span class="set-lead"><i class="set-ico">😴</i>
-            <span class="set-txt"><b>睡过头补发</b>
-              <small>错过时间点后在窗口内补跑一次</small></span>
-          </span>
-          <span class="set-sum" id="sum-catchup"></span>
-          <span class="set-end">
-            <label class="toggle"><input type="checkbox" id="catch-up-toggle"><i></i></label>
-          </span>
-        </summary>
-        <div class="set-body">
-          <div class="row3">
-            <input type="number" id="catch-up-minutes" min="0" max="720" step="30">
-            <button id="btn-catch-up" class="btn">保存</button>
-          </div>
-          <div class="hint">单位：分钟，最大 720；0 = 不补发。</div>
-        </div>
-      </details>
+          <details class="set-item" id="acc-catchup">
+            <summary class="set-head">
+              <span class="set-lead"><i class="set-ico">😴</i>
+                <span class="set-txt"><b>睡过头补发</b>
+                  <small>错过时间点后在窗口内补跑一次</small></span>
+              </span>
+              <span class="set-sum" id="sum-catchup"></span>
+              <span class="set-end">
+                <label class="toggle"><input type="checkbox" id="catch-up-toggle"><i></i></label>
+              </span>
+            </summary>
+            <div class="set-body">
+              <div class="row3">
+                <input type="number" id="catch-up-minutes" min="0" max="720" step="30">
+                <button id="btn-catch-up" class="btn">保存</button>
+              </div>
+              <div class="hint">单位：分钟，最大 720；0 = 不补发。</div>
+            </div>
+          </details>
 
-      <details class="set-item" id="acc-resource">
-        <summary class="set-head">
-          <span class="set-lead"><i class="set-ico">🔔</i>
-            <span class="set-txt"><b>体力溢出提醒</b>
-              <small>当前体力 ≥ 阈值时额外推送一条；0 = 关闭该游戏</small></span>
-          </span>
-          <span class="set-sum" id="sum-resin"></span>
-          <span class="set-end">
-            <label class="toggle"><input type="checkbox" id="resin-toggle"><i></i></label>
-          </span>
-        </summary>
-        <div class="set-body">
-          <div class="resin-row">
-            <label><span>原神 · 树脂</span>
-              <input type="number" id="resin-genshin" min="0" max="1000" step="10"
-                     placeholder="160" inputmode="numeric"></label>
-            <label><span>星铁 · 开拓力</span>
-              <input type="number" id="resin-starrail" min="0" max="1000" step="10"
-                     placeholder="240" inputmode="numeric"></label>
-            <label><span>绝区零 · 电量</span>
-              <input type="number" id="resin-zzz" min="0" max="1000" step="10"
-                     placeholder="200" inputmode="numeric"></label>
-            <label><span>方舟 · 理智</span>
-              <input type="number" id="resin-arknights" min="0" max="1000" step="10"
-                     placeholder="135" inputmode="numeric"></label>
-            <label><span>终末地 · 理智</span>
-              <input type="number" id="resin-endfield" min="0" max="1000" step="10"
-                     placeholder="300" inputmode="numeric"></label>
-          </div>
-          <button id="btn-resin-save" class="btn">保存阈值</button>
-          <div class="hint" id="resin-hint">读取中…</div>
-        </div>
-      </details>
+          <details class="set-item" id="acc-resource">
+            <summary class="set-head">
+              <span class="set-lead"><i class="set-ico">🔔</i>
+                <span class="set-txt"><b>体力溢出提醒</b>
+                  <small>当前体力 ≥ 阈值时额外推送一条；0 = 关闭该游戏</small></span>
+              </span>
+              <span class="set-sum" id="sum-resin"></span>
+              <span class="set-end">
+                <label class="toggle"><input type="checkbox" id="resin-toggle"><i></i></label>
+              </span>
+            </summary>
+            <div class="set-body">
+              <div class="resin-row">
+                <label><span>原神 · 树脂</span>
+                  <input type="number" id="resin-genshin" min="0" max="1000" step="10"
+                         placeholder="160" inputmode="numeric"></label>
+                <label><span>星铁 · 开拓力</span>
+                  <input type="number" id="resin-starrail" min="0" max="1000" step="10"
+                         placeholder="240" inputmode="numeric"></label>
+                <label><span>绝区零 · 电量</span>
+                  <input type="number" id="resin-zzz" min="0" max="1000" step="10"
+                         placeholder="200" inputmode="numeric"></label>
+                <label><span>方舟 · 理智</span>
+                  <input type="number" id="resin-arknights" min="0" max="1000" step="10"
+                         placeholder="135" inputmode="numeric"></label>
+                <label><span>终末地 · 理智</span>
+                  <input type="number" id="resin-endfield" min="0" max="1000" step="10"
+                         placeholder="300" inputmode="numeric"></label>
+              </div>
+              <button id="btn-resin-save" class="btn">保存阈值</button>
+              <div class="hint" id="resin-hint">读取中…</div>
+            </div>
+          </details>
 
-      <details class="set-item" id="acc-activity">
-        <summary class="set-head">
-          <span class="set-lead"><i class="set-ico">⏳</i>
-            <span class="set-txt"><b>活动结束提醒</b>
-              <small>活动结束前设定天数时，在推送末尾追加提醒</small></span>
-          </span>
-          <span class="set-sum" id="sum-activity"></span>
-          <span class="set-end">
-            <label class="toggle"><input type="checkbox" id="activity-toggle"><i></i></label>
-          </span>
-        </summary>
-        <div class="set-body">
-          <div class="row3">
-            <input type="number" id="activity-days" min="1" max="30" step="1"
-                   inputmode="numeric" placeholder="3">
-            <button id="btn-activity-days" class="btn">保存</button>
-          </div>
-          <div class="hint">活动结束前多少天开始提醒，1–30 天。</div>
-        </div>
-      </details>
+          <details class="set-item" id="acc-activity">
+            <summary class="set-head">
+              <span class="set-lead"><i class="set-ico">⏳</i>
+                <span class="set-txt"><b>活动结束提醒</b>
+                  <small>活动结束前设定天数时，在推送末尾追加提醒</small></span>
+              </span>
+              <span class="set-sum" id="sum-activity"></span>
+              <span class="set-end">
+                <label class="toggle"><input type="checkbox" id="activity-toggle"><i></i></label>
+              </span>
+            </summary>
+            <div class="set-body">
+              <div class="row3">
+                <input type="number" id="activity-days" min="1" max="30" step="1"
+                       inputmode="numeric" placeholder="3">
+                <button id="btn-activity-days" class="btn">保存</button>
+              </div>
+              <div class="hint">活动结束前多少天开始提醒，1–30 天。</div>
+            </div>
+          </details>
+        </div><!-- /rule-list -->
+      </div><!-- /card__body -->
+    </section>
+
+    <!-- C 卡：今日巡检动态（时间轴，跨满两行，卡体内滚动） -->
+    <section class="card card--timeline sch-feed">
+      <div class="card-head card__header">
+        <h2>🧾 今日巡检动态
+          <span class="q" data-tip="每日巡检写入的历史记录（最近 7 天）：节点绿 = 全部完成、琥珀 = 有未完成、灰 = 无记录"></span>
+        </h2>
+        <span class="spacer"></span>
+        <button type="button" class="btn sm" id="btn-log-refresh">刷新</button>
+      </div>
+      <div class="card__body" id="run-log"><div class="emptybox">读取中…</div></div>
     </section>
   </section>
 

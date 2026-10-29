@@ -2048,13 +2048,15 @@ function renderRunLog(h){
   const rows = days.filter(function(row){
     const cells = row.games || {};
     return Object.keys(cells).some(function(k){ return cells[k] && cells[k].known; });
-  }).slice(-3).reverse();
+  }).slice(-14).reverse();
 
   if (!rows.length) {
     box.innerHTML = '<div class="emptybox">还没有巡检记录，等第一次定时检查跑完后这里会有动态。</div>';
     return;
   }
-  box.innerHTML = rows.map(function(row){
+  /* 三列时间轴：时间列 / 节点列 / 内容列；节点色 = 本次检查整体状态
+     绿 = 参与检查的游戏全部完成 · 琥珀 = 仍有未完成 · 灰 = 无有效记录 */
+  box.innerHTML = '<div class="tl">' + rows.map(function(row){
     const cells = row.games || {};
     const done = [], miss = [];
     let lastTime = '';
@@ -2065,19 +2067,24 @@ function renderRunLog(h){
       if (c.finished) done.push(nameOf[gid] || gid);
       else miss.push(nameOf[gid] || gid);
     });
-    const summary = miss.length
-      ? '<span class="pill no">' + miss.length + ' 款未完成</span>'
-      : '<span class="dim">全部完成</span>';
+    const state = (!done.length && !miss.length) ? 'none' : (miss.length ? 'warn' : 'ok');
+    const sumText = state === 'none' ? '无有效记录'
+      : (miss.length ? miss.length + ' 款未完成' : '全部完成');
     const detail = miss.length
-      ? '<span class="log-detail">未完成：' + escHtml(miss.join('、')) + '</span>' : '';
-    return '<div class="log-row">' +
-      '<span class="log-date">' + escHtml(row.label || '') +
-        ' <span class="dim">' + escHtml(row.weekday || '') +
-        (row.is_today ? ' · 今天' : '') + '</span></span>' +
-      '<span class="log-time">' + escHtml(lastTime || '--:--') + '</span>' +
-      summary + detail +
+      ? '<div class="tl-desc">未完成：' + escHtml(miss.join('、')) + '</div>'
+      : (done.length ? '<div class="tl-desc">已完成：' + escHtml(done.join('、')) + '</div>' : '');
+    const when = lastTime ? '<span class="tl-when">' + escHtml(lastTime) + '</span>' : '';
+    return '<div class="tl-item" data-state="' + state + '">' +
+      '<div class="tl-time"><b>' + escHtml(row.label || '') + '</b>' +
+        escHtml((row.weekday || '') + (row.is_today ? ' · 今天' : '')) + '</div>' +
+      '<div class="tl-node"></div>' +
+      '<div class="tl-body">' +
+        '<div class="tl-title"><span class="tl-sum' +
+          (miss.length ? ' warn' : '') + '">' + escHtml(sumText) + '</span>' + when + '</div>' +
+        detail +
+      '</div>' +
       '</div>';
-  }).join('');
+  }).join('') + '</div>';
 }
 
 function loadRunLog(){
@@ -2264,11 +2271,12 @@ function renderUptime(){
   if (!el) return;
   if (!hbState.running) { el.textContent = '-'; el.title = ''; return; }
   if (hbState.startedAt) {
-    el.textContent = '已运行 ' + fmtUptime(Date.now() - hbState.startedAt.getTime());
+    /* 状态条本身已有「运行」标签，这里只给时长，不再重复「已运行」 */
+    el.textContent = fmtUptime(Date.now() - hbState.startedAt.getTime());
     el.title = '启动于 ' + hbState.startedAtRaw;
   } else {
     /* started_at 拿不到（老版 pid 文件只有 pid）：老实标注是控制台会话时长 */
-    el.textContent = '本次会话：' + fmtUptime(Date.now() - PAGE_BOOT);
+    el.textContent = fmtUptime(Date.now() - PAGE_BOOT) + '（会话）';
     el.title = '守护进程未上报启动时间，此处显示本控制台页面的打开时长';
   }
 }
