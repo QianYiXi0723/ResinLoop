@@ -538,6 +538,14 @@
   .notice.info b{color:var(--fg)}
   .notice a{color:var(--brand);text-decoration:none;font-weight:500;
             border-bottom:1px solid currentColor;cursor:pointer}
+  /* 演示模式欢迎横幅（出厂 mock 配置时显示） */
+  .welcome{display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:10px 14px;
+           border-radius:6px;font-size:12.5px;line-height:1.7;background:rgba(74,155,232,.10)}
+  .welcome b{color:var(--brand)}
+  .welcome .welcome-txt{flex:1;min-width:0}
+  .welcome .welcome-x{flex:none;width:22px;height:22px;padding:0;border:0;border-radius:4px;
+           background:transparent;color:var(--muted);cursor:pointer;font-size:14px;line-height:1}
+  .welcome .welcome-x:hover{background:var(--hover);color:var(--fg)}
 
   /* ---------- 扫码登录区 ---------- */
   .stage{padding:18px;text-align:center}

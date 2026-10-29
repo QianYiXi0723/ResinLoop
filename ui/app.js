@@ -461,6 +461,9 @@ function reset(){
 
 function refreshNotice(){
   fetch('/api/env').then(function(r){ return r.json(); }).then(function(d){
+    /* 演示模式横幅：出厂 mock 配置时点亮，扫码切换真实数据源后自然消失 */
+    const wb = document.getElementById('welcome');
+    if (wb) wb.hidden = !d.demo_mode;
     const box = document.getElementById('notice');
     if (!box) return;
     if (d.configured) { box.style.display = 'none'; return; }
@@ -469,6 +472,15 @@ function refreshNotice(){
       '<b>尚未配置推送通道</b>，手机收不到提醒。去 <a data-goto="notify">「通知绑定」</a> 填写。';
   }).catch(function(){});
 }
+
+/* 演示模式横幅的「不再显示」（静态元素，只绑一次） */
+(function(){
+  const x = document.getElementById('welcome-x');
+  if (x) x.addEventListener('click', function(){
+    const w = document.getElementById('welcome');
+    if (w) w.hidden = true;
+  });
+})();
 
 /* ---------- 设备伪装 ---------- */
 function renderDevice(d){
@@ -1943,34 +1955,20 @@ function loadHistory(){
 
 document.getElementById('btn-history-refresh').addEventListener('click', loadHistory);
 
-/* ========================= 主题切换 ========================= */
-/* auto = 跟随系统，light / dark = 手动固定；选择存在 localStorage，重启后保留。
-   CSS 变量只认 html[data-theme="dark"|"light"] 两组 Token；
-   auto 在这里解析成系统实际值后同样落到 data-theme 上，杜绝两边逻辑分叉。 */
-const THEME_ORDER = ['auto', 'light', 'dark'];
-const THEME_NAMES = { auto: '跟随系统', light: '浅色', dark: '深色' };
-let themeCur = 'auto';
-try { themeCur = localStorage.getItem('rl-theme') || 'auto'; } catch (e) {}
-if (THEME_ORDER.indexOf(themeCur) < 0) themeCur = 'auto';
-
+/* ========================= 主题（exe 壳版） ========================= */
+/* 恒跟随 Windows 系统深浅：auto 解析成系统实际值后落到 data-theme，
+   系统深浅变化实时切换。主题切换按钮已从 ui/index.html 移除
+   （壳与托盘的深浅色由 C# 壳直接读系统注册表），localStorage 的
+   rl-theme 不再读写——旧缓存值自然失效。 */
 const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
 
 function applyTheme(){
-  const mode = themeCur === 'auto' ? (systemDark.matches ? 'dark' : 'light') : themeCur;
-  document.documentElement.dataset.theme = mode;
-  const btn = document.getElementById('theme-btn');
-  if (btn) btn.textContent = '主题：' + THEME_NAMES[themeCur];
+  document.documentElement.dataset.theme = systemDark.matches ? 'dark' : 'light';
 }
 
 applyTheme();
-document.getElementById('theme-btn').addEventListener('click', function(){
-  themeCur = THEME_ORDER[(THEME_ORDER.indexOf(themeCur) + 1) % THEME_ORDER.length];
-  try { localStorage.setItem('rl-theme', themeCur); } catch (e) {}
-  applyTheme();
-});
-/* 跟随系统时，系统深浅变化实时切换 */
 if (systemDark.addEventListener) {
-  systemDark.addEventListener('change', function(){ if (themeCur === 'auto') applyTheme(); });
+  systemDark.addEventListener('change', applyTheme);
 }
 
 /* ========================= 推送预览 ========================= */

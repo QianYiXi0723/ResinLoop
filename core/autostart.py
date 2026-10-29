@@ -72,8 +72,24 @@ def target_path() -> Path:
     return BASE_DIR / TARGET_SCRIPT
 
 
+def shell_exe_path() -> Optional[Path]:
+    """exe 发行版壳的路径：engine 里在上级目录，源码仓里就在项目根。"""
+    for cand in (BASE_DIR.parent / "ResinLoop.exe", BASE_DIR / "ResinLoop.exe"):
+        if cand.exists():
+            return cand
+    return None
+
+
 def build_command() -> str:
-    """拼出写进注册表的完整命令行（两个路径都带引号）。"""
+    """拼出写进注册表的完整命令行（路径都带引号）。
+
+    exe 发行版优先：``ResinLoop.exe --tray`` —— 壳负责静默启动、托盘常驻、
+    引擎托管与内核级收尸；脚本模式回落 pythonw daemon.py。
+    stale 检测按字符串比对，两种形态互切后界面会提示重开一次开关。
+    """
+    exe = shell_exe_path()
+    if exe is not None:
+        return f'"{exe}" --tray'
     return f'"{pythonw_path()}" "{target_path()}"'
 
 

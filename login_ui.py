@@ -285,11 +285,14 @@ def push_status() -> Dict[str, Any]:
             ready.append(name)
         elif name in ("feishu", "dingtalk") and str(node.get("webhook") or "").strip():
             ready.append(name)
+    # 演示模式：出厂配置 provider=mock（还没扫过码）→ 前端显示欢迎横幅
+    provider = str((raw.get("query") or {}).get("provider") or "").strip().lower()
     return {
         "channels": channels,
         "ready": ready,
         "configured": bool(ready),
         "always_notify": bool(push.get("always_notify", False)),
+        "demo_mode": provider == "mock",
     }
 
 
@@ -1235,6 +1238,22 @@ def live_status(force: bool = False) -> Dict[str, Any]:
         payload = dict(cached)
         payload["cached"] = True
         return payload
+
+    # 演示模式（出厂 provider=mock）：拒绝展示模拟假数据，也绝不让假数据进缓存 ——
+    # 首次体验应该是引导扫码，而不是"博士 全部完成"这种会让用户以为软件出错的假面板。
+    try:
+        from core.config import load_config as _lc
+
+        if _lc(CONFIG_PATH).query.provider == "mock":
+            return {
+                "ok": True,
+                "cached": False,
+                "demo": True,
+                "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "games": [],
+            }
+    except Exception:  # noqa: BLE001 - 配置读不出就按正常路径走
+        pass
 
     if not force:
         # 进程缓存不在有效期：直接回上一次落盘的结果（标 stale，前端提示可手动刷新）。

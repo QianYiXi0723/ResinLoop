@@ -22,12 +22,18 @@
       <button type="button" data-tab="schedule"><span class="nav-ico">⏰</span>定时与状态</button>
     </nav>
     <div class="side-foot">
-      <button type="button" class="theme-btn" id="theme-btn" title="切换深浅色主题">主题：跟随系统</button>
-      <div style="margin-top:5px">v1.2.0 · 本地运行</div>
+      <div style="margin-top:5px">v2.0.0 · 本地运行</div>
     </div>
   </aside>
 
   <main class="main">
+
+  <!-- 演示模式欢迎横幅（出厂 provider=mock 时由 refreshNotice 点亮） -->
+  <div class="welcome" id="welcome" hidden>
+    <span class="welcome-txt">👋 欢迎使用 ResinLoop！当前为<b>演示模式</b>，请先在左侧【账号绑定】中扫码登录，开始真实的日常巡查。</span>
+    <button type="button" class="btn sm" data-goto="account">去扫码登录 →</button>
+    <button type="button" class="welcome-x" id="welcome-x" title="不再显示">×</button>
+  </div>
 
   <!-- ======================= KPI 摘要条（全局视觉锚点） ======================= -->
   <div class="kpi-bar" id="kpi-bar">

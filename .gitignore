@@ -88,3 +88,15 @@ rl_test_*
 # 构建过程的临时下载物
 /build_pyembed.zip
 /build_wheels/
+
+# C# 壳构建产物（本地测试用，正式发布走 release/）
+/ResinLoop.exe
+/WebView2Loader.dll
+/build_ilrepack/
+/build_ilrepack.zip
+
+# shell 构建目录（正式产物只保留源码与图标）
+/shell/bin/
+/shell/obj/
+/shell/publish/
+/shell/.tools/
