@@ -147,6 +147,9 @@ class DailyReport:
             lines.append("先去把体力花掉，别浪费了。")
         elif all_done:
             lines.append("今天的日常全部完成，可以放心摆烂了。")
+        elif not self.unfinished and self.failed:
+            # 全部查成功的那几款都做完了，剩下的是没查到的 —— 别再说「漏 0 项」
+            lines.append("没查到的几款先检查凭证或换个网络，别当成已经做完了。")
         else:
             lines.append(f"共漏 {self.unfinished_task_count} 项，别拖到 23:59。")
 

@@ -91,9 +91,16 @@ check("T3 标题 = 0/5 已完成", title_zero == "游戏日常：0/5 已完成",
 
 # T4 有查询失败时不能宣称全部完成
 report_fail = DailyReport(statuses=[status("a", "A", True), failed("b", "B")])
-title_fail, _ = report_fail.to_push_payload()
+title_fail, body_fail = report_fail.to_push_payload()
 check("T4 有失败不出现「全部完成」", "全部完成" not in title_fail, title_fail)
 check("T4 标题 = 1/2 已完成", title_fail == "游戏日常：1/2 已完成", title_fail)
+check("T4 正文不出现「共漏 0 项」", "共漏 0 项" not in body_fail, body_fail)
+check("T4 正文提示检查凭证/网络", "没查到的几款" in body_fail, body_fail)
+
+# T4b 全部查询失败：标题 0/N，正文也不能说「共漏 0 项」
+title_allfail, body_allfail = DailyReport(statuses=[failed("a", "A"), failed("b", "B")]).to_push_payload()
+check("T4b 全失败标题 = 0/2 已完成", title_allfail == "游戏日常：0/2 已完成", title_allfail)
+check("T4b 全失败正文不说漏 0 项", "共漏 0 项" not in body_allfail, body_allfail)
 
 # T5 体力预警后缀
 from core.models import ResourceAlert  # noqa: E402
