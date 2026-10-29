@@ -670,7 +670,7 @@ OK  明日方舟（博士）｜全部完成｜3/3
 
 推送内容（Bark 卡片）：
 
-- 标题：`游戏日常：3/5 个未完成`
+- 标题：`游戏日常：2/5 已完成`（分子是已完成数，分母是参与检查的账号数，查询失败也占位）
 - 正文：
   ```
   10-25 19:30
@@ -1087,6 +1087,39 @@ POST /api/activities/restore  {}          # 底部「恢复全部」
    `python -c "from core import activities; [print(a.warn_line()) for a in activities.pending_alerts()]"`
    —— 只打印没被删的那条；验证完点一次「刷新」拿回真实时间。
 4. 点错了就点底部「恢复全部」，所有删掉的活动立刻回来。
+
+### 5.10 开发 / 日常 / 发行：三种启动方式
+
+先分清两层，多数困惑来自把这两层当成一件事：
+
+| 层 | 是什么 | 改完要做什么 |
+|---|---|---|
+| `ResinLoop.exe` | 只是 C# 外壳：窗口 + WebView2 + 托盘 + 端口探测 | 只有改 `shell/*.cs` 才需要重新编译 |
+| `engine/` | 真正的程序：便携 Python + `*.py` + `ui/` | 重启进程即可，**不需要重新打包** |
+
+所以三种用法互不影响：
+
+| 场景 | 入口 | 说明 |
+|---|---|---|
+| 写代码 | `dev.bat`（默认桌面窗口）、`dev.bat web`、`dev.bat all` | 跑工作树源码；改 UI 刷新页面即可，改 `.py` 重启进程 |
+| 日常使用 | `start.bat`，或双击 `ResinLoop.exe` | 前者源码 + 守护进程 + 依赖自检；后者是发行形态，用 `engine/python` 便携解释器 |
+| 发版 | `_build_release.py` | 只在要把 zip 发给别人时才跑 |
+
+**测 exe 形态不需要打包**：根目录的 `ResinLoop.exe` 读同级 `engine/`，所以只要把工作树
+同步进去就能起壳：
+
+```bash
+dev.bat sync     # 只同步（改完代码跑这个，不启动）
+dev.bat exe      # 同步 + 启动 ResinLoop.exe
+```
+
+同步脚本 `_dev_sync_engine.py` 与 `_build_release.py` 取同一份清单（`login_ui.py` /
+`main.py` / `daemon.py` / `core/*.py` / `ui/` 三件套 / 图标 / `tools/`），`daemon.py` 同样改成
+无托盘；**不会覆盖** `engine/config.json`、`engine/logs/`、`engine/data/`、`engine/python/`。
+只想看有没有漂移：`python _dev_sync_engine.py --check`（有差异返回 1）。
+
+必须重新编译壳的场合只有：`shell/MainForm.cs`、`Program.cs`、`ResinLoop.csproj`（窗口行为、
+托盘、端口探测、图标、版本号）。业务逻辑、页面、接口一律不碰壳。
 
 ---
 
