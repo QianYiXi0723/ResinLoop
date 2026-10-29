@@ -131,7 +131,7 @@ exit /b 1
 echo.
 echo [ERROR] engine\python\pythonw.exe not found.
 echo         The portable engine is missing: run _build_release.py once,
-echo         or copy engine\ from release\ResinLoop_v2.0\.
+echo         or copy engine\ from release\ResinLoop_v2.1\.
 echo.
 pause
 exit /b 1
