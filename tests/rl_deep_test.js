@@ -165,8 +165,11 @@ check('T5.1 运行中：d-dot className = "dot on"（绿点呼吸类）',
 check('T5.2 运行中：徽章 = 运行中，且不含 err 红',
   els['d-state'].textContent === '运行中' && els['d-state'].className.indexOf('err') === -1,
   els['d-state'].textContent);
-check('T5.3 已运行随真实 started_at 计算（前缀「已运行」）',
-  els['d-since'].textContent.indexOf('已运行') === 0, els['d-since'].textContent);
+/* 状态条本身已有「运行」标签，d-since 只放时长（见 app.js renderDaemon 注释）。
+   断言两头都查：确实算出了时长（数字开头），且没有重复的「已运行」前缀。 */
+check('T5.3 已运行时长随真实 started_at 计算（纯时长，不重复「已运行」）',
+  /^\d/.test(els['d-since'].textContent) &&
+  els['d-since'].textContent.indexOf('已运行') < 0, els['d-since'].textContent);
 ctx.renderDaemon({ running: false, pid: null, started_at: '',
   heartbeat_age: null, check_times: ['22:00'], last_run: {} });
 check('T5.4 停止：d-dot className = "dot"（灰点静止，无 on/无红）',

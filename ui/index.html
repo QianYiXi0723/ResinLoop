@@ -22,7 +22,11 @@
       <button type="button" data-tab="schedule"><span class="nav-ico">⏰</span>定时与状态</button>
     </nav>
     <div class="side-foot">
-      <div style="margin-top:5px">v2.0.0 · 本地运行</div>
+      <button type="button" class="theme-btn" id="btn-theme" data-mode="auto"
+              data-tip="配色模式：跟随系统 / 深色 / 浅色，点击可依次切换">
+        <span id="theme-ico">🖥️</span><span id="theme-txt">跟随系统</span>
+      </button>
+      <div style="margin-top:5px">v2.1 · 本地运行</div>
     </div>
   </aside>
 
@@ -69,6 +73,7 @@
         <h2>🗓️ 本周汇总</h2>
         <span class="q" data-tip="过去 7 天各游戏的完成天数，与每周日晚 21:00 推送的周报同口径"></span>
         <span class="spacer"></span>
+        <button type="button" class="btn sm" id="btn-hist-refresh" style="height:24px" data-tip="重新查询一遍所有启用账号，并立即更新本页数据">刷新</button>
         <span class="badge" id="week-badge">-</span>
       </div>
       <div id="week-body"><div class="emptybox">读取中…</div></div>
@@ -211,7 +216,7 @@
       <details class="card" id="dev-card">
         <summary>
           <h2>🛡️ 设备伪装
-            <span class="q" data-tip="每台电脑首次启动会随机分配一台常见机型，之后固定不变。风控多数是出口网络被标记，换设备只在新装或长期异常时才有用；频繁更换会被当成陌生设备，反而更容易被拦"></span>
+            <span class="q" data-tip="每台电脑首次启动会随机分配一台常见机型，之后固定不变。风控多数是出口网络被标记，换设备只在新装或长期异常时才有用；频繁更换会被当成陌生设备，反而更容易触发风控"></span>
           </h2>
           <span class="spacer"></span>
           <span class="badge" id="dev-badge">读取中</span>
@@ -222,8 +227,8 @@
             <div class="dev-left">
               <div class="dsteps">
                 <div class="dstep"><b>1</b><span>手机扫码下载并安装「设备信息」App</span></div>
-                <div class="dstep"><b>2</b><span>打开 App，点「复制设备信息」</span></div>
-                <div class="dstep"><b>3</b><span>把复制到的内容粘到右边，点保存</span></div>
+                <div class="dstep"><b>2</b><span>打开 App，点击「复制设备信息」</span></div>
+                <div class="dstep"><b>3</b><span>将复制的内容粘贴至右侧输入框，再点击保存</span></div>
               </div>
               <div class="apk" id="apk-box">
                 <div class="apk-qr" id="apk-qr"><span class="ph" style="font-size:11px">二维码生成中…</span></div>
@@ -238,10 +243,17 @@
                 <button id="btn-dev-save" class="btn primary"
                         title="保存后需重新扫码，否则登录设备与查询设备不一致">保存并清空指纹缓存</button>
                 <button id="btn-dev-shuffle" class="btn"
-                        title="重新随机一台机型并生成新 OAID，旧指纹作废；换完先稳定用几天，别连着换">换一台设备</button>
+                        title="重新随机一台机型并生成新 OAID，旧指纹作废；更换后建议稳定使用数日，不宜频繁变更">换一台设备</button>
                 <button id="btn-dev-reset" class="btn sm" title="删掉手动粘贴的档案，回到随机机型">清除自定义</button>
               </div>
               <div class="hint" id="dev-current">正在读取当前设备档案…</div>
+              <div class="hint" style="margin-top:14px"><b>查询代理（选填）</b> —— 米游社查询将经此出口，留空 = 直连；保存后下一轮检查生效。</div>
+              <div class="toolbar" style="gap:8px;margin-top:6px;align-items:center">
+                <input type="text" id="query-proxy" class="field" style="flex:1;min-width:0;height:38px"
+                       autocomplete="off" spellcheck="false"
+                       placeholder="http://127.0.0.1:7890（留空 = 直连）">
+                <button id="btn-proxy-save" class="btn sm">保存</button>
+              </div>
             </div>
           </div>
         </div>
@@ -299,10 +311,10 @@
         </div>
         <div class="v-sep"></div>
         <label class="opt" style="justify-content:space-between;width:100%">
-          <span>全部完成也推送</span>
+          <span>全部完成时也推送</span>
           <input type="checkbox" id="always-notify">
         </label>
-        <div class="hint">默认只在有未完成项时推送；勾选后全部做完也发一条。</div>
+        <div class="hint">默认仅在存在未完成项时推送；勾选后即使全部完成也会推送一条。</div>
       </div>
     </section>
 
@@ -310,7 +322,7 @@
     <section class="card s5">
       <div class="card-head">
         <h2 id="ed-title">💬 Server酱（微信）
-          <span class="q" data-tip="Key 由后端打码显示：不修改输入框 = 保持原值；清空后保存 = 删除该 Key"></span>
+          <span class="q" data-tip="出于安全，已保存的 Key 以掩码显示：不修改输入框即保持原值，清空后保存则删除该 Key"></span>
         </h2>
       </div>
       <div class="card-body">
@@ -360,7 +372,7 @@
           </div>
           <div class="toolbar">
             <button type="button" id="btn-test" class="btn"
-                    title="用输入框里的当前值试发一条，不写盘">发送测试推送</button>
+                    title="使用当前输入的值试发一条，不会写入配置">发送测试推送</button>
           </div>
           <div id="test-result" hidden></div>
         </div>
@@ -371,7 +383,7 @@
     <section class="card s12">
       <div class="card-head">
         <h2>🕘 最近推送
-          <span class="q" data-tip="来自 data/push_history.json 的真实发送记录（含测试与定时推送），最多显示 8 条；成功与失败都会记录"></span>
+          <span class="q" data-tip="来自 data/push_history.json 的真实发送记录（含测试与定时推送），最多显示 8 条；每条固定高度，内容过长会折叠，点右上角箭头展开；成功与失败都会记录"></span>
         </h2>
         <span class="spacer"></span>
         <button type="button" class="btn sm" id="btn-push-refresh">刷新</button>
@@ -389,7 +401,7 @@
     <section class="card card--times sch-times">
       <div class="card-head card__header">
         <h2>⏰ 提醒时间点
-          <span class="q" data-tip="每天到点检查一次并推送；修改立即生效，无需重启"></span>
+          <span class="q" data-tip="每天到点检查一次并推送；点击时间轴空白处直接添加；拖动圆点改时间（吸附 5 分钟，按住 Shift 精调到 1 分钟，拖动中按 Esc 取消）；修改立即生效，无需重启"></span>
         </h2>
         <span class="spacer"></span>
         <span class="badge" id="d-count">-</span>
@@ -397,8 +409,12 @@
       <div class="card__body">
         <div class="ruler" id="d-ruler"></div>
         <div class="chips" id="d-times"></div>
-        <div class="row3">
+        <div class="row3 has-spin">
           <input type="time" id="d-new-time" value="22:00" step="60">
+          <div class="spin">
+            <button type="button" class="spin-btn" id="btn-time-up" title="+1 分钟">▲</button>
+            <button type="button" class="spin-btn" id="btn-time-down" title="-1 分钟">▼</button>
+          </div>
           <button id="btn-add-time" class="btn">添加</button>
         </div>
       </div>
@@ -429,8 +445,8 @@
           <details class="set-item" id="acc-autostart">
             <summary class="set-head">
               <span class="set-lead"><i class="set-ico">💻</i>
-                <span class="set-txt"><b>下次开机自动运行</b>
-                  <small>开机后自动启动并挂载托盘</small></span>
+                <span class="set-txt"><b>开机自启动</b>
+                  <small>登录后自动在后台运行并挂载托盘</small></span>
               </span>
               <span class="set-end">
                 <span class="badge" id="autostart-state">读取中</span>
@@ -445,8 +461,8 @@
           <details class="set-item" id="acc-catchup">
             <summary class="set-head">
               <span class="set-lead"><i class="set-ico">😴</i>
-                <span class="set-txt"><b>睡过头补发</b>
-                  <small>错过时间点后在窗口内补跑一次</small></span>
+                <span class="set-txt"><b>休眠提醒</b>
+                  <small>休眠或关机错过时间点后，在窗口内补跑一次</small></span>
               </span>
               <span class="set-sum" id="sum-catchup"></span>
               <span class="set-end">
@@ -546,6 +562,31 @@
     </summary>
     <div class="console-body" id="console-body"><span class="console-empty">展开后加载…</span></div>
   </details>
+</div>
+
+<!-- 添加时间点：先确认，框内可 ▲▼ 微调。
+     必须放在 .app / 所有 tabpanel 之外：嵌在任意 tab 的卡片里时，
+     其它页签下整棵子树 display:none，弹窗会「点了没反应」 -->
+<div class="modal-mask" id="addtime-modal" hidden>
+  <div class="modal" style="max-width:330px">
+    <div class="modal-head">
+      <b id="addtime-title">添加提醒时间点</b>
+      <button type="button" class="modal-x" id="addtime-x" title="关闭">✕</button>
+    </div>
+    <div class="addtime-body">
+      <div class="addtime-stepper">
+        <button type="button" class="spin-btn big" id="addtime-down" title="-1 分钟">▼</button>
+        <input type="time" id="addtime-val" class="addtime-val" value="22:00" step="60"
+               aria-label="提醒时间">
+        <button type="button" class="spin-btn big" id="addtime-up" title="+1 分钟">▲</button>
+      </div>
+      <div class="hint" id="addtime-hint">可直接输入时间；点 ▲▼ 调 1 分钟，长按连续调整（10 分钟 / 1 小时）</div>
+    </div>
+    <div class="toolbar" style="justify-content:flex-end">
+      <button class="btn" id="addtime-cancel">取消</button>
+      <button class="btn primary" id="addtime-ok">确定添加</button>
+    </div>
+  </div>
 </div>
 
 <div id="toast"></div>

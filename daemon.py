@@ -47,6 +47,7 @@ CONFIG_PATH = BASE_DIR / "config.json"
 LOGS_DIR = BASE_DIR / "logs"
 PID_FILE = LOGS_DIR / "daemon.pid"
 HEARTBEAT_FILE = LOGS_DIR / "daemon.heartbeat"
+RUN_NOW_FLAG = LOGS_DIR / ".run_now"
 LAST_RUN_FILE = LOGS_DIR / ".last_run"
 STOP_FLAG = LOGS_DIR / ".stop"
 CONSOLE_PORT = 8765
@@ -575,22 +576,32 @@ def run_check(reason: str, dry_run: bool = False) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def _wait(seconds: float, stop_event: threading.Event) -> None:
+def _wait(seconds: float, stop_event: threading.Event) -> bool:
     """可中断的休眠。
 
-    本质仍是 sleep（CPU 0），只是拆成 1 秒一片：既能马上响应"停止"，
-    也能让托盘里的"立即执行一次"不用干等 30 秒。
+    返回 True = 检测到 .run_now 手动巡检标记（调用方应立即跑一轮）；
+    返回 False = 正常到点 / stop_event 被置位 / STOP_FLAG。
+    本质仍是 sleep（CPU 0），拆成 0.5 秒一片：既能马上响应"停止"，
+    也能让托盘里的"立即巡检"不用干等 30 秒。
     """
     deadline = time.monotonic() + seconds
     while not stop_event.is_set():
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return
+            return False
         if STOP_FLAG.exists():
             logger.info("检测到停止标记 %s", STOP_FLAG.name)
             stop_event.set()
-            return
+            return False
         stop_event.wait(min(0.5, remaining))
+        if RUN_NOW_FLAG.exists():
+            try:
+                RUN_NOW_FLAG.unlink()
+            except OSError as exc:
+                logger.warning("手动巡检标记删除失败（%s），本轮仍照常触发", exc)
+            logger.info("收到立即巡检请求 %s", RUN_NOW_FLAG.name)
+            return True
+    return False
 
 
 def _tick(stop_event: threading.Event) -> None:
@@ -643,7 +654,8 @@ def _loop(stop_event: threading.Event) -> None:
             logger.exception("轮询异常（已忽略，继续运行）")
         write_heartbeat()
         _maybe_weekly_report()   # 周日 21:00 后的周度推送（常开，错过自动补发）
-        _wait(TICK_SECONDS, stop_event)
+        if _wait(TICK_SECONDS, stop_event):
+            run_check("手动")
     logger.info("轮询线程已退出")
 
 

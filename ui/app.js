@@ -33,7 +33,8 @@ document.querySelectorAll('.nav button[data-tab]').forEach(function(btn){
 });
 
 document.addEventListener('click', function(e){
-  /* 点击保持高亮：点卡片/折叠框加 .active（蓝描边常驻），点其他区域清除。
+  /* 点击高亮：点卡片/折叠框加 .active（蓝描边），点其它卡片时切换。
+     常驻只是「点过」的痕迹，光标离开就由下面的 pointerout 撤掉（见下方注释）。
      details 折叠框同样适用（dev-card 也是 .card）。
      【死命令：同一事件只绑一次】原独立监听已并入本处理函数 */
   const card = e.target.closest('.card');
@@ -46,6 +47,17 @@ document.addEventListener('click', function(e){
   if (!link) return;
   e.preventDefault();
   switchTab(link.dataset.goto);
+});
+
+/* 点击高亮跟随光标：光标离开卡片范围立即恢复原样（原来会常驻到点下一张卡，
+   看着像「选中」了却没有任何后续动作）。mouseleave 不冒泡，因此用 pointerout
+   配 relatedTarget 判断是否真的离开——在卡片内部子元素之间移动不撤高亮。 */
+document.addEventListener('pointerout', function(e){
+  const card = e.target.closest('.card');
+  if (!card || !card.classList.contains('active')) return;
+  const to = e.relatedTarget;
+  if (to && card.contains(to)) return;      // 还在同一张卡里，只是换了子元素
+  card.classList.remove('active');
 });
 
 /* =========================== 通用提示 =========================== */
@@ -323,7 +335,7 @@ function render(d){
     if (!box.querySelector('img')) box.innerHTML = '<img alt="登录二维码">';
     box.querySelector('img').src = 'data:image/png;base64,' + d.qr;
   } else if (d.state === 'creating' || d.state === 'writing') {
-    box.innerHTML = '<span class="ph"><span class="spin"></span>请稍候…</span>';
+    box.innerHTML = '<span class="ph"><span class="spinner"></span>请稍候…</span>';
   }
 
   const kv = document.getElementById('detail');
@@ -460,7 +472,7 @@ function refreshNotice(){
   fetch('/api/env').then(function(r){ return r.json(); }).then(function(d){
     /* 演示模式横幅：出厂 mock 配置时点亮，扫码切换真实数据源后自然消失 */
     const wb = document.getElementById('welcome');
-    if (wb) wb.hidden = !d.demo_mode;
+    if (wb) wb.hidden = !d.demo_mode || welcomeDismissed;
     const box = document.getElementById('notice');
     if (!box) return;
     if (d.configured) { box.style.display = 'none'; return; }
@@ -470,10 +482,14 @@ function refreshNotice(){
   }).catch(function(){});
 }
 
-/* 演示模式横幅的「不再显示」（静态元素，只绑一次） */
+/* 演示模式横幅的「不再显示」（静态元素，只绑一次；持久化，刷新不回弹） */
+var welcomeDismissed = false;
+try { welcomeDismissed = localStorage.getItem('rl_welcome_dismissed') === '1'; } catch(e) {}
 (function(){
   const x = document.getElementById('welcome-x');
   if (x) x.addEventListener('click', function(){
+    welcomeDismissed = true;
+    try { localStorage.setItem('rl_welcome_dismissed', '1'); } catch(e) {}
     const w = document.getElementById('welcome');
     if (w) w.hidden = true;
   });
@@ -494,6 +510,12 @@ function renderDevice(d){
     ' · 指纹缓存' + (d.cache_exists ? '存在' : '<b>已清空</b>');
   const resetBtn = document.getElementById('btn-dev-reset');
   if (resetBtn) resetBtn.hidden = !d.custom;
+  const proxyBox = document.getElementById('query-proxy');
+  if (proxyBox) proxyBox.value = d.proxy || '';
+  const proxyHint = document.getElementById('proxy-hint');
+  if (proxyHint) proxyHint.textContent = d.proxy
+    ? '已配置代理出口，米游社查询将经此连接'
+    : '未配置，米游社查询直连';
 
   const apk = d.apk || {};
   const qrBox = document.getElementById('apk-qr');
@@ -757,7 +779,7 @@ function selectChannel(name){
   // 重建标题 + (?) 提示（textContent 会把图标一起清掉）
   document.getElementById('ed-title').innerHTML =
     escHtml(CHANNEL_NAMES[name]) +
-    ' <span class="q" data-tip="Key 由后端打码显示：不修改输入框 = 保持原值；清空后保存 = 删除该 Key"></span>';
+    ' <span class="q" data-tip="出于安全，已保存的 Key 以掩码显示：不修改输入框即保持原值，清空后保存则删除该 Key"></span>';
 }
 
 document.querySelectorAll('.ch-item').forEach(function(el){
@@ -768,6 +790,21 @@ document.querySelectorAll('.ch-item').forEach(function(el){
    都落一条结构化记录）。不再解析纯文本日志：console 与 daemon 的日志分家
    （desktop.log / dailycheck.log），按文件筛正则永远可能漏。 */
 const PUSH_LABELS = { serverchan: 'Server酱', qmsg: 'Qmsg 酱', bark: 'Bark' };
+
+/* 判断哪些格子的内容真的被裁掉了：只有它们才显示展开箭头。
+   注意正文用 -webkit-line-clamp 折叠，被裁的是正文元素自身，
+   父级 .pv-item 的 scrollHeight 不一定溢出，所以三个来源都要看。 */
+function markTruncatedPush(box){
+  Array.prototype.forEach.call(box.querySelectorAll('.pv-item'), function(el){
+    const b = el.querySelector('.pv-body');
+    const m = el.querySelector('.pv-meta');
+    const cut = (b && b.scrollHeight > b.clientHeight + 1) ||
+                (m && m.scrollWidth > m.clientWidth + 1) ||
+                (el.scrollHeight > el.clientHeight + 1);
+    if (cut) el.classList.add('has-more');
+  });
+}
+
 function loadPushRecent(){
   const box = document.getElementById('pv-recent');
   if (!box) return;
@@ -775,19 +812,47 @@ function loadPushRecent(){
     .then(function(d){
       const items = (d && d.items) || [];
       if (!d || d.ok === false || !items.length) {
-        box.innerHTML = '<div>暂无数据。</div>';
+        box.innerHTML = '<div class="pv-empty">暂无数据。</div>';
         return;
       }
       box.innerHTML = items.map(function(it){
         const ch = PUSH_LABELS[it.channel] || it.channel || '未知渠道';
         const ok = !!it.ok;
-        return '<div><span class="' + (ok ? 'i-ok' : 'i-no') + '">' + (ok ? '✓' : '✗') +
-          '</span>' + escHtml(String(it.ts || '').replace(/^\d{4}-/, '')) + ' · ' +
-          escHtml(ch) + ' · ' + escHtml(it.message || (ok ? '推送成功' : '推送失败')) + '</div>';
+        // 主内容显示推送标题+正文预览（老记录两者皆无，回退 message）。
+        // 失败行把错误原因带上：有 title 用「标题（原因）」，没有就直接给原因。
+        const text = ok ? (it.title || it.message || '推送成功')
+                        : (it.title ? it.title + '（' + (it.message || '未知原因') + '）'
+                                    : (it.message || '推送失败'));
+        const bodyLine = String(it.body || '').replace(/\s+$/, '');
+        return '<div class="pv-item">' +
+          '<div class="pv-meta"><span class="' + (ok ? 'i-ok' : 'i-no') + '">' +
+            (ok ? '✓' : '✗') + '</span> ' +
+            escHtml(String(it.ts || '').replace(/^\d{4}-/, '')) + ' · ' +
+            escHtml(ch) + ' · ' + escHtml(text) + '</div>' +
+          (bodyLine ? '<div class="pv-body">' + escHtml(bodyLine) + '</div>' : '') +
+          '<button type="button" class="pv-toggle" aria-expanded="false" title="展开全文"></button>' +
+          '</div>';
       }).join('');
+      // 折叠高度固定，只有真被裁掉的条目才给展开箭头（最多 8 条，量一次即可）
+      requestAnimationFrame(function(){ markTruncatedPush(box); });
     })
-    .catch(function(){ box.innerHTML = '<div>读取推送历史失败，请稍后重试。</div>'; });
+    .catch(function(){ box.innerHTML = '<div class="pv-empty">读取推送历史失败，请稍后重试。</div>'; });
 }
+
+/* 展开/收起：点格子右上角箭头切换；内容没被裁的条目不会出现箭头 */
+(function bindPushToggle(){
+  const box = document.getElementById('pv-recent');
+  if (!box) return;
+  box.addEventListener('click', function(e){
+    const btn = e.target.closest ? e.target.closest('.pv-toggle') : null;
+    if (!btn) return;
+    const item = btn.closest('.pv-item');
+    if (!item) return;
+    const open = item.classList.toggle('open');
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.title = open ? '收起' : '展开全文';
+  });
+})();
 
 function collectPush(){
   const out = {};
@@ -864,6 +929,17 @@ document.getElementById('btn-save').addEventListener('click', savePush);
 document.getElementById('btn-test').addEventListener('click', testPush);
 
 /* =========================== 定时与状态 =========================== */
+/* 重排避让：拖动圆点期间（以及松手后等保存往返的 1.5 秒）跳过轮询重排。
+   用时刻而非布尔标志——即使 pointerup 丢失也会在 30 秒内自过期，不会把页面冻死。 */
+var rlDragBeginAt = 0;          // >0 = 正在拖动，值为起拖时刻
+var rlDropGraceUntil = 0;       // 松手后的短暂避让截止时刻
+function rlRenderHeld(){
+  if (rlDragBeginAt) {
+    if (Date.now() - rlDragBeginAt < 30000) return true;
+    rlDragBeginAt = 0;          // 僵死状态，放行
+  }
+  return Date.now() < rlDropGraceUntil;
+}
 function renderDaemon(st){
   const dot = document.getElementById('d-dot');
   const badge = document.getElementById('d-state');
@@ -904,16 +980,22 @@ function shortStamp(text){
   return m ? (m[1] + ' ' + m[2]) : String(text || '');
 }
 
-function renderSchedule(d){
+function renderSchedule(d, force){
   if (!d.ok) { toast(d.message || '读取失败', true); return; }
+  /* 拖动圆点期间不许重排：定时页每 3 秒轮询一次，renderRuler 是整块 innerHTML 重建，
+     手里那个圆点节点会被摘掉，新画的圆点用的是服务端还没保存的旧时间 —— 表现为
+     「拖一两秒就闪回原位」。这里直接跳过整次渲染；force=true 只给保存成功后那次用。
+     用时间戳而非布尔标志：万一没收到 pointerup 也不会把整页冻死（30 秒自过期）。 */
+  if (!force && rlRenderHeld()) return;
   const times = d.times || [];
   const box = document.getElementById('d-times');
   if (!times.length) {
     box.innerHTML = '<span class="chip empty">还没有时间点</span>';
   } else {
     box.innerHTML = times.map(function(t){
-      return '<span class="chip">' + t +
-             '<button title="删除" data-remove="' + t + '">×</button></span>';
+      return '<span class="chip">' +
+        '<span class="chip-time" data-edit="' + t + '" title="点击修改时间">' + t + '</span>' +
+        '<button title="删除" data-remove="' + t + '">×</button></span>';
     }).join('');
   }
   renderRuler(times);
@@ -1010,7 +1092,7 @@ async function toggleCatchUp(){
       return;
     }
     renderCatchUp(d);
-    toast(want ? '已开启睡过头补发' : '已关闭睡过头补发（窗口数值已保留）');
+    toast(want ? '已开启休眠提醒' : '已关闭休眠提醒（窗口数值已保留）');
   } catch (e) {
     box.checked = !want;
     toast('设置失败：' + e, true);
@@ -1171,7 +1253,7 @@ function setSum(id, text, full){
 }
 
 function refreshSetSummaries(){
-  /* 睡过头补发：关 → 已关闭；开 → 窗口 X 分钟（0 = 不补发） */
+  /* 休眠提醒：关 → 已关闭；开 → 窗口 X 分钟（0 = 不补发） */
   const cuBox = document.getElementById('catch-up-toggle');
   const cuMin = document.getElementById('catch-up-minutes');
   const cuLoaded = cuMin && String(cuMin.value).trim() !== '';
@@ -1260,7 +1342,7 @@ async function saveTimes(times){
   try {
     const d = await postJSON('/api/schedule', { times: times });
     if (!d.ok) { toast(d.message || '保存失败', true); return false; }
-    renderSchedule(d);
+    renderSchedule(d, true);      // 保存结果是权威数据，无视拖动避让
     toast(d.message || '已保存');
     return true;
   } catch (e) {
@@ -1279,12 +1361,14 @@ async function addTime(){
 }
 
 function currentTimes(){
-  return [...document.querySelectorAll('#d-times .chip')]
-    .map(function(el){ return el.textContent.replace('×','').trim(); })
+  return [...document.querySelectorAll('#d-times .chip-time')]
+    .map(function(el){ return el.textContent.trim(); })
     .filter(function(t){ return /^\d{1,2}:\d{2}$/.test(t); });
 }
 
 document.getElementById('d-times').addEventListener('click', async function(e){
+  const edit = e.target.closest('[data-edit]');
+  if (edit) { rlOpenAddTime(edit.dataset.edit, edit.dataset.edit); return; }
   const btn = e.target.closest('[data-remove]');
   if (!btn) return;
   const target = btn.dataset.remove;
@@ -1294,6 +1378,378 @@ document.getElementById('d-times').addEventListener('click', async function(e){
 });
 
 document.getElementById('btn-add-time').addEventListener('click', addTime);
+/* 时间轴点击落点：点击位置换算成分钟（0–1439，四舍五入到整分），
+   写入时间输入框后调 addTime() —— 与「添加」按钮共用同一条去重 + 保存链路，
+   点在已有圆点上会得到「这个时间点已经有了」提示，不会误删。 */
+/* 拖完圆点后浏览器会补一次 click（不当成新增）。这里用「截止时间戳」而不是
+   dataset 持久标志：标志一旦留下而那次 click 没来（拖到标尺外松手等），
+   会永久吞掉之后所有点击，表现为「点时间轴没反应」——时间戳会自行过期。 */
+var rlSuppressClickUntil = 0;
+(function bindRulerClick(){
+  const ruler = document.getElementById('d-ruler');
+  if (!ruler || ruler.dataset.rulerBound) return;
+  ruler.dataset.rulerBound = '1';
+  ruler.addEventListener('click', function(e){
+    if (Date.now() < rlSuppressClickUntil) { rlSuppressClickUntil = 0; return; }
+    const dot = e.target.closest('.ruler-dot');
+    if (dot) { rlSelect(dot.dataset.t); return; }   // 点圆点 = 选中（交给 ▲▼ / 拖动）
+    const rect = ruler.getBoundingClientRect();
+    if (!rect.width) return;
+    selTime = null; moveFrom = null; rlPaintSel();   // 空白处点击 = 新增，立即清掉选中态
+    const mins = Math.round((e.clientX - rect.left) / rect.width * 1440);
+    const clamped = Math.min(1439, Math.max(0, mins));
+    rlOpenAddTime(rlMins2Str(clamped));   // 先弹确认框（框内可微调），确定后才真正添加
+  });
+})();
+
+/* ---- 选中 / 拖动改点 / ▲▼ 微调（保存仍走 saveTimes 同一条链路） ---- */
+let selTime = null;      // 当前选中的时间点（HH:MM），null = 未选中
+let moveFrom = null;     // 本次编辑前该点在列表里的原值（保存成功后跟进）
+let rlEditFrom = null;   // 编辑已有时间点时的来源值；null = 纯新增
+function rlMins2Str(m){
+  const v = ((Math.round(m) % 1440) + 1440) % 1440;   // 跨 0 点回绕
+  return String(Math.floor(v / 60)).padStart(2, '0') + ':' + String(v % 60).padStart(2, '0');
+}
+function rlStr2Mins(s){
+  const m = String(s || '').match(/^(\d{1,2}):(\d{2})$/);
+  return m ? (+m[1] * 60 + +m[2]) : null;
+}
+function rlPaintSel(){
+  document.querySelectorAll('#d-ruler .ruler-dot').forEach(function(el){
+    el.classList.toggle('sel', el.dataset.t === selTime);
+  });
+}
+function rlSelect(t){
+  selTime = (selTime === t) ? null : t;
+  if (selTime == null) { moveFrom = null; rlPaintSel(); return; }
+  moveFrom = t;
+  const input = document.getElementById('d-new-time');
+  if (input) input.value = t;
+  rlPaintSel();
+  toast('已选中 ' + t + '：▲▼ 微调 1 分钟，或左右拖动圆点');
+}
+
+/* 拖动圆点改时间。24 小时铺在 ~600px 上，1px≈2.4 分钟，不做吸附就会每个像素乱跳，
+   这是「手感差」的根因。做法对齐几个成熟实现：
+     · noUiSlider 的 step 吸附：值吸附到 5 分钟网格；按住 Shift 切 1 分钟精调
+     · vis-timeline 的 tooltipOnItemUpdateTime：拖动中跟出大号时间气泡 + 竖向指示线
+     · Premiere / Flick 的修饰键切精度与 Esc 取消
+   位置本身连续跟手（拖动中不做取整），只有「值」吸附，眼睛看到的是稳定数字；
+   拖到别的已有点上气泡变红标「已有」，松手不落库。 */
+(function bindRulerDrag(){
+  const ruler = document.getElementById('d-ruler');
+  if (!ruler || ruler.dataset.dragBound) return;
+  ruler.dataset.dragBound = '1';
+
+  const STEP = 5;        // 默认吸附 5 分钟
+  const STEP_FINE = 1;   // Shift 精调
+  const DEAD = 3;        // 起拖阈值
+  let drag = null;
+
+  function pctOfMins(m){ return (m / 1440 * 100).toFixed(3) + '%'; }
+  /* 网格吸附；但吸附不许「反向」——已有的 06:46 / 23:59 往右拖时，
+     不能被就近网格拽回到 06:45 / 23:55 */
+  function snapMins(m, fine, fromM){
+    const step = fine ? STEP_FINE : STEP;
+    const max = 1440 - step;                       // 5 分钟档最高 23:55
+    const v = Math.min(max, Math.max(0, Math.round(m / step) * step));
+    if (fromM != null && (v - fromM) * (m - fromM) < 0) return fromM;
+    return v;
+  }
+  function ghostBox(){
+    let g = ruler.querySelector('.ruler-ghost');
+    if (!g) {
+      g = document.createElement('div');
+      g.className = 'ruler-ghost';
+      g.innerHTML = '<b><span class="t"></span><em></em></b>';
+      ruler.appendChild(g);
+    }
+    return g;
+  }
+  /* 气泡贴着标尺边缘时往内推，避免溢出卡片；竖向指示线始终指向真实位置 */
+  function placeGhost(g, pct, raw){
+    g.style.setProperty('--gx', pct);
+    const b = g.querySelector('b');
+    const bw = b.offsetWidth || 0;
+    if (!bw) return;
+    const cx = raw / 1440 * drag.width;
+    let over = 0;
+    if (cx - bw / 2 < 0) over = bw / 2 - cx;
+    else if (cx + bw / 2 > drag.width) over = drag.width - cx - bw / 2;
+    b.style.transform = 'translateX(calc(-50% + ' + over.toFixed(1) + 'px))';
+  }
+  function dropGhost(){
+    const g = ruler.querySelector('.ruler-ghost');
+    if (g) g.remove();
+  }
+  /* 收尾：清类名、去气泡。圆点位置不在这里回退——成功落库要停在松手处，
+     碰撞/取消两条路径都由随后的 renderRuler(currentTimes()) 归位 */
+  function settle(){
+    const d = drag; drag = null;
+    rlDragBeginAt = 0;                          // 解除重排避让，给保存往返留 1.5 秒缓冲
+    rlDropGraceUntil = Date.now() + 1500;
+    ruler.classList.remove('ruler--dragging');
+    document.body.classList.remove('rl-dragging');
+    dropGhost();
+    if (d) { d.dot.classList.remove('dragging'); d.dot.classList.remove('bad'); }
+    return d;
+  }
+
+  ruler.addEventListener('pointerdown', function(e){
+    if (e.button !== 0) return;
+    const dot = e.target.closest('.ruler-dot');
+    if (!dot) return;
+    const r = ruler.getBoundingClientRect();
+    if (!r.width) return;
+    const dr = dot.getBoundingClientRect();
+    const others = currentTimes().filter(function(t){ return t !== dot.dataset.t; });
+    drag = {
+      dot: dot,
+      from: dot.dataset.t,
+      fromMins: rlStr2Mins(dot.dataset.t),
+      x0: e.clientX,
+      grabDX: e.clientX - (dr.left + dr.width / 2),   // 抓在圆点边缘也不跳
+      left: r.left,
+      width: r.width,                                  // 起拖时量一次，后续不再反复读布局
+      othersMins: others.map(rlStr2Mins).filter(function(n){ return n != null; }),
+      moved: false,
+      bad: false,
+      lastM: null
+    };
+    rlDragBeginAt = Date.now();          // 按住即开始避让重排，避免轮询在拖动中把圆点摘掉
+    try { ruler.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+
+  ruler.addEventListener('pointermove', function(e){
+    if (!drag) return;
+    if (!drag.moved) {
+      if (Math.abs(e.clientX - drag.x0) < DEAD) return;
+      drag.moved = true;
+      drag.dot.classList.add('dragging');
+      ruler.classList.add('ruler--dragging');
+      document.body.classList.add('rl-dragging');
+    }
+    const raw = Math.min(1440, Math.max(0,
+      (e.clientX - drag.grabDX - drag.left) / drag.width * 1440));
+    const fine = !!e.shiftKey;
+    let m = snapMins(raw, fine, drag.fromMins);
+    /* 落在别的点旁边（相差不足 5 分钟）算撞车：吸附到那个点的原值并标红，
+       这样气泡显示的就是「已有的那个时间」，不会出现 23:55 盖在 23:59 上还以为没事 */
+    let bad = false;
+    for (let i = 0; i < drag.othersMins.length; i++) {
+      if (Math.abs(drag.othersMins[i] - m) < 5) { m = drag.othersMins[i]; bad = true; break; }
+    }
+    const pct = pctOfMins(raw);          // 位置连续，值才吸附
+    drag.dot.style.left = pct;
+    const g = ghostBox();
+    placeGhost(g, pct, raw);
+    if (m !== drag.lastM || bad !== drag.bad) {   // 值没变就不动 DOM，避免无谓重排
+      drag.lastM = m; drag.bad = bad;
+      const t = rlMins2Str(m);
+      g.querySelector('.t').textContent = t;
+      g.querySelector('em').textContent = bad ? '已有' : (fine ? '精调 1 分钟' : 'Shift 精调');
+      g.classList.toggle('bad', bad);
+      drag.dot.classList.toggle('bad', bad);
+      drag.dot.dataset.t = t;
+      drag.dot.setAttribute('title', t);
+      const lab = drag.dot.querySelector('span');
+      if (lab) lab.textContent = t;
+      const input = document.getElementById('d-new-time');
+      if (input) input.value = t;
+    }
+  });
+
+  ruler.addEventListener('pointerup', function(e){
+    if (!drag) return;
+    const d = drag;
+    try { ruler.releasePointerCapture(e.pointerId); } catch (err) {}
+    if (!d.moved) { settle(); return; }        // 没动 → 交给 click 走选中
+    const now = d.dot.dataset.t;
+    const bad = d.bad;
+    settle();
+    rlSuppressClickUntil = Date.now() + 600;   // 拖完紧跟的 click 不当成新增
+    if (bad) {
+      toast('这个时间点已经有了', true);
+      renderRuler(currentTimes());
+      return;
+    }
+    if (now === d.from) return;
+    selTime = now; moveFrom = d.from; rlPaintSel();
+    rlSaveMove(d.from, now);                   // 松手立即落库，不等 450ms 防抖
+  });
+
+  ruler.addEventListener('pointercancel', function(){
+    if (!drag) return;
+    settle();
+    renderRuler(currentTimes()); rlPaintSel();
+  });
+
+  /* 拖到一半不想改了：Esc 撤回原位，不落库 */
+  window.addEventListener('keydown', function(e){
+    if (!drag || !drag.moved || e.key !== 'Escape') return;
+    settle();
+    renderRuler(currentTimes()); rlPaintSel();
+    toast('已取消');
+  });
+})();
+
+/* ▲▼ 微调：有选中点 → 改库；没选中 → 只改输入框 */
+let rlMoveTimer = null;
+/* 立即落库：拖动松手走这条，0 延迟 */
+async function rlSaveMove(from, to){
+  const list = currentTimes();
+  if (from == null || list.indexOf(from) < 0) {   // 选中态已失效，退回只读
+    selTime = null; moveFrom = null; rlPaintSel(); return false;
+  }
+  if (to === from) return true;
+  if (list.indexOf(to) >= 0) {
+    toast('这个时间点已经有了', true);
+    selTime = from; renderRuler(currentTimes()); rlPaintSel(); return false;
+  }
+  const next = list.map(function(x){ return x === from ? to : x; })
+                   .sort(function(a, b){ return rlStr2Mins(a) - rlStr2Mins(b); });
+  const ok = await saveTimes(next);
+  if (ok) { selTime = to; moveFrom = to; rlPaintSel(); }
+  else { selTime = from; renderRuler(currentTimes()); rlPaintSel(); }
+  return ok;
+}
+/* ▲▼ 连点用 450ms 防抖，只发最后一次 */
+function rlMoveTo(t){
+  clearTimeout(rlMoveTimer);
+  rlMoveTimer = setTimeout(function(){ rlSaveMove(moveFrom, t); }, 450);
+}
+function rlNudge(delta){
+  const input = document.getElementById('d-new-time');
+  if (!input) return;
+  const base = rlStr2Mins(selTime != null ? selTime : input.value);
+  if (base == null) { toast('请先选择时间', true); return; }
+  const t = rlMins2Str(base + delta);
+  input.value = t;
+  if (selTime == null) return;            // 未选中 → 只改输入框，等用户点「添加」
+  selTime = t; rlPaintSel(); rlMoveTo(t);
+}
+document.getElementById('btn-time-up').addEventListener('click', function(){ rlNudge(1); });
+document.getElementById('btn-time-down').addEventListener('click', function(){ rlNudge(-1); });
+
+/* ---- 添加时间点：先弹确认框，框内 ▲▼ 微调 1 分钟，确定后才写入 ---- */
+/* 弹窗里的时间以输入框为准（可直接键入），▲▼ 只是改这个框的值 */
+function rlAddVal(){
+  const v = document.getElementById('addtime-val');
+  const m = v ? String(v.value || '').match(/^(\d{1,2}):(\d{2})$/) : null;
+  return m ? String(+m[1]).padStart(2, '0') + ':' + m[2] : null;
+}
+function rlOpenAddTime(t, editFrom){
+  const box = document.getElementById('addtime-modal');
+  const val = document.getElementById('addtime-val');
+  const title = document.getElementById('addtime-title');
+  const ok = document.getElementById('addtime-ok');
+  if (!box || !val) {                  // 兜底：弹窗缺失时退回原来的直接添加
+    const input = document.getElementById('d-new-time');
+    if (input) input.value = t;
+    addTime(); return;
+  }
+  rlEditFrom = (editFrom != null) ? editFrom : null;
+  if (title) title.textContent = rlEditFrom != null ? '修改提醒时间点' : '添加提醒时间点';
+  if (ok) ok.textContent = rlEditFrom != null ? '确定修改' : '确定添加';
+  val.value = t;
+  box.hidden = false;
+  rlStepHint(null);
+  try { val.focus(); val.select && val.select(); } catch (e) {}
+}
+function rlCloseAddTime(){
+  const box = document.getElementById('addtime-modal');
+  if (box) box.hidden = true;
+  rlStepHint(null);
+  rlEditFrom = null;
+  const title = document.getElementById('addtime-title');
+  const ok = document.getElementById('addtime-ok');
+  if (title) title.textContent = '添加提醒时间点';
+  if (ok) ok.textContent = '确定添加';
+}
+function rlStepHint(step){
+  const h = document.getElementById('addtime-hint');
+  if (!h) return;
+  h.textContent = step
+    ? ('松开停止 · 当前步长 ' + (step >= 60 ? '1 小时' : step + ' 分钟'))
+    : '可直接输入时间；点 ▲▼ 调 1 分钟，长按连续调整（10 分钟 / 1 小时）';
+}
+function rlAddStep(delta){
+  const cur = rlAddVal();
+  if (cur == null) return;
+  const m = rlStr2Mins(cur);
+  if (m == null) return;
+  const val = document.getElementById('addtime-val');
+  if (val) val.value = rlMins2Str(m + delta);
+}
+function rlConfirmAddTime(){
+  const t = rlAddVal();
+  if (t == null) { toast('时间格式不对，应为 HH:MM', true); return; }
+  const from = rlEditFrom;              // 先抓住编辑来源，关闭弹窗会清空它
+  const input = document.getElementById('d-new-time');
+  if (input) input.value = t;
+  rlCloseAddTime();
+  if (from != null) {                  // 编辑已有时间点：用新值替换旧值（保持排序、去重）
+    const list = currentTimes();
+    if (list.indexOf(t) >= 0 && t !== from) { toast('这个时间点已经有了', true); return; }
+    const next = list.map(function(x){ return x === from ? t : x; })
+                     .sort(function(a, b){ return rlStr2Mins(a) - rlStr2Mins(b); });
+    saveTimes(next);
+    return;
+  }
+  addTime();                            // 纯新增：仍走原有的去重 + 保存链路
+}
+document.getElementById('addtime-up').addEventListener('click', function(){ rlAddStep(1); });
+document.getElementById('addtime-down').addEventListener('click', function(){ rlAddStep(-1); });
+document.getElementById('addtime-ok').addEventListener('click', rlConfirmAddTime);
+document.getElementById('addtime-cancel').addEventListener('click', rlCloseAddTime);
+document.getElementById('addtime-x').addEventListener('click', rlCloseAddTime);
+document.getElementById('addtime-modal').addEventListener('click', function(e){
+  if (e.target === this) rlCloseAddTime();          // 点遮罩空白处关闭
+});
+document.addEventListener('keydown', function(e){
+  if (rlReloadKey(e)) return;   // F5 / Ctrl+R：刷新页面（判定见文件末尾「刷新快捷键」）
+  const box = document.getElementById('addtime-modal');
+  if (!box || box.hidden) return;
+  if (e.key === 'Escape') rlCloseAddTime();
+  else if (e.key === 'Enter') { e.preventDefault(); rlConfirmAddTime(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); rlAddStep(1); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); rlAddStep(-1); }
+});
+
+/* ▲▼ 长按连发：按住 450ms 后每 220ms 走一步，步长随按住时长升级
+   1 分钟 →（>1.2s）10 分钟 →（>2.5s）1 小时，松手停止。
+   长按结束时浏览器仍会补一次 click（会多走 ±1 分钟），这里在父级捕获阶段挡掉 */
+function rlBindLongPress(id, delta, apply, hint){
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  let arm = null, tick = null, t0 = 0, repeated = false;
+  function stop(){ clearTimeout(arm); clearInterval(tick); arm = tick = null; }
+  btn.addEventListener('pointerdown', function(e){
+    if (e.button !== 0) return;
+    repeated = false; t0 = Date.now(); stop();
+    arm = setTimeout(function(){
+      tick = setInterval(function(){
+        const held = Date.now() - t0;
+        const step = held > 2500 ? 60 : (held > 1200 ? 10 : 1);
+        repeated = true;
+        apply(delta * step);
+        if (hint) hint(step);
+      }, 220);
+    }, 450);
+  });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(function(ev){
+    btn.addEventListener(ev, function(){ stop(); if (hint) hint(null); });
+  });
+  const p = btn.parentElement;
+  if (p) p.addEventListener('click', function(e){
+    if (repeated && e.target === btn) { e.stopPropagation(); repeated = false; }
+  }, true);
+}
+rlBindLongPress('addtime-up', 1, rlAddStep, rlStepHint);
+rlBindLongPress('addtime-down', -1, rlAddStep, rlStepHint);
+rlBindLongPress('btn-time-up', 1, rlNudge, null);
+rlBindLongPress('btn-time-down', -1, rlNudge, null);
+
 document.getElementById('btn-catch-up').addEventListener('click', saveCatchUp);
 
 async function controlDaemon(action){
@@ -1325,6 +1781,28 @@ document.getElementById('btn-dev-save').addEventListener('click', saveDevice);
 document.getElementById('btn-dev-shuffle').addEventListener('click', shuffleDevice);
 document.getElementById('btn-dev-reset').addEventListener('click', resetDevice);
 
+/* 查询代理（设备伪装页）：读取随 /api/device，保存独立端点 */
+const proxySave = document.getElementById('btn-proxy-save');
+if (proxySave && !proxySave.dataset.bound) {
+  proxySave.dataset.bound = '1';
+  proxySave.addEventListener('click', async function(){
+    const box = document.getElementById('query-proxy');
+    const hint = document.getElementById('proxy-hint');
+    proxySave.disabled = true;
+    try {
+      const d = await postJSON('/api/query/proxy', { proxy: box.value });
+      if (!d.ok) { toast(d.message || '保存失败', true); return; }
+      toast(d.message || '已保存');
+      if (hint) hint.textContent = d.proxy
+        ? '已配置代理出口，米游社查询将经此连接'
+        : '未配置，米游社查询直连';
+    } catch (e) {
+      toast('保存失败：' + e.message, true);
+    } finally {
+      proxySave.disabled = false;
+    }
+  });
+}
 
 /* ========================= 信息查询 ========================= */
 let liveLoaded = false;    // 本次会话已经发起过实时请求
@@ -1478,7 +1956,7 @@ function loadLive(force){
   /* 已有缓存渲染的表格时不再打占位符 —— 静默刷新，数据到了平滑替换 */
   if (box && !liveRendered) box.innerHTML = '<div class="emptybox">正在查询，请稍候…</div>';
   kpiBusy(true);
-  fetch('/api/live' + (force ? '?refresh=1' : ''))
+  return fetch('/api/live' + (force ? '?refresh=1' : ''))
     .then(function(r){ return r.json(); })
     .then(function(d){
       liveLoaded = true;
@@ -1570,7 +2048,7 @@ function actCardHtml(it, isHero){
   return '<div class="card acard' + (isHero ? ' hero' : '') + '"' +
     actUrgencyAttr(it, isHero) + ' data-id="' + id + '">' +
     '<div class="acard-top"><span class="act-game">' + actIconHtml(it) +
-      escHtml(it.game_name) + '</span>' +
+      '<span class="act-name">' + escHtml(it.game_name) + '</span></span>' +
       '<button type="button" class="act-del" data-del="' + id +
       '" title="删除，之后不再提醒">×</button></div>' +
     '<div class="acard-title" title="' + escHtml(it.title) + '">' + escHtml(it.title) + reward + '</div>' +
@@ -1947,7 +2425,7 @@ function renderHeatmap(d){
 
 function loadHistory(){
   kpiBusy(true);
-  fetch('/api/history?days=7')
+  return fetch('/api/history?days=7')
     .then(function(r){
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
@@ -1975,20 +2453,65 @@ function loadHistory(){
 
 document.getElementById('btn-history-refresh').addEventListener('click', loadHistory);
 
-/* ========================= 主题（exe 壳版） ========================= */
-/* 恒跟随 Windows 系统深浅：auto 解析成系统实际值后落到 data-theme，
-   系统深浅变化实时切换。主题切换按钮已从 ui/index.html 移除
-   （壳与托盘的深浅色由 C# 壳直接读系统注册表），localStorage 的
-   rl-theme 不再读写——旧缓存值自然失效。 */
+/* 报表页手动刷新：先实时查询（查询过程会落历史），再重拉报表 —— 顺序不能反，
+   否则拿到的还是上一轮旧数据。失败静默保留旧数据，与 loadHistory 同一口径 */
+document.getElementById('btn-hist-refresh').addEventListener('click', function(){
+  const btn = this;
+  if (!btn || btn.disabled) return;              // 防连点
+  btn.disabled = true; btn.textContent = '查询中…';
+  Promise.resolve(loadLive(true))                // 实时查询（写历史）→ 再拉报表
+    .then(function(){ return loadHistory(); })
+    .catch(function(err){ console.error('刷新报表失败', err); })
+    .then(function(){ btn.disabled = false; btn.textContent = '刷新'; });
+});
+
+/* ========================= 主题（三态：跟随系统 / 深色 / 浅色） ========================= */
+/* 默认跟随 Windows 系统深浅；点侧栏底部按钮可强制深色或浅色，选择写进
+   localStorage 的 rl-theme，下次启动沿用。
+   注意：exe 壳原本在每次文档创建时 removeItem('rl-theme')（为保证页面与壳同口径），
+   那句已同步从 shell/MainForm.cs 移除 —— 否则这里存的值每次启动都会被抹掉。
+   auto 模式下仍然实时跟随系统；手动模式下系统切换不影响用户的选择。 */
 const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+const THEME_MODES = ['auto', 'dark', 'light'];
+const THEME_META = {
+  auto:  ['\u{1F5A5}\u{FE0F}', '跟随系统'],
+  dark:  ['\u{1F319}', '深色'],
+  light: ['\u{2600}\u{FE0F}', '浅色'],
+};
+
+function readThemeMode(){
+  try {
+    const v = localStorage.getItem('rl-theme');
+    return THEME_MODES.indexOf(v) >= 0 ? v : 'auto';
+  } catch (e) { return 'auto'; }
+}
 
 function applyTheme(){
-  document.documentElement.dataset.theme = systemDark.matches ? 'dark' : 'light';
+  const mode = readThemeMode();
+  const dark = mode === 'auto' ? systemDark.matches : (mode === 'dark');
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  const meta = THEME_META[mode] || THEME_META.auto;
+  const ico = document.getElementById('theme-ico');
+  const txt = document.getElementById('theme-txt');
+  const btn = document.getElementById('btn-theme');
+  if (ico) ico.textContent = meta[0];
+  if (txt) txt.textContent = meta[1];
+  if (btn) btn.dataset.mode = mode;
 }
 
 applyTheme();
 if (systemDark.addEventListener) {
   systemDark.addEventListener('change', applyTheme);
+}
+
+const themeBtn = document.getElementById('btn-theme');
+if (themeBtn) {
+  themeBtn.addEventListener('click', function () {
+    const cur = themeBtn.dataset.mode || 'auto';
+    const next = THEME_MODES[(THEME_MODES.indexOf(cur) + 1) % THEME_MODES.length];
+    try { localStorage.setItem('rl-theme', next); } catch (e) {}
+    applyTheme();
+  });
 }
 
 /* ========================= 推送预览 ========================= */
@@ -2186,11 +2709,43 @@ function refreshKpiKeep(){
   sorted.forEach(function(c, i){ c.classList.toggle('keep', i < 2); });
 }
 
+/* KPI 吸顶收缩：进入 >进档线、退出 <40px —— 两个阈值必须分开（滞回），不能共用一个。
+   为什么共用会出事：compact 会把 KPI 条压矮，浏览器为保持视觉位置不动（滚动锚定）
+   会同步把 scrollTop 下调同样的落差。若退出阈值也是进档线，则
+     scrollTop 刚过线 → 压缩 → 被锚定推回线下 → 还原 → 又推回线上 → 再压缩 → ……
+   形成无限振荡，每次都对 min-height 跑一遍 250ms 过渡，画面就是「滚动时图标反复
+   重叠 / 抖重影」「一向下滚就被弹回顶部」。所有 tab 都中招，因为它挂在全局唯一的
+   #kpi-bar 上。
+   落差不是常数：宽幅 ~24px（80→56），≤1000px 双列两行卡实测 133px（914×600：
+   213→80）——固定 40px 间隙在窄幅照样振荡（压缩后 scrollTop 被锚定推到 40 以下）。
+   进档线因此按两档实测高度差自适应：max(80, 40+落差+8)，保证压缩后 scrollTop
+   仍 ≥48，永远跌不破退档线 40。落差随窗口/主题漂移在每次滚动事件里重测自愈。 */
+const KPI_COMPACT_ENTER = 80;   /* 进档线；宽幅下即最终进档线，窄幅被自适应抬高 */
+const KPI_COMPACT_EXIT  = 40;   /* 退档线；压缩后 scrollTop ≥ 48，留 8px 余量 */
+let kpiCompact = false;
+const kpiBarH = { normal: 0, compact: 0 };   /* 两档实高缓存，落差 = normal - compact */
+
 function updateKpiCompact(){
   if (!kpiBarEl || !kpiMainEl) return;
-  kpiBarEl.classList.toggle('compact', kpiMainEl.scrollTop > 80);
+  const on = kpiBarEl.classList.contains('compact');
+  kpiBarH[on ? 'compact' : 'normal'] = kpiBarEl.offsetHeight;
+  const delta = (kpiBarH.normal > 0 && kpiBarH.compact > 0)
+    ? kpiBarH.normal - kpiBarH.compact : 24;
+  const enter = Math.max(KPI_COMPACT_ENTER, KPI_COMPACT_EXIT + delta + 8);
+  const top = kpiMainEl.scrollTop;
+  if (!kpiCompact && top > enter) kpiCompact = true;
+  else if (kpiCompact && top < KPI_COMPACT_EXIT) kpiCompact = false;
+  kpiBarEl.classList.toggle('compact', kpiCompact);
 }
 if (kpiMainEl) kpiMainEl.addEventListener('scroll', updateKpiCompact, {passive:true});
+if (kpiBarEl) {
+  /* 预热两档实高：否则首次进档只能用 24px 兜底落差，窄幅第一滚仍会闪一轮 */
+  const wasCompact = kpiBarEl.classList.contains('compact');
+  kpiBarEl.classList.add('compact');
+  kpiBarH.compact = kpiBarEl.offsetHeight;
+  if (!wasCompact) kpiBarEl.classList.remove('compact');
+  kpiBarH.normal = kpiBarEl.offsetHeight;
+}
 updateKpiCompact();
 
 /* 今日完成：巡检历史 + 实时查询合并统计。
@@ -2368,13 +2923,14 @@ function renderRuler(times){
       (h < 10 ? '0' + h : h) + ':00</div>';
   });
   if (!times.length) {
-    html += '<div class="ruler-empty">还没有时间点，在下面添加</div>';
+    html += '<div class="ruler-empty">还没有时间点，点击时间轴任意位置即可添加</div>';
   }
   times.forEach(function(t){
     const m = String(t).match(/^(\d{1,2}):(\d{2})$/);
     if (!m) return;
     const pct = ((+m[1] * 60 + +m[2]) / 1440 * 100).toFixed(3);
-    html += '<div class="ruler-dot" style="left:' + pct + '%" title="' + t + '">' +
+    html += '<div class="ruler-dot' + (t === selTime ? ' sel' : '') +
+            '" data-t="' + t + '" style="left:' + pct + '%" title="' + t + '">' +
             '<span>' + t + '</span></div>';
   });
   box.innerHTML = html;
@@ -2445,3 +3001,35 @@ loadAccounts();      // 用 config 里的真实巡检开关覆盖页面默认勾
 loadThresholds();
 loadSchedule();      // 状态先拉一次，展开时不会闪空
 loadAutostart();
+
+/* =========================== 刷新快捷键 ===========================
+   pywebview 把 WebView2 的浏览器快捷键关掉了（非 debug 时
+   AreBrowserAcceleratorKeysEnabled=False），F5/Ctrl+R 原本什么都不做。
+   页面自己接管：阻止默认行为后主动 reload，配合下面的整页闪烁即为刷新反馈。
+
+   绑定点只在文件上方那一个 document keydown（addtime 弹窗那段，先调 rlReloadKey）；
+   这里只定义判定与动作，不再单独 addEventListener——document 上多挂一个 keydown
+   会让 tests/rl_deep_test.js 的 T4.3「每个(元素,事件)对恰好绑定 1 次」失败。 */
+
+function rlReloadKey(e){
+  var k = (e.key || '').toLowerCase();
+  if (e.key === 'F5' || (e.ctrlKey && (k === 'r' || k === 'f5'))){
+    e.preventDefault();
+    location.reload();
+    return true;
+  }
+  return false;
+}
+
+/* =========================== 刷新反馈 ===========================
+   每次加载整页快速闪一下，让「页面已重新加载」看得见。
+   不对导航类型做判断：WebView2 里的 F5 不一定上报成 reload，
+   认类型会导致「按了没反应」；这里一律闪，保证操作有反馈。 */
+(function rlFlashOnLoad(){
+  try{
+    var f = document.createElement('div');
+    f.id = 'rl-flash';
+    document.body.appendChild(f);
+    setTimeout(function(){ if (f.parentNode) f.parentNode.removeChild(f); }, 420);
+  }catch(e){ /* 极端情况下插节点失败也不影响页面 */ }
+})();

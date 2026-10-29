@@ -81,8 +81,11 @@ def _icon_stamp() -> str:
 
 
 def _render_page() -> str:
-    """把模板里的 __ICON_STAMP__ 换成当前缓存戳。每次请求都算，不缓存。"""
-    return HTML_PAGE.replace("__ICON_STAMP__", _icon_stamp())
+    """把模板里的 __ICON_STAMP__ 换成当前缓存戳。每次请求都算，不缓存。
+
+    页面本体走 get_page()：ui/ 三个文件任一改动都会在下一次请求时自动生效。
+    """
+    return get_page().replace("__ICON_STAMP__", _icon_stamp())
 
 logger = logging.getLogger("dailycheck.loginui")
 
@@ -921,10 +924,15 @@ def device_status() -> Dict[str, Any]:
     from core import mihoyo_api
 
     profile = mihoyo_api.load_device_profile()  # 读盘，换完立刻反映
+    try:
+        proxy = str((load_raw_config().get("query") or {}).get("proxy") or "")
+    except Exception:  # noqa: BLE001 - 配置读不到不影响设备页其它内容
+        proxy = ""
     return {
         "ok": True,
         "custom": mihoyo_api.PROFILE_OVERRIDE_PATH.exists(),
         "label": mihoyo_api.identity_label(),
+        "proxy": proxy,
         "profile": {
             "brand": profile.get("brand", ""),
             "model": profile.get("model", ""),
@@ -991,6 +999,31 @@ def reset_device_text() -> Dict[str, Any]:
     result["removed_cache"] = removed
     result["message"] = "已切回随机设备，请重新扫码"
     return result
+
+
+def save_query_proxy(raw_value: Any) -> Dict[str, Any]:
+    """校验并写入 config.query.proxy（空串 = 直连）。仅本地读写，不做连通性测试。
+
+    消费链：下一轮检查 run_check → _apply_mihoyo_query_config → mihoyo_api.set_proxy，
+    getFp 与 dailyNote 均经此出口。
+    """
+    value = str(raw_value or "").strip()
+    if value and not re.match(r"^(https?|socks5h?)://[^\s]+$", value, re.IGNORECASE):
+        raise ValueError("代理格式不对：应以 http://、https:// 或 socks5:// 开头，且不含空格")
+    raw = load_raw_config()
+    query = raw.get("query")
+    if not isinstance(query, dict):
+        query = {}
+        raw["query"] = query
+    query["proxy"] = value
+
+    from core.config import parse_config
+
+    parse_config(raw, source=CONFIG_PATH)
+    save_raw_config(raw)
+    message = "已保存：米游社查询将经代理出口" if value else "已保存：查询直连"
+    logger.info("查询代理已更新：%s", value or "(直连)")
+    return {"ok": True, "proxy": value, "message": message}
 
 
 def shuffle_device() -> Dict[str, Any]:
@@ -1417,7 +1450,7 @@ def write_skland(target: str, token: str) -> str:
 
 def run_mihoyo(session: Session) -> None:
     """一次扫码，更新所有被勾选的米游社游戏。"""
-    from core.mihoyo_api import bind_device
+    from core.mihoyo_api import bind_device, identity_device_id
     from core.mihoyo_login import (
         MiyousheLoginError,
         build_cookie_string,
@@ -1432,7 +1465,7 @@ def run_mihoyo(session: Session) -> None:
             session.update("scanned", "已扫码，请在手机上点击「确认登录」")
 
     try:
-        device_id = str(uuid.uuid4()).lower()
+        device_id = identity_device_id()  # 全局唯一安装级设备：扫码与查询共用
         session.update("creating", f"正在申请二维码（将更新 {len(games)} 款游戏）…")
         qr = create_qr(device_id)
         session.set_qr(qr_png_base64(qr["url"]))
@@ -1489,7 +1522,8 @@ def run_skland(session: Session) -> None:
 
         try:
             session.set_qr("")
-            session.update("creating", f"第 {index}/{total} 步 · {label}：正在申请二维码…")
+            session.update("creating",
+                           f"第 {index}/{total} 步 · {label}：正在申请二维码（将更新 {total} 款游戏）…")
             qr = create_qr()
             session.set_qr(qr_png_base64(qr["scan_url"]))
             session.update(
@@ -1540,20 +1574,62 @@ def run_skland(session: Session) -> None:
 # 页面
 # --------------------------------------------------------------------------- #
 
-#: 前端三件套（ui/index.html + ui/style.css + ui/app.js）：进程启动时拼装成
-#: 单页 HTML。占位符 __STYLE__ / __APP_JS__ 在导入时填充；
+#: 前端三件套（ui/index.html + ui/style.css + ui/app.js）：拼装成单页 HTML。
+#: 占位符 __STYLE__ / __APP_JS__ 在 _assemble_page() 里填充；
 #: __ICON_STAMP__（图标缓存戳）在每次请求时由 _render_page() 替换。
+#: 不再是导入时一次性拼装 —— get_page() 按文件指纹缓存，ui/ 改了自动重载。
 #: 拆成独立文件的原因：5800 行 Python 里的 HTML 字符串已不可维护（第三阶段架构项）。
 _UI_DIR = BASE_DIR / "ui"
-try:
-    HTML_PAGE = (_UI_DIR / "index.html").read_text(encoding="utf-8")
-    HTML_PAGE = HTML_PAGE.replace(
+_UI_FILES = ("index.html", "style.css", "app.js")
+
+#: 页面缓存。key = 三个文件的 (mtime_ns, size) 指纹，值 = 拼好的单页 HTML。
+#: ui/ 里任一文件在磁盘上发生变化，下一次请求就会自动重建，无需重启进程。
+_PAGE_LOCK = threading.Lock()
+_PAGE_CACHE: Dict[str, Any] = {"stamp": None, "html": ""}
+
+
+def _assemble_page() -> str:
+    """读取 ui/ 三件套拼成单页 HTML（占位符 __STYLE__ / __APP_JS__ 在此填充）。"""
+    html = (_UI_DIR / "index.html").read_text(encoding="utf-8")
+    return html.replace(
         "__STYLE__", (_UI_DIR / "style.css").read_text(encoding="utf-8")
     ).replace(
         "__APP_JS__", (_UI_DIR / "app.js").read_text(encoding="utf-8")
     )
-except OSError as exc:
-    raise RuntimeError(f"前端三件套读取失败（ui/ 目录不完整？）：{exc}") from exc
+
+
+def get_page() -> str:
+    """取当前页面；ui/ 文件有更新则自动重建（前端热重载）。
+
+    首次读取失败会照旧抛 RuntimeError（ui/ 不完整）；此后遭遇读取异常时
+    降级返回上一份已加载的页面，避免临时性 IO 抖动让整个控制台 500。
+    """
+    stamp = None
+    try:
+        stamp = tuple(
+            (f, int((_UI_DIR / f).stat().st_mtime_ns), (_UI_DIR / f).stat().st_size)
+            for f in _UI_FILES
+        )
+    except OSError:
+        pass
+
+    with _PAGE_LOCK:
+        cached = _PAGE_CACHE["html"]
+        if stamp is None:
+            if not cached:
+                raise RuntimeError("前端三件套读取失败（ui/ 目录不完整？）")
+            return cached
+        if _PAGE_CACHE["stamp"] != stamp or not cached:
+            try:
+                _PAGE_CACHE["html"] = _assemble_page()
+                _PAGE_CACHE["stamp"] = stamp
+            except OSError as exc:
+                if not cached:
+                    raise RuntimeError(
+                        f"前端三件套读取失败（ui/ 目录不完整？）：{exc}"
+                    ) from exc
+                logger.warning("重载前端资源失败，继续使用上一版：%s", exc)
+        return _PAGE_CACHE["html"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1862,6 +1938,18 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": False, "message": f"恢复失败：{exc}"}, 500)
             return
 
+        if path == "/api/query/proxy":
+            payload = self._read_json_body()
+            if payload is not None:
+                try:
+                    self._json(save_query_proxy(payload.get("proxy")))
+                except ValueError as exc:
+                    self._json({"ok": False, "message": str(exc)}, 400)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("保存查询代理失败")
+                    self._json({"ok": False, "message": "保存失败，请查看运行日志"}, 500)
+            return
+
         if path == "/api/device/shuffle":
             payload = self._read_json_body()
             if payload is not None:
@@ -1999,6 +2087,28 @@ class Handler(BaseHTTPRequestHandler):
             status_payload = daemon_status()
             result["daemon"] = status_payload
             self._json(result, 200 if result.get("ok") else 400)
+            return
+
+        if path == "/api/daemon/run-now":
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            try:
+                import daemon as daemon_mod
+
+                if not daemon_status().get("running"):
+                    start = daemon_mod.start_daemon()
+                    if not start.get("ok"):
+                        self._json({"ok": False,
+                                    "message": start.get("message") or "守护进程未能启动，巡检未执行"},
+                                   400)
+                        return
+                daemon_mod.RUN_NOW_FLAG.write_text(
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n", encoding="utf-8")
+                self._json({"ok": True, "message": "已开始巡检"})
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("立即巡检请求失败")
+                self._json({"ok": False, "message": "巡检请求执行失败，请查看运行日志"}, 500)
             return
 
         self._json({"ok": False, "message": "not found"}, 404)

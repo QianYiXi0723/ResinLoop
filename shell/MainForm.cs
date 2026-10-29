@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
+using System.Text.RegularExpressions;
 
 namespace ResinLoop
 {
@@ -35,6 +36,7 @@ namespace ResinLoop
         private Process _engine;          // 本壳拉起的引擎；复用现有实例时为 null（退出时不收尸）
         private IntPtr _job = IntPtr.Zero; // 引擎（连带它派生的 daemon）都挂在这个 Job 上
         private string _url = "http://127.0.0.1:8765/";
+        private int _port = 8765;          // 本轮实际使用的控制台端口（托盘「立即巡检」用）
         private NotifyIcon _tray;
         private WebView2 _web;
         private bool _reallyExit;
@@ -46,8 +48,16 @@ namespace ResinLoop
             _forcedPort = forcedPort;
 
             Text = "ResinLoop · 日常巡查";
-            Size = new Size(980, 800);
-            MinimumSize = new Size(820, 620);
+            // 每日报表三卡（本周汇总／游戏概览／最近 7 天）纵向分摊高度，窗口太矮时
+            // 「游戏概览」会被压成只能露出半张卡的小框。默认给足 1280×920，
+            // 同时按主屏工作区夹住上限 —— 1366 高的本子也不会撑爆屏幕被裁。
+            const int wantW = 1280, wantH = 920;
+            Rectangle wa = Screen.PrimaryScreen != null
+                ? Screen.PrimaryScreen.WorkingArea
+                : new Rectangle(0, 0, wantW, wantH);
+            Size = new Size(Math.Min(wantW, Math.Max(960, wa.Width - 40)),
+                            Math.Min(wantH, Math.Max(600, wa.Height - 40)));
+            MinimumSize = new Size(Math.Min(1024, Size.Width), Math.Min(700, Size.Height));
             StartPosition = FormStartPosition.CenterScreen;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { /* 图标缺省兜底 */ }
 
@@ -70,6 +80,7 @@ namespace ResinLoop
             };
             var menu = new ContextMenuStrip();
             menu.Items.Add("打开控制台", null, (s, e) => ShowMain());
+            menu.Items.Add("立即巡检", null, (s, e) => RunManualCheck());
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("彻底退出", null, (s, e) => ReallyExit());
             _tray.ContextMenuStrip = menu;
@@ -97,6 +108,7 @@ namespace ResinLoop
                     return;
                 }
                 _url = "http://127.0.0.1:" + port + "/";
+                _port = port;
 
                 if (IsResinLoopAlive(port))
                 {
@@ -117,6 +129,9 @@ namespace ResinLoop
                     }
                     Log("引擎就绪 pid=" + (_engine == null ? "?" : _engine.Id.ToString()) + "，端口 " + port);
                 }
+
+                // 冷启动兜底：daemon 唯一入口是页面按钮（发行版无 start.bat）；fire-and-forget 防 6 秒白屏。
+                _ = Task.Run(() => EnsureDaemon(port));
 
                 Directory.CreateDirectory(Path.Combine(Root, "logs", "webview2"));
                 var env = await CoreWebView2Environment.CreateAsync(
@@ -193,12 +208,14 @@ namespace ResinLoop
             s.AreBrowserAcceleratorKeysEnabled = false;   // 屏蔽 Ctrl+F / F12 等浏览器手感
             s.IsZoomControlEnabled = false;
             s.IsBuiltInErrorPageEnabled = true;
-            // 隐藏滚动条 + 清掉旧主题偏好（壳版主题恒跟随 Windows 系统深浅）
+            // 隐藏滚动条（页面深浅色由用户自己选，见 UI 侧栏底部的三态按钮）
             _web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
                 "const st=document.createElement('style');" +
                 "st.textContent='::-webkit-scrollbar{width:0;height:0}::-webkit-scrollbar-thumb{background:transparent}';" +
-                "document.documentElement.appendChild(st);" +
-                "try{localStorage.removeItem('rl-theme')}catch(e){};");
+                // 注意：这里原本还有一句 removeItem('rl-theme')，用来保证页面主题
+                // 与壳同口径。现已改为允许用户在侧栏底部手动切换深浅配色（auto/dark/light，
+                // 偏好存在 localStorage 里），所以不再清理，否则每次启动都会抹掉用户的选择。
+                "document.documentElement.appendChild(st);");
             _web.CoreWebView2.NewWindowRequested += (s2, e2) => { e2.Handled = true; };  // 屏蔽弹新窗
             Log("WebView2 就绪：右键菜单/DevTools/加速键已关，滚动条已隐藏");
         }
@@ -237,6 +254,67 @@ namespace ResinLoop
             catch { return false; }
         }
 
+        private static string HttpJson(int port, string path, string method, string body, int timeoutMs)
+        {
+            try
+            {
+                var req = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + port + path);
+                req.Method = method;
+                req.Proxy = null;
+                req.Timeout = timeoutMs;
+                req.ReadWriteTimeout = timeoutMs;
+                req.ServicePoint.Expect100Continue = false;
+                if (method == "POST")
+                {
+                    byte[] bytes = Encoding.UTF8.GetBytes(body ?? "{}");
+                    req.ContentType = "application/json; charset=utf-8";
+                    req.ContentLength = bytes.Length;
+                    using (var s = req.GetRequestStream()) s.Write(bytes, 0, bytes.Length);
+                }
+                using (var resp = (HttpWebResponse)req.GetResponse())
+                using (var sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                    return sr.ReadToEnd();
+            }
+            catch { return ""; }
+        }
+
+        /// <summary>守护进程是否在跑：daemon 对象（"daemon" 后 400 字符窗口）内匹配 running:true。</summary>
+        private static bool DaemonRunning(int port)
+        {
+            string body = HttpJson(port, "/api/schedule", "GET", null, 1500);
+            int i = body.IndexOf("\"daemon\"");
+            return i >= 0 && Regex.IsMatch(body.Substring(i, Math.Min(400, body.Length - i)),
+                                            "\"running\"\\s*:\\s*true");
+        }
+
+        private void EnsureDaemon(int port)
+        {
+            if (DaemonRunning(port))
+            {
+                Log("守护进程已在运行，跳过拉起");
+                return;
+            }
+            string resp = HttpJson(port, "/api/daemon/start", "POST", "{}", 10000);
+            var ok = Regex.IsMatch(resp, "\"ok\"\\s*:\\s*true");
+            // start_daemon() 内部自带最长 6 秒就绪等待：POST 超时返回空串时
+            // daemon 可能其实已经起来了 —— 必须把 8 秒观察窗跑满，再统一判定。
+            if (!ok && resp == "")
+                Log("启动请求无响应（可能仍在启动），继续观察 8 秒");
+            DateTime deadline = DateTime.UtcNow.AddSeconds(8);
+            while (DateTime.UtcNow < deadline && !DaemonRunning(port))
+                Thread.Sleep(500);
+            if (DaemonRunning(port))
+            {
+                var m = Regex.Match(resp, "\"pid\"\\s*:\\s*(\\d+)");
+                Log("守护进程已拉起 pid=" + (m.Success ? m.Groups[1].Value : "?"));
+                return;
+            }
+            Log("守护进程拉起失败：" + (resp == "" ? "(无响应)" : resp));
+            if (IsHandleCreated && !IsDisposed)
+                BeginInvoke((Action)(() => _tray.ShowBalloonTip(3000, "ResinLoop",
+                    "定时巡检未能启动，请到「定时任务」页手动启动", ToolTipIcon.Warning)));
+        }
+
         private static bool TcpFree(int port)
         {
             try
@@ -246,6 +324,21 @@ namespace ResinLoop
                 return true;
             }
             catch { return false; }
+        }
+
+        /// <summary>托盘「立即巡检」：经 /api/daemon/run-now 让 daemon 跑一轮，不阻塞 UI。</summary>
+        private void RunManualCheck()
+        {
+            if (!IsHandleCreated || IsDisposed) return;   // D0 守卫：壳已不在就不发请求
+            Task.Run(() =>
+            {
+                string resp = HttpJson(_port, "/api/daemon/run-now", "POST", "{}", 5000);
+                bool ok = Regex.IsMatch(resp, "\"ok\"\\s*:\\s*true");
+                if (IsHandleCreated && !IsDisposed)
+                    BeginInvoke((Action)(() => _tray.ShowBalloonTip(3000, "ResinLoop",
+                        ok ? "已开始巡检" : "巡检未能启动，请打开控制台查看",
+                        ok ? ToolTipIcon.Info : ToolTipIcon.Warning)));
+            });
         }
 
         // ------------------------------------------------------------ 生命周期

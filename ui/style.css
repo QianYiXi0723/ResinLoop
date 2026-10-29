@@ -11,7 +11,7 @@
     --focus-ring:rgba(74,155,232,.45);
     --card-shadow:inset 0 1px 0 rgba(255,255,255,0.04), 0 2px 8px rgba(0,0,0,0.35);
     --card-border:1px solid transparent;
-    --ring-shadow:0 0 0 1px var(--accent-blue), 0 4px 12px rgba(0,0,0,0.35);
+    --ring-shadow:inset 0 0 0 1px var(--accent-blue), 0 4px 12px rgba(0,0,0,0.35);
     --border-subtle:rgba(255,255,255,0.06); --border-strong:rgba(255,255,255,0.12);
     --text-secondary:#a0a0a0; --text-tertiary:#666666;
     --bg:var(--bg-base); --surface:var(--bg-card); --subtle:var(--bg-sub); --fg:#e8e8e8;
@@ -30,7 +30,7 @@
     --focus-ring:rgba(11,103,194,.30);
     --card-shadow:0 2px 8px rgba(0,0,0,0.04);
     --card-border:1px solid #eaeaea;
-    --ring-shadow:0 0 0 1px var(--accent-blue), 0 4px 12px rgba(0,0,0,0.05);
+    --ring-shadow:inset 0 0 0 1px var(--accent-blue), 0 4px 12px rgba(0,0,0,0.05);
     --border-subtle:rgba(0,0,0,0.08); --border-strong:rgba(0,0,0,0.14);
     --text-secondary:#5c636e; --text-tertiary:#9aa1ab;
     --bg:var(--bg-base); --surface:var(--bg-card); --subtle:var(--bg-sub); --fg:#1b1f24;
@@ -67,9 +67,10 @@
   .nav button.on .nav-ico{color:var(--nav-on-fg)}
   .side-foot{margin-top:auto;padding:10px 8px 4px;
         font-size:11px;color:var(--muted)}
-  .theme-btn{display:block;width:100%;text-align:left;padding:0;border:none;
-        background:transparent;color:var(--muted);font-size:11px;cursor:pointer}
-  .theme-btn:hover{color:var(--fg)}
+  .theme-btn{display:flex;align-items:center;gap:6px;width:100%;
+        text-align:left;padding:3px 0;border:none;background:transparent;
+        color:var(--muted);font-size:11px;cursor:pointer}
+  .theme-btn:hover,.theme-btn:focus-visible{color:var(--fg)}
   .main{flex:1;min-width:0;width:100%;padding:24px 32px;
         display:flex;flex-direction:column;min-height:0;overflow-y:auto}
   @media (max-width:760px){
@@ -102,7 +103,7 @@
      单靠 flex:1 在部分嵌套下拿不到确定高度，minmax(0,1fr) 行就塌成内容高 */
   #tab-history.on{align-items:stretch;flex:1;min-height:0;
                   height:calc(100% - 16px);
-                  grid-template-rows:auto minmax(0,1fr)}
+                  grid-template-rows:auto minmax(0,1fr) minmax(0,1.3fr)} /* 第3卡原为隐式auto行：三张 .card.s12 顺序自动放置、模板只声明两行，不受约束按内容撑开是原始挤压病灶之一，本行把它纳入受控分配即为修复 */
 
   /* ---------- 卡片（Bento 基础卡）：--bg-card + 微光描边 + 写死阴影 ---------- */
   /* 卡片骨架：一律弹性列 + 可压缩。吸收剩余高度 / 卡内滚动都依赖这三行 */
@@ -112,7 +113,12 @@
         transition:box-shadow .2s ease, background-color .2s ease, padding 400ms ease-out}
   /* ---------- 交互规范（三态统一，box-shadow 描边零布局抖动） ----------
      Hover 悬浮 / Active 点击保持 / Focus-within 输入聚焦 → 同一蓝色描边 */
-  .card:hover, .card.active, .card:focus-within{box-shadow:var(--ring-shadow)}
+  /* 描边用 outline 而非 inset box-shadow：卡片标题条(.card-head)有不透明底色，
+     inset 阴影画在子元素之下会被标题条整段盖掉（顶部+两侧上半截「蓝框不完整」）。
+     outline 绘制在子元素之上、不参与布局；offset:-1px 内收，避免被祖先 overflow 裁切。 */
+  .card:hover, .card.active, .card:focus-within{
+    outline:1px solid var(--accent-blue);outline-offset:-1px;
+    position:relative;z-index:60}
   /* 控件（图标/按钮/行头）：Hover 不描边，只做背景微变 */
   .btn,.mini,.modal-x,.chip button,.act-del,.set-head,.console-head,
   .ch-item,.nav button,.theme-btn,.sel-card,.act-drawer-handle{
@@ -178,7 +184,11 @@
      内容超高可滚动；底部留 20px 呼吸间距，图例不贴边框 */
   #tab-history > .card:last-child > div:not(.card-head){flex:1;min-height:0;
     display:flex;flex-direction:column;
-    overflow-y:auto;padding-bottom:20px}
+    overflow-y:auto;padding:6px 10px 20px;margin:-6px -10px 0}
+  /* 三卡时代：游戏概览改为卡内滚动 —— week-card 插入后概览卡被 minmax(0,1fr)
+     压缩，迷你卡（含体力条）溢出画进「最近 7 天」卡；改为卡内滚动后溢出归零 */
+  #h-stats{flex:1 1 auto;min-height:0;overflow-y:auto;
+           padding:6px 10px 20px;margin:-6px -10px 0;scrollbar-gutter:stable}
   .gdot{display:inline-block;width:8px;height:8px;border-radius:50%;
         margin-right:8px;vertical-align:1px}
   .pill{display:inline-block;padding:2px 12px;border-radius:999px;
@@ -346,7 +356,32 @@
   @media (max-width:520px){ .row{grid-template-columns:1fr} }
   .row3{display:grid;grid-template-columns:1fr auto;gap:10px;margin-top:10px;
         align-items:stretch}
+  .row3.has-spin{grid-template-columns:1fr auto auto}
   .row3 .btn,.row3 .mini{border-radius:4px}
+  /* 时间微调 ▲▼：与输入框同高的两格小按钮 */
+  .spin{display:flex;flex-direction:column;gap:3px;justify-content:center}
+  .spin-btn{width:28px;height:19px;padding:0;font-size:9px;line-height:1;
+            display:flex;align-items:center;justify-content:center;
+            background:var(--btn-bg);color:var(--muted);
+            border:1px solid var(--line);border-radius:4px;cursor:pointer}
+  .spin-btn:hover{background:var(--btn-hover);color:var(--brand)}
+  .spin-btn:active{transform:translateY(1px)}
+  /* 添加时间点确认弹窗：大号时间 + ▲▼ 微调 */
+  .addtime-body{padding:20px 22px 6px}
+  .addtime-stepper{display:flex;align-items:center;justify-content:center;gap:14px}
+  /* 弹窗里的时间是可输入的框（全局 input[type=time] 是 width:100%/42px，这里要压回来） */
+  .addtime-body input.addtime-val{width:132px;height:46px;padding:0 8px;
+               text-align:center;font-size:26px;font-weight:700;letter-spacing:1px;
+               color:var(--fg);background:var(--bg-input);
+               border:1px solid var(--input-line);border-radius:6px;
+               font-family:ui-monospace,Consolas,monospace}
+  .addtime-body input.addtime-val:focus{outline:none;box-shadow:var(--ring-shadow)}
+  /* 弹窗里的时间框是手动输入 + ▲▼ 微调，不要浏览器原生的时钟图标（既占位又会在点按时
+     弹出系统时间选择器，干扰 ▲▼）。隐藏它，Firefox 本就没有这个图标，不影响。 */
+  .addtime-body input.addtime-val::-webkit-calendar-picker-indicator{display:none;-webkit-appearance:none;opacity:0;position:absolute}
+  .spin-btn.big{width:38px;height:32px;font-size:12px}
+  .addtime-body .hint{text-align:center;padding-top:12px}
+  #addtime-modal .toolbar{margin-top:6px}
   input[type=time],input[type=number]{width:100%;height:42px;padding:0 14px;
                    border-radius:6px;border:none;
                    background:var(--bg-input);color:var(--fg);
@@ -359,15 +394,19 @@
   .chip{display:inline-flex;align-items:center;gap:5px;background:var(--subtle);
         border-radius:3px;padding:2px 3px 2px 9px;
         font-size:12.5px;font-family:ui-monospace,Consolas,monospace}
+  .chip-time{cursor:pointer;border-radius:2px;padding:0 2px;margin-left:-2px}
+  .chip-time:hover{background:var(--hover);text-decoration:underline}
   .chip button{width:18px;height:18px;padding:0;border-radius:2px;background:transparent;
                color:var(--muted);border:none;font-size:14px;line-height:1;cursor:pointer}
   .chip button:hover{background:var(--err);color:#fff}
   .chip.empty{color:var(--muted);background:transparent;padding:2px 9px;font-family:inherit}
 
-  /* ---------- 规则行（定时与状态）：严格三段式 ----------
+  /* ---------- 设置行（定时与状态 B 卡）：严格三段式 ----------
      左图标 0 0 auto · 中文本 1 1 auto / min-width:0（单行省略）· 右开关 0 0 auto
-     列表限宽 720px：开关不会被推到卡片或屏幕最边缘 */
-  .rule-list{max-width:720px}
+     这里曾经限宽 720px：当时列表里放的是「时间段 + 游戏 + 开关」的规则行，
+     担心超宽屏把开关推到卡片最边缘。三卡重构后规则行已不在这张卡里，
+     容器里只剩四条宽手风琴行，限宽反而让它们在宽屏上只有 2/3 宽、右侧空一大块。
+     已取消限宽，宽度交回 .set-head 的 flex 自己撑满卡片。 */
   .set-item{border-radius:8px}
   .set-item + .set-item{margin-top:2px}
   .set-head{display:flex;align-items:center;gap:14px;padding:12px 16px;min-height:56px;
@@ -403,7 +442,10 @@
   }
 
   /* ---------- 24 小时标尺（提醒时间点打点） ---------- */
-  .ruler{position:relative;height:60px;margin:4px 12px 12px;min-width:0}
+  .ruler{position:relative;height:60px;margin:4px 12px 12px;min-width:0;cursor:crosshair;
+         touch-action:none;user-select:none;-webkit-user-select:none}
+  .ruler--dragging{cursor:grabbing}
+  .ruler--dragging .ruler-dot:not(.dragging){opacity:.35}
   .ruler-track{position:absolute;left:0;right:0;bottom:20px;height:4px;
                background:var(--line);border-radius:2px}
   .ruler-tick{position:absolute;bottom:0;transform:translateX(-50%);
@@ -411,13 +453,45 @@
               font-family:ui-monospace,Consolas,monospace}
   .ruler-tick::before{content:"";position:absolute;left:50%;bottom:100%;width:1px;
                       height:5px;background:var(--line)}
-  .ruler-dot{position:absolute;bottom:15px;transform:translateX(-50%);cursor:default}
+  .ruler-dot{position:absolute;bottom:15px;transform:translateX(-50%);
+             cursor:grab;touch-action:none}
+  /* 10px 的圆点太难抓：加一圈 30px 的透明命中区 */
+  .ruler-dot::after{content:"";position:absolute;left:50%;top:50%;width:30px;height:30px;
+                    transform:translate(-50%,-50%);border-radius:50%}
+  .ruler-dot.dragging{cursor:grabbing;z-index:3}
+  .ruler-dot.dragging::before{box-shadow:0 0 0 1.5px var(--brand),
+                              0 0 0 7px var(--focus-ring);transform:scale(1.25)}
+  .ruler-dot.dragging span{opacity:0}
+  .ruler-dot.sel::before{box-shadow:0 0 0 1.5px var(--brand),
+                         0 0 0 5px var(--focus-ring)}
+  .ruler-dot.sel span{text-decoration:underline}
   .ruler-dot::before{content:"";display:block;width:10px;height:10px;border-radius:50%;
                      background:var(--brand);border:2px solid var(--surface);
                      box-shadow:0 0 0 1.5px var(--brand)}
   .ruler-dot span{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);
                   margin-bottom:2px;font-size:11px;font-weight:700;color:var(--brand);
-                  font-family:ui-monospace,Consolas,monospace;white-space:nowrap}
+                  font-family:ui-monospace,Consolas,monospace;white-space:nowrap;
+                  transition:opacity .12s}
+  /* 拖动中跟手的时间气泡：大号等宽数字 + 竖向指示线，眼睛不用追小圆点。
+     --gx 是真实位置；气泡贴边时由 JS 再加 translateX 内推，线仍对准位置 */
+  .ruler-ghost{position:absolute;left:0;right:0;bottom:36px;height:0;
+               pointer-events:none;z-index:6}
+  .ruler-ghost b{position:absolute;bottom:0;left:var(--gx,50%);transform:translateX(-50%);
+                 display:inline-flex;align-items:baseline;gap:5px;white-space:nowrap;
+                 background:var(--brand);color:#fff;border-radius:4px;padding:4px 7px;
+                 font:700 13.5px/1 ui-monospace,Consolas,monospace;
+                 box-shadow:0 6px 16px rgba(0,0,0,.28)}
+  .ruler-ghost b em{font-style:normal;font-weight:400;font-size:9.5px;opacity:.82;
+                    letter-spacing:.2px}
+  .ruler-ghost::after{content:"";position:absolute;left:var(--gx,50%);top:0;width:1px;
+                      height:12px;background:var(--brand);opacity:.55}
+  .ruler-ghost.bad b{background:var(--err)}
+  .ruler-ghost.bad::after{background:var(--err);opacity:.75}
+  .ruler-dot.dragging.bad::before{background:var(--err);
+                                  box-shadow:0 0 0 1.5px var(--err),
+                                             0 0 0 7px rgba(220,80,80,.22)}
+  /* 拖到标尺外时全局保持抓取光标，且不选中页面文字 */
+  body.rl-dragging,body.rl-dragging *{cursor:grabbing!important;user-select:none!important}
   .ruler-empty{position:absolute;left:0;right:0;bottom:22px;text-align:center;
                font-size:11.5px;color:var(--muted)}
 
@@ -625,6 +699,7 @@
   .welcome .welcome-x{flex:none;width:22px;height:22px;padding:0;border:0;border-radius:4px;
            background:transparent;color:var(--muted);cursor:pointer;font-size:14px;line-height:1}
   .welcome .welcome-x:hover{background:var(--hover);color:var(--fg)}
+  .welcome[hidden]{display:none}
 
   /* ---------- 扫码登录区 ---------- */
   .stage{padding:18px;text-align:center}
@@ -668,7 +743,7 @@
   .pick-name small{color:var(--muted);font-size:11px;font-weight:400}
 
   #test-result{margin-top:4px;padding:8px 12px;font-size:12.5px}
-  .spin{display:inline-block;width:11px;height:11px;border:2px solid var(--line);
+  .spinner{display:inline-block;width:11px;height:11px;border:2px solid var(--line);
         border-top-color:var(--brand);border-radius:50%;animation:s .8s linear infinite;
         vertical-align:-1px;margin-right:4px}
   @keyframes s{to{transform:rotate(360deg)}}
@@ -730,13 +805,19 @@
   .acard-top{display:flex;align-items:center;gap:8px;min-width:0;
     background:var(--bg-head);margin:-14px -16px 0;padding:10px 16px 8px;
     border-radius:10px 10px 0 0}
-  .acard-top .act-icon{flex:none}
+  .acard-top .act-icon{flex:none;border-radius:6px;object-fit:cover}
+  /* 无图标时的文字占位：与真实图标同尺寸同圆角，避免两种形态形状不一致 */
+  .acard-top .act-icon.ph{display:inline-grid;place-items:center;
+    width:24px;height:24px;background:var(--subtle);font-size:11px}
   /* 抽屉里的已完成卡更矮更扁 */
   .act-drawer .acard{min-height:80px}
   /* 等高纪律：grid-auto-rows:1fr 让所有行同高；卡内 space-between 让标题/时间/进度各占其位 */
   @media (max-width:640px){ .act-grid > *{grid-column:1/-1} }
+  /* 图标与游戏名同一行垂直居中：行内基线对齐会把名字压到图标下半部，故用 flex。
+     省略号移到 .act-name（flex 容器的文字节点做不了 text-overflow） */
   .acard-top .act-game{flex:1;min-width:0;font-weight:600;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    display:flex;align-items:center;gap:8px}
+  .acard-top .act-name{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .acard-title{font-size:1.15em;font-weight:600;line-height:1.5;margin:0;
     overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;
     -webkit-box-orient:vertical;white-space:normal}
@@ -792,7 +873,10 @@
          display:flex;flex-direction:column;gap:10px;
          background:var(--bg-raise);box-shadow:var(--card-shadow);
          transition:box-shadow .2s ease, background-color .2s ease}
-  .gcard:hover, .gcard.active{box-shadow:var(--ring-shadow)}
+  /* 同 .card：outline 不受卡内不透明背景影响 */
+  .gcard:hover, .gcard.active{
+    outline:1px solid var(--accent-blue);outline-offset:-1px;
+    position:relative;z-index:60}
   .gcard-head{display:flex;align-items:center;gap:10px;min-width:0}
   .gcard-ico{width:40px;height:40px;border-radius:8px;object-fit:cover;flex:none}
   .gcard-ico.ph{display:grid;place-items:center;background:var(--subtle);
@@ -829,7 +913,7 @@
 
   /* ---------- 最近 7 天热力图（GitHub 式） ---------- */
   .heatmap{display:flex;flex-direction:column;gap:6px;width:100%;
-           flex:1 1 auto;min-height:0;
+           flex:1 0 auto;min-height:min-content;
            background:var(--bg-sub);border-radius:6px;padding:10px}
   .hm-row{display:grid;grid-template-columns:150px repeat(7,1fr);gap:6px;min-width:0;
           flex:1 1 auto;min-height:38px}
@@ -851,14 +935,22 @@
   .hm-cell.na, .hm-cell.na.wait{background:repeating-linear-gradient(135deg,
     var(--hover) 0 4px, transparent 4px 8px);color:var(--muted)}
   .hm-legend{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);
-    margin-top:8px;flex-wrap:wrap}
-  .hm-legend .hm-cell{min-height:18px;min-width:20px;padding:0 5px;font-size:10.5px}
+    margin-top:8px;flex-wrap:wrap;padding:0 10px}
+  .hm-legend .hm-cell{min-height:18px;min-width:20px;padding:0 5px;font-size:10.5px;
+    flex:0 0 auto}
 
   /* ---------- 通知绑定三区（邮箱客户端式） ----------
      第 1 行三卡拉伸吃满视口，最近推送整行贴底 —— 消灭右下黑色空洞 */
   #tab-notify.on{height:calc(100% - 16px);align-items:stretch;
                  grid-template-rows:minmax(0,1fr) auto}
   #tab-notify .stack > .card{flex:1 1 auto;min-height:0}
+  /* 单列（≤1000px）必须放在上面基础规则之后才生效（同权重看源码顺序）：
+     高度交还内容，由 .main 整页滚。否则固定高度 + minmax(0,1fr) 行会把首卡压成 0 高，
+     卡内元素溢出到卡片外面 —— 表现为渠道列表消失、勾选框夹在两张卡之间、保存按钮被盖住 */
+  @media (max-width:1000px){
+    #tab-notify.on{height:auto;grid-template-rows:none;align-items:start}
+    #tab-notify .stack > .card{flex:0 0 auto;min-height:auto}
+  }
   .stack{display:flex;flex-direction:column;gap:16px;min-width:0}
   .ch-list{display:flex;flex-direction:column;gap:8px}
   .ch-item{display:flex;align-items:center;gap:10px;padding:11px 12px;
@@ -878,9 +970,32 @@
   .ch-state{font-size:11px;color:var(--text-tertiary)}
   /* 编辑区输入框固定宽度，不拉满 */
   #ed-serverchan .field,#ed-qmsg .field{max-width:420px}
-  .recent{display:flex;flex-direction:column;font-size:11px;color:var(--muted);min-width:0}
-  .recent div{padding:6px 0;
+  /* 最近推送：固定高度格子（每条一格），容器内部滚动，不再把整页撑满 */
+  .recent{display:flex;flex-direction:column;gap:6px;font-size:11px;color:var(--muted);
+    min-width:0;max-height:352px;overflow-y:auto;padding-right:4px}
+  .recent .i-ok{color:var(--ok)}
+  .recent .i-no{color:var(--err)}
+  /* 一格 = 一条推送；高度写死，超出的正文被裁掉，只有真被裁的才显示箭头 */
+  .pv-item{position:relative;flex:none;height:58px;overflow:hidden;
+    background:var(--subtle);border-radius:8px;padding:8px 30px 8px 10px;
     font-family:ui-monospace,Consolas,monospace;word-break:break-all}
+  .pv-item.open{height:auto;max-height:220px;overflow-y:auto}
+  .pv-empty{padding:14px 2px;color:var(--muted)}
+  .pv-meta{line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* 折叠态正文只留一行；展开后放开 clamp，保留推送时的换行 */
+  .pv-body{margin-top:2px;opacity:.8;line-height:1.6;white-space:pre-line;
+    word-break:break-word;display:-webkit-box;-webkit-line-clamp:1;
+    -webkit-box-orient:vertical;overflow:hidden}
+  .pv-item.open .pv-body{display:block;-webkit-line-clamp:unset;overflow:visible}
+  /* 展开后标题行也放开，否则被省略的标题永远看不全 */
+  .pv-item.open .pv-meta{white-space:normal;overflow:visible;text-overflow:clip}
+  .pv-toggle{position:absolute;right:5px;top:6px;width:20px;height:20px;padding:0;
+    border:none;background:transparent;color:var(--muted);cursor:pointer;
+    border-radius:6px;font-size:12px;line-height:20px;display:none}
+  .pv-item.has-more .pv-toggle{display:block}
+  .pv-toggle:hover{background:var(--hover);color:var(--fg)}
+  .pv-toggle::before{content:"▾"}
+  .pv-item.open .pv-toggle::before{content:"▴"}
 
   /* ---------- 空状态 / Toast ---------- */
   .emptybox{padding:20px 12px;text-align:center;color:var(--muted);font-size:12.5px;line-height:1.8}
@@ -891,3 +1006,32 @@
          max-width:88vw;text-align:center}
   #toast.show{opacity:1;transform:translate(-50%,0)}
   #toast.err{background:var(--err);color:#fff}
+
+  /* ---------- ≤1099px：报表页回归文档流（小窗退出仪表盘高度链） ----------
+     大窗形态（KPI 吸顶、卡内滚动、三行受控分配）的原规则全部保留，此处仅覆盖；
+     回滚 = 删除本块。 */
+  @media (max-width:1099px){
+    #tab-history.on{flex:none;min-height:0;height:auto;
+                    grid-template-rows:none}
+    #h-stats{flex:0 0 auto;min-height:0;overflow-y:visible;
+             padding-bottom:0;scrollbar-gutter:auto}
+    #tab-history > .card:last-child > div:not(.card-head){
+      flex:0 0 auto;min-height:0;overflow-y:visible;padding-bottom:0}
+    .gcard-ico{display:none}
+    .gcard-name b{font-size:12.5px}
+    .gcard-streak b{font-size:18px}
+    .gcard{padding:10px 12px}
+    .gcard-tasks .tp-item{font-size:10.5px}
+    .hm-row{min-height:32px}
+  }
+
+  /* ---------- 刷新反馈：整页闪一下，表示页面已重新加载 ----------
+     每次加载都闪（见 app.js 的 rlFlashOnLoad），pointer-events:none 不挡点击；
+     动画结束由 JS 移除节点。系统关掉动效时也保留（改为瞬时不透明度收尾）。 */
+  #rl-flash{position:fixed;inset:0;z-index:99999;pointer-events:none;
+    background:var(--bg-base);opacity:0;
+    animation:rl-flash 340ms ease-out forwards}
+  @keyframes rl-flash{0%{opacity:.92}55%{opacity:.5}100%{opacity:0}}
+  @media (prefers-reduced-motion:reduce){
+    #rl-flash{animation:none;opacity:.5}
+  }
