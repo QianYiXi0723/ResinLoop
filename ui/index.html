@@ -211,7 +211,7 @@
       <details class="card" id="dev-card">
         <summary>
           <h2>🛡️ 设备伪装
-            <span class="q" data-tip="每台电脑首次启动会随机分配一台常见机型，互不重复；遇到风控提示时点「换一台设备」即可，也可以粘贴真机档案覆盖"></span>
+            <span class="q" data-tip="每台电脑首次启动会随机分配一台常见机型，之后固定不变。风控多数是出口网络被标记，换设备只在新装或长期异常时才有用；频繁更换会被当成陌生设备，反而更容易被拦"></span>
           </h2>
           <span class="spacer"></span>
           <span class="badge" id="dev-badge">读取中</span>
@@ -238,7 +238,7 @@
                 <button id="btn-dev-save" class="btn primary"
                         title="保存后需重新扫码，否则登录设备与查询设备不一致">保存并清空指纹缓存</button>
                 <button id="btn-dev-shuffle" class="btn"
-                        title="重新随机一台机型并生成新 OAID，旧指纹作废">换一台设备</button>
+                        title="重新随机一台机型并生成新 OAID，旧指纹作废；换完先稳定用几天，别连着换">换一台设备</button>
                 <button id="btn-dev-reset" class="btn sm" title="删掉手动粘贴的档案，回到随机机型">清除自定义</button>
               </div>
               <div class="hint" id="dev-current">正在读取当前设备档案…</div>
