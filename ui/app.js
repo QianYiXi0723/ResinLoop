@@ -389,9 +389,6 @@ function openPickModal(group){
   }).join('');
   document.getElementById('pick-title').textContent =
     '选择要登录的游戏 · ' + (PROVIDER_LABEL[group] || '');
-  document.getElementById('pick-note').textContent = group === 's'
-    ? '森空岛勾选多款时将依次弹出二维码，逐款扫码确认即可。'
-    : '一次扫码，登录凭证将写入所有勾选的游戏。';
   updatePickNext();
   document.getElementById('pick-modal').hidden = false;
 }
