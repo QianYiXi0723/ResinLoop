@@ -1,21 +1,33 @@
 @echo off
-setlocal enabledelayedexpansion
-chcp 936 >nul 2>&1
-title ResinLoop 日常巡查
-
 rem ============================================================
-rem  一键启动：守护进程 + 独立桌面窗口（不弹浏览器、不留黑框）
+rem  ResinLoop launcher (source mode) - zero lingering console.
 rem
-rem  做法：先在本窗口里把依赖检查完，然后以「最小化」方式重启自己，
-rem        原窗口立刻退出。桌面上不会出现黑框，最多任务栏闪一下。
-rem        首次运行要装依赖，那一次保持窗口可见（否则用户看不到进度）。
+rem  What changed vs the old version, and why:
+rem   * The old file relaunched itself as `start "" /min "%~f0" quiet`
+rem     and then waited with two `timeout` calls. That minimized
+rem     window sat on screen for ~5 seconds every launch, and could
+rem     hang forever when stdin was redirected (non-interactive
+rem     console / shortcut), which is the "black window never
+rem     closes" report. Both are gone: no self-relaunch, no timeout.
+rem   * Every child is started with pythonw.exe, never python.exe,
+rem     so no console is attached to daemon.py / app.py. If
+rem     pythonw.exe is missing we now stop with a clear error
+rem     instead of silently falling back to the console interpreter.
+rem   * The dependency check runs at most once: the result is cached
+rem     in logs\.deps_ok, so normal launches exit in milliseconds.
+rem     Delete that file to force a re-check (e.g. after edits to
+rem     requirements.txt).
+rem   * Keep this file ASCII-only (cmd.exe codepage safety).
 rem ============================================================
+setlocal
+chcp 65001 >nul 2>&1
+title ResinLoop
 
 set "DIR=%~dp0"
 if "%DIR:~-1%"=="\" set "DIR=%DIR:~0,-1%"
 cd /d "%DIR%" || goto :no_dir
 
-rem ---------- 1. 找到 Python ----------
+rem ---------- 1. locate python.exe ----------
 set "PYEXE="
 for /f "delims=" %%i in ('py -3 -c "import sys;print(sys.executable)" 2^>nul') do set "PYEXE=%%i"
 if not defined PYEXE (
@@ -29,62 +41,69 @@ if not defined PYEXE (
 )
 if not defined PYEXE goto :no_python
 
-rem pythonw.exe：后台运行，不显示黑窗口
+rem ---------- 2. pythonw.exe (mandatory: no console for children) ----------
 set "PYW="
 for %%d in ("%PYEXE%") do set "PYW=%%~dpdpythonw.exe"
-if not exist "%PYW%" set "PYW=%PYEXE%"
+if not exist "%PYW%" goto :no_pythonw
 
-rem ---------- 2. 依赖自检 ----------
+if /i "%~1"=="check" (
+    echo python  : %PYEXE%
+    echo pythonw : %PYW%
+    echo workdir : %DIR%
+    echo marker  : %DIR%\logs\.deps_ok
+    exit /b 0
+)
+
+rem ---------- 3. dependency check (cached, once) ----------
+if not exist "logs" mkdir "logs"
+if exist "logs\.deps_ok" goto :launch
+
+echo [1/2] First run: checking dependencies...
 "%PYEXE%" -c "import requests, qrcode, PIL, pystray, webview" >nul 2>&1
 if errorlevel 1 goto :install
-
-rem 依赖齐全 -> 切最小化窗口继续，本窗口立即关闭
-if /i "%~1"=="quiet" goto :launch
-start "" /min "%~f0" quiet
-exit /b 0
+> "logs\.deps_ok" echo ok
+goto :launch
 
 :install
-echo [1/3] 首次运行，正在安装依赖，请稍候...
+echo [1/2] Installing dependencies (first run only)...
 "%PYEXE%" -m pip install -r requirements.txt --disable-pip-version-check
 if errorlevel 1 goto :pip_fail
-echo.
-echo 依赖安装完成，正在启动...
-if /i "%~1"=="quiet" goto :launch
-start "" /min "%~f0" quiet
-exit /b 0
+> "logs\.deps_ok" echo ok
 
-rem ---------- 3. 守护进程 + 桌面窗口 ----------
+rem ---------- 4. daemon + desktop window (both pythonw = no console) ----------
 :launch
-echo [2/3] 启动守护进程...
 start "" "%PYW%" daemon.py
-
-rem 给守护进程一点时间写 pid / 心跳，控制台一打开就能看到"运行中"
-timeout /t 2 /nobreak >nul 2>&1
-
-echo [3/3] 启动控制台窗口...
 start "" "%PYW%" app.py
-
-timeout /t 3 /nobreak >nul 2>&1
 exit /b 0
 
 :no_dir
-echo [错误] 无法进入目录：%DIR%
+echo [ERROR] cannot enter directory: %DIR%
 pause
 exit /b 1
 
 :no_python
 echo.
-echo [错误] 没有找到 Python。
-echo 请先安装 Python 3.10 或更高版本，安装时务必勾选 "Add python.exe to PATH"。
-echo 下载地址：https://www.python.org/downloads/
+echo [ERROR] Python not found.
+echo         Install Python 3.10+ and tick "Add python.exe to PATH".
+echo         Download: https://www.python.org/downloads/
+echo.
+pause
+exit /b 1
+
+:no_pythonw
+echo.
+echo [ERROR] pythonw.exe not found next to:
+echo         %PYEXE%
+echo         Reinstall Python (pythonw.exe ships with it) or use dev.bat.
 echo.
 pause
 exit /b 1
 
 :pip_fail
 echo.
-echo [错误] 依赖安装失败，请检查网络后重试。
-echo 也可以在本目录手动执行：
-echo     "%PYEXE%" -m pip install -r requirements.txt
+echo [ERROR] Dependency installation failed.
+echo         Run this manually to see the full output:
+echo             "%PYEXE%" -m pip install -r requirements.txt
+echo.
 pause
 exit /b 1
