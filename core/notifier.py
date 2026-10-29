@@ -56,19 +56,24 @@ _PUSH_WRITE_LOCK = threading.Lock()
 
 
 def record_push_history(
-    channel: str, ok: bool, message: str = "", at: Optional[datetime] = None
+    channel: str, ok: bool, message: str = "", at: Optional[datetime] = None,
+    title: str = "", body: str = "",
 ) -> None:
     """每次**真实**推送（成功/失败都算）追加一条结构化记录。
 
     「最近推送」直接读这份 json，不再解析纯文本日志 ——
     console 与 daemon 的推送日志分别落在 desktop.log / dailycheck.log，
     按文件捞日志的前端永远筛不中，这就是"最近没有推送记录"bug 的根源。
+    title 是本次推送的标题、body 是正文预览（截 300 字符），前端拿它们当主要内容；
+    老记录 / 日志补录两者皆无，前端回退到 message。
     """
     entry = {
         "ts": (at or datetime.now()).strftime("%Y-%m-%d %H:%M:%S"),
         "channel": str(channel or ""),
         "ok": bool(ok),
         "message": str(message or "")[:160],
+        "title": str(title or "")[:160],
+        "body": str(body or "")[:300],
     }
     with _PUSH_WRITE_LOCK:
         try:
@@ -734,5 +739,6 @@ def push_all(
         results.append(result)
         if not dry_run:
             # 成功/失败都落一条结构化记录（data/push_history.json），「最近推送」直接读
-            record_push_history(result.channel, result.ok, result.message)
+            record_push_history(result.channel, result.ok, result.message,
+                                title=title, body=body)
     return results

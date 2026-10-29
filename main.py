@@ -427,6 +427,8 @@ def _query_account(account, provider: str) -> GameStatus:
     """
     import logging
 
+    from core.mihoyo_api import MiyousheAuthError
+
     logger = logging.getLogger("dailycheck.main")
     try:
         querier = get_querier(account.game, provider=provider)
@@ -442,6 +444,16 @@ def _query_account(account, provider: str) -> GameStatus:
             game_name=account.game_name,
             nickname=account.nickname,
             error=str(exc),
+            cred_kind="other",
+        )
+    except MiyousheAuthError as exc:
+        logger.error("%s 凭证失效：%s", account.game_name, exc)
+        return GameStatus(
+            game_id=account.game,
+            game_name=account.game_name,
+            nickname=account.nickname,
+            error=str(exc),
+            cred_kind="auth",
         )
     except Exception as exc:  # 兜底，绝不让查询异常打断整轮
         logger.exception("%s 查询异常", account.game_name)
@@ -450,6 +462,9 @@ def _query_account(account, provider: str) -> GameStatus:
             game_name=account.game_name,
             nickname=account.nickname,
             error=f"查询异常：{exc}",
+            cred_kind=("auth" if ("retcode=10001" in str(exc) or "retcode=-100" in str(exc)
+                                  or "retcode=1034" in str(exc) or "retcode=5003" in str(exc)
+                                  or "retcode=10041" in str(exc)) else "other"),
         )
 
 
@@ -554,6 +569,23 @@ def collect_statuses(config: AppConfig) -> List[GameStatus]:
     return statuses
 
 
+def _active_notifiers(push_cfg):
+    """构建本轮可用通道：滤掉处于回压静默期的通道。静默只影响「是否发送」，
+    绝不从 config.push 里删除任何通道。"""
+    import logging
+
+    from core import push_guard
+
+    logger = logging.getLogger("dailycheck.main")
+    notifiers = build_notifiers(push_cfg)
+    active = [n for n in notifiers if not push_guard.is_muted(n.name)]
+    if len(active) != len(notifiers):
+        logger.warning("推送通道回压：%d/%d 可用", len(active), len(notifiers))
+    if not notifiers:
+        logger.warning("未配置任何推送通道，本轮不推送")
+    return active
+
+
 def run_once(config: AppConfig, dry_run: bool = False) -> int:
     """跑一轮完整检查：查询 -> 判断 -> 推送 -> 返回退出码。
 
@@ -566,6 +598,31 @@ def run_once(config: AppConfig, dry_run: bool = False) -> int:
 
     # 1) 查询
     statuses = collect_statuses(config)
+
+    # 1.2) 凭证健康记账：成功/失败都记；连续 >=2 次 auth 失败且 24h 内未提醒过 → 独立提醒
+    #      key = "<uid>:<game_id>"（与 logs/mihoyo_binding.json 语义对齐）；
+    #      米游社取不到 uid 的账号（森空岛/空凭证）退回昵称，再退回序号。
+    #      账号配对按下标：collect_statuses 承诺结果按 accounts 顺序回填，
+    #      同 game 多账号也各记各的账（字典按 game 折叠会互相覆盖）。
+    from core import cred_health, push_guard
+
+    cred_alerts = []
+    accounts = config.enabled_accounts
+    for idx, status in enumerate(statuses):
+        account = accounts[idx] if idx < len(accounts) else None
+        key = f"#{idx}:{status.game_id}"
+        if account is not None:
+            try:
+                from core.mihoyo_api import extract_credentials
+
+                _ltuid, _ltoken, uid, _server, _cookie = extract_credentials(account)
+                key = f"{uid}:{status.game_id}"
+            except Exception:  # noqa: BLE001 - 非米游社凭证取不到 uid，退回昵称兜底
+                key = f"{account.nickname or '#' + str(idx)}:{status.game_id}"
+        alert = cred_health.record(key, not status.error,
+                                   kind=status.cred_kind or ("other" if status.error else ""))
+        if alert:
+            cred_alerts.append(alert)
 
     # 1.5) 活动缓存：每天最多真正请求一次（20 小时 TTL），失败沿用旧缓存。
     #      活动列表变化很慢，绝不跟着每轮检查去打接口。
@@ -624,15 +681,40 @@ def run_once(config: AppConfig, dry_run: bool = False) -> int:
 
     push_results = []
     if alert:
-        notifiers = build_notifiers(config.push)
+        notifiers = _active_notifiers(config.push)
         if not notifiers:
-            logger.warning("push.channels 里没有可用通道，本次不推送")
+            logger.warning("所有推送通道均在静默期内，本轮不推送")
         else:
             title, body = report.to_push_payload()
             logger.info("推送标题：%s", title)
             push_results = push_all(notifiers, title, body, dry_run=dry_run)
             for result in push_results:
                 logger.info("推送结果 %s", result)
+            if not dry_run:
+                for result in push_results:
+                    muted = push_guard.record(result.channel, result.ok)
+                    if muted:
+                        logger.warning("[%s] 连续失败 5 次，已静默 6 小时", result.channel)
+
+    # 3.3) 凭证失效提醒：独立于日常推送门槛（不受 should_push 约束）；
+    #      dry-run 不真发；通道静默由 _active_notifiers 统一过滤（2B）。
+    if cred_alerts and not dry_run:
+        notifiers = _active_notifiers(config.push)
+        if not notifiers:
+            logger.warning("所有推送通道均在静默期内，本轮不推送凭证提醒")
+        else:
+            from core.config import KNOWN_GAMES
+
+            title = "凭证可能失效：" + "、".join(
+                KNOWN_GAMES.get(a["game_id"], a["game_id"]) for a in cred_alerts)
+            body = "已连续多次查询失败，请到「账号绑定」页重新扫码或更换网络。"
+            logger.info("凭证失效提醒：%s", title)
+            cred_results = push_all(notifiers, title, body, dry_run=dry_run)
+            for result in cred_results:
+                logger.info("凭证提醒推送结果 %s", result)
+                muted = push_guard.record(result.channel, result.ok)
+                if muted:
+                    logger.warning("[%s] 连续失败 5 次，已静默 6 小时", result.channel)
 
     # 3.5) 活动提醒的去重记账：只有真的发出去了才记账，没发成下轮还能再试
     if alert and push_results and not dry_run and any(r.ok for r in push_results):

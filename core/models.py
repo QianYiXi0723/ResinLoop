@@ -72,6 +72,7 @@ class GameStatus:
     nickname: str = ""
     source: str = "mock"
     error: Optional[str] = None
+    cred_kind: Optional[str] = None    # "auth"：凭证类失败；"other"：网络/解析；成功为 None
 
     @property
     def display_name(self) -> str:

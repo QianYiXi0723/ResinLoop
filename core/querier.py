@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Type
 
 from .config import KNOWN_GAMES, AccountConfig
+from .history import GAME_DAY_OFFSET
 from .mihoyo_api import (
     MiyousheAuthError,
     MiyousheQueryError,
@@ -400,6 +402,42 @@ class MiyousheQuerier(BaseQuerier):
 # --------------------------------------------------------------------------- #
 
 
+class StaleSnapshotError(Exception):
+    """森空岛返回的是「上次登录时的快照」，且快照早于今日 04:00 日界。
+
+    这种快照不能当作"今日进度"：2026-10-30 07:26 实测，
+    ``status.lastOnlineTs`` = 10-29 22:14（之后再没登录过游戏），
+    而 ``routine.daily`` 仍原样返回 ``10/10`` —— 那是**前一天**的完成状态，
+    理智同样停在快照时刻（25/205，实际早已回满）。
+    把它当"今日已完成"就是骗人，所以整款游戏按"数据不可用"处理。
+    """
+
+
+def _stale_snapshot_reason(data: Dict[str, Any]) -> Optional[str]:
+    """快照陈旧时返回给用户看的原因；新鲜 / 字段缺失返回 None。
+
+    判据：``status.lastOnlineTs`` 早于"今日 04:00"（走 ``GAME_DAY_OFFSET``，
+    与 :func:`core.history.game_date_key` 同口径，禁止各处自行算日子）。
+    "现在"优先用服务端的 ``currentTs``，比本机时钟更可信。
+
+    字段缺失时**不判定**：宁可沿用旧行为，也不因为一个可选字段
+    把原本正常的查询打成失败。
+    """
+    now_ts = _optional_int(data, "currentTs")
+    online_ts = _optional_int(data, "status", "lastOnlineTs")
+    if not now_ts or not online_ts:
+        return None
+    reset_dt = (datetime.fromtimestamp(now_ts) - GAME_DAY_OFFSET).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ) + GAME_DAY_OFFSET
+    if online_ts >= int(reset_dt.timestamp()):
+        return None
+    return (
+        f"游戏数据未更新（上次在线 {datetime.fromtimestamp(online_ts):%m-%d %H:%M}），"
+        "无法确认今日进度"
+    )
+
+
 class SklandQuerier(BaseQuerier):
     """森空岛查询器（内部 provider="skland"，跟随任意主 provider 自动挂载）。
 
@@ -423,6 +461,18 @@ class SklandQuerier(BaseQuerier):
             )
         try:
             tasks = self._fetch_game(account)
+        except StaleSnapshotError as exc:
+            # 快照过期**不是**查询失败：凭证、网络、解析都没问题，
+            # 只是游戏里今天还没刷新。标成该游戏数据不可用（ok=False），
+            # 于是 finished=False、unfinished_tasks 为空 ——
+            # 既不会冒充"今日已完成"，也不会误报"未完成"去推送/记漏。
+            return GameStatus(
+                game_id=account.game,
+                game_name=account.game_name,
+                nickname=account.nickname,
+                source=self.source,
+                error=str(exc),
+            )
         except (SklandAuthError, SklandQueryError):
             raise
         except Exception as exc:
@@ -477,6 +527,10 @@ class SklandQuerier(BaseQuerier):
         if account.game == "arknights":
             uid = require_str(binding, "uid")
             data = get_arknights_player_info(credential["cred"], credential["token"], uid)
+            # 森空岛给的是"上次登录时的快照"，跨过 04:00 日界就不能当今日进度用
+            reason = _stale_snapshot_reason(data)
+            if reason:
+                raise StaleSnapshotError(reason)
             return self.parse_arknights(data)
 
         role_id = str(role.get("roleId") or "")
