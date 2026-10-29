@@ -483,13 +483,17 @@ function refreshNotice(){
 function renderDevice(d){
   if (!d.ok) { toast(d.message || '读取设备档案失败', true); return; }
   const p = d.profile || {};
-  document.getElementById('dev-badge').textContent = d.custom ? '自定义档案' : '默认档案';
+  const label = d.label || '';
+  document.getElementById('dev-badge').textContent =
+    d.custom ? '真机档案' : (label || '随机机型');
   document.getElementById('dev-badge').className = 'badge ' + (d.custom ? 'ok' : '');
   document.getElementById('dev-current').innerHTML =
     '当前设备：<b>' + (p.brand || '?') + ' ' + (p.model || '?') + '</b>' +
     ' · Android ' + (p.os_version || '?') +
     ' · OAID <code>' + (p.oaid || '?') + '</code>' +
     ' · 指纹缓存' + (d.cache_exists ? '存在' : '<b>已清空</b>');
+  const resetBtn = document.getElementById('btn-dev-reset');
+  if (resetBtn) resetBtn.hidden = !d.custom;
 
   const apk = d.apk || {};
   const qrBox = document.getElementById('apk-qr');
@@ -655,14 +659,32 @@ async function saveDevice(){
 }
 
 async function resetDevice(){
-  if (!confirm('恢复内置默认设备档案？恢复后需要重新扫码。')) return;
+  if (!confirm('删除手动粘贴的设备档案，回到随机机型？删掉后需要重新扫码。')) return;
   try {
     const d = await postJSON('/api/device/reset', {});
     if (!d.ok) { toast(d.message || '恢复失败', true); return; }
     renderDevice(d);
-    toast(d.message || '已恢复默认');
+    toast(d.message || '已切回随机设备');
   } catch (e) {
     toast('恢复失败：' + e, true);
+  }
+}
+
+async function shuffleDevice(){
+  if (!confirm('换一台设备？会换掉机型和 OAID，旧指纹作废，下次查询用新的。')) return;
+  const btn = document.getElementById('btn-dev-shuffle');
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = '切换中…';
+  try {
+    const d = await postJSON('/api/device/shuffle', {});
+    if (!d.ok) { toast(d.message || '换设备失败', true); return; }
+    renderDevice(d);
+    const p = d.profile || {};
+    toast('已换到 ' + (p.brand || '') + ' ' + (p.model || '') + (d.label ? '（' + d.label + '）' : ''));
+  } catch (e) {
+    toast('换设备失败：' + e, true);
+  } finally {
+    btn.disabled = false; btn.textContent = old;
   }
 }
 
@@ -1300,6 +1322,7 @@ async function controlDaemon(action){
 document.getElementById('btn-daemon-start').addEventListener('click', function(){ controlDaemon('start'); });
 document.getElementById('btn-daemon-stop').addEventListener('click', function(){ controlDaemon('stop'); });
 document.getElementById('btn-dev-save').addEventListener('click', saveDevice);
+document.getElementById('btn-dev-shuffle').addEventListener('click', shuffleDevice);
 document.getElementById('btn-dev-reset').addEventListener('click', resetDevice);
 
 

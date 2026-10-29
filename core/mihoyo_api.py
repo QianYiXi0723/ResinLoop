@@ -76,47 +76,108 @@ APP_VERSION = "2.102.1"
 # --------------------------------------------------------------------------- #
 #
 # 米游社按「设备指纹」判定风险：机型、系统版本、Build 号、OAID 必须自洽。
-# 默认档案是一台公开机型的通用参数；用户可以在网页「设备伪装」里粘贴自己手机
-# 导出的真实档案，覆盖到 logs/device_profile.json（该目录已被 .gitignore 排除）。
+# 出厂身份来自 DEVICE_PRESETS 随机分配（每台电脑不同，见 device_identity.json）；
+# 用户也可以在网页「设备伪装」里粘贴自己手机导出的真实档案，覆盖到
+# logs/device_profile.json（该目录已被 .gitignore 排除）。
+#
+# 历史说明：早期版本用固定的单台真机档案 + logs/device_oaid.txt 覆盖 OAID，
+# 那会让所有用户共用同一台设备。现在 OAID 每次分配身份时随机生成，
+# device_oaid.txt 不再读取（留着也不会生效）。
 
-#: OAID 默认值：随机生成的示例串，不是任何真机标识，仅参与 ext_fields 拼装。
-_DEFAULT_OAID = "4e8a1c73b95f2d06"
-
-#: logs/ 目录：真机档案与指纹缓存都放这里，不进版本库
+#: logs/ 目录：设备身份、指纹缓存与真机档案都放这里，不进版本库
 _LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
 
-#: 真机 OAID 的旧覆盖方式（单值），保留兼容
-_OAID_OVERRIDE_PATH = _LOGS_DIR / "device_oaid.txt"
-
-#: 完整设备档案的覆盖文件（网页「设备伪装」写入）
+#: 完整设备档案的覆盖文件（网页「设备伪装」写入，用户真机档案走这里）
 PROFILE_OVERRIDE_PATH = _LOGS_DIR / "device_profile.json"
 
-
-def _load_oaid() -> str:
-    """OAID：优先读本地私有覆盖文件，缺省返回示例值。"""
-    try:
-        value = _OAID_OVERRIDE_PATH.read_text(encoding="utf-8").strip()
-    except OSError:
-        return _DEFAULT_OAID
-    return value or _DEFAULT_OAID
+#: 自动分配的设备身份（首次运行随机挑机型后固化）。
+#: 与上面的「用户手动覆盖」分开存：手动覆盖优先，删掉它就回落到自动身份。
+IDENTITY_PATH = _LOGS_DIR / "device_identity.json"
 
 
-#: 默认设备档案 —— Redmi K80（24122RKC7C）的公开机型参数。
-#: 字段与 GsCore `generate_fake_fp` 的七个入参一一对应。
-DEFAULT_DEVICE_MODEL: Dict[str, str] = {
-    "brand": "Redmi",
-    "manufacturer": "Xiaomi",
-    "model": "24122RKC7C",
-    "device": "miro",
-    "device_type": "24122RKC7C",
-    "board": "sun",
-    "oaid": _DEFAULT_OAID,
-    "device_info": "Redmi/miro/miro:16/BP2A.250605.031.A3/OS3.0.305.0.WOMCNXM:user/release-keys",
-    "os_version": "16",
-    "sdk_version": "36",
-    "screen_size": "1440x3200",
-    "display": "miro_OS3.0.305.0.WOMCNXM",
-}
+#: 机型预设库 —— 首次运行随机挑一台，之后固定（固化在 logs/device_identity.json）。
+#: 每项只写「不能派生」的 8 个字段，device_info / display / sdk_version / manufacturer
+#: 全部由 _materialize_preset() 拼装，手写不出前后矛盾的环境。
+#: 全部是公开可查的真实机型，不含任何真机或用户隐私数据。
+DEVICE_PRESETS: Tuple[Dict[str, str], ...] = (
+    {
+        "label": "Xiaomi 14",
+        "brand": "Xiaomi",
+        "model": "23127PN0CC",
+        "device": "houji",
+        "board": "pineapple",
+        "android": "14",
+        "build_id": "UKQ1.231003.002",
+        "display_id": "OS1.0.26.0.UNCCNXM",
+        "screen_size": "1200x2670",
+    },
+    {
+        "label": "Redmi K70 Pro",
+        "brand": "Redmi",
+        "model": "23117RK66C",
+        "device": "manet",
+        "board": "kalama",
+        "android": "14",
+        "build_id": "UKQ1.231003.002",
+        "display_id": "OS1.0.12.0.UNKCNXM",
+        "screen_size": "1440x3200",
+    },
+    {
+        "label": "Redmi Note 12 Turbo",
+        "brand": "Redmi",
+        "model": "23049RAD8C",
+        "device": "marble",
+        "board": "taro",
+        "android": "13",
+        "build_id": "TKQ1.221114.001",
+        "display_id": "V14.0.6.0.TMRCNXM",
+        "screen_size": "1080x2400",
+    },
+    {
+        "label": "OnePlus 11",
+        "brand": "OnePlus",
+        "model": "PHK110",
+        "device": "salami",
+        "board": "kalama",
+        "android": "14",
+        "build_id": "UKQ1.230924.001",
+        "display_id": "R.16b1a8e-1",
+        "screen_size": "1440x3216",
+    },
+    {
+        "label": "Samsung Galaxy S23",
+        "brand": "samsung",
+        "model": "SM-S9110",
+        "device": "dm1q",
+        "board": "kalama",
+        "android": "14",
+        "build_id": "UP1A.231005.007",
+        "display_id": "S9110ZHS3CXAB",
+        "screen_size": "1080x2340",
+    },
+    {
+        "label": "Xiaomi 13",
+        "brand": "Xiaomi",
+        "model": "2211133C",
+        "device": "fuxi",
+        "board": "kalama",
+        "android": "14",
+        "build_id": "UKQ1.231003.002",
+        "display_id": "OS1.0.5.0.UMCCNXM",
+        "screen_size": "1080x2400",
+    },
+    {
+        "label": "Redmi K60",
+        "brand": "Redmi",
+        "model": "23013RK75C",
+        "device": "mondrian",
+        "board": "taro",
+        "android": "14",
+        "build_id": "UKQ1.231003.002",
+        "display_id": "OS1.0.6.0.UMNCNXM",
+        "screen_size": "1440x3200",
+    },
+)
 
 #: Android 大版本 -> API level：UA 与 ext_fields 里的 sdkVersion 必须对得上
 _ANDROID_SDK: Dict[str, str] = {
@@ -143,10 +204,50 @@ _MANUFACTURERS: Dict[str, str] = {
     "oneplus": "OnePlus",
     "realme": "realme",
     "samsung": "samsung",
+    "google": "Google",
     "meizu": "Meizu",
     "motorola": "motorola",
     "nokia": "HMD Global",
 }
+
+
+def _random_oaid() -> str:
+    """随机 16 位小写十六进制 —— 每次「换机」重新生成，避免所有安装共用一个值。"""
+    return "".join(random.choices("0123456789abcdef", k=16))
+
+
+def _materialize_preset(preset: Dict[str, str], oaid: str = "") -> Dict[str, str]:
+    """把机型预设的 8 个字段展开成 12 字段完整档案。
+
+    派生规则与 _fingerprint_parts() 互为逆运算，保证「写进去什么就拼出什么」：
+        device_info = brand/device/device:android/build_id/display_id:user/release-keys
+        display     = device_display_id
+        sdk_version = _ANDROID_SDK[android]
+
+    唯一例外是 device_type：米游社 App 上报的是营销型号（如 23127PN0CC），
+    不是 codename，所以它等于 model 而不是 device。
+    """
+    brand = preset["brand"]
+    device = preset["device"]
+    android = preset["android"]
+    build_id = preset["build_id"]
+    display_id = preset["display_id"]
+    return {
+        "brand": brand,
+        "manufacturer": _MANUFACTURERS.get(brand.lower(), brand),
+        "model": preset["model"],
+        "device": device,
+        "device_type": preset["model"],
+        "board": preset["board"],
+        "device_info": (
+            f"{brand}/{device}/{device}:{android}/{build_id}/{display_id}:user/release-keys"
+        ),
+        "os_version": android,
+        "sdk_version": _ANDROID_SDK.get(android, ""),
+        "screen_size": preset["screen_size"],
+        "display": f"{device}_{display_id}",
+        "oaid": oaid or _random_oaid(),
+    }
 
 
 def _fingerprint_parts(device_info: str) -> Dict[str, str]:
@@ -245,17 +346,92 @@ def normalize_device_profile(raw: Dict[str, Any]) -> Dict[str, str]:
     return {key: value for key, value in pairs.items() if value}
 
 
-def load_device_profile() -> Dict[str, str]:
-    """默认档案 <- OAID 覆盖 <- 完整档案覆盖（logs/device_profile.json）。"""
-    profile = dict(DEFAULT_DEVICE_MODEL)
-    profile["oaid"] = _load_oaid()
+def _read_identity_raw() -> Dict[str, Any]:
+    """读身份文件的原始 JSON（读不到返回空字典，不抛异常）。"""
+    try:
+        raw = json.loads(IDENTITY_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
 
+
+def _save_identity(label: str, profile: Dict[str, str]) -> None:
+    payload = {
+        "version": 1,
+        "label": label,
+        "created_at": int(time.time()),
+        "profile": profile,
+    }
+    try:
+        _LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = IDENTITY_PATH.with_name(IDENTITY_PATH.name + ".tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        tmp.replace(IDENTITY_PATH)
+    except OSError as exc:
+        logger.warning("设备身份写入失败（本次仍生效，下次会重新随机）：%s", exc)
+
+
+def create_identity(exclude_label: str = "") -> Dict[str, str]:
+    """随机挑一台机型固化为本机身份，返回完整档案。
+
+    exclude_label 非空时避开该机型 —— 「换一台」不会换到同一台上去。
+    """
+    pool = [p for p in DEVICE_PRESETS if p["label"] != exclude_label]
+    if not pool:
+        pool = list(DEVICE_PRESETS)
+    preset = random.choice(pool)
+    profile = _materialize_preset(preset)
+    _save_identity(preset["label"], profile)
+    logger.info(
+        "设备身份：%s（%s / Android %s）",
+        preset["label"],
+        preset["model"],
+        preset["android"],
+    )
+    return profile
+
+
+def identity_label() -> str:
+    """当前机型名：用户手动覆盖时为「自定义机型」，否则是预设 label。"""
+    if PROFILE_OVERRIDE_PATH.exists():
+        return "自定义机型"
+    return str(_read_identity_raw().get("label") or "")
+
+
+def load_device_profile() -> Dict[str, str]:
+    """用户覆盖 > 已固化身份 > 首次随机分配。
+
+    1. ``logs/device_profile.json`` —— 用户手动粘贴的真机档案，优先级最高
+    2. ``logs/device_identity.json`` —— 首次运行随机挑的机型，之后一直用这台
+    3. 都没有 —— 随机挑一台并固化，保证同一台电脑每次启动都是同一个身份
+       （每次启动都换机型会让 device_fp 漂移，反而更容易被风控盯上）
+    """
     if PROFILE_OVERRIDE_PATH.exists():
         try:
             stored = json.loads(PROFILE_OVERRIDE_PATH.read_text(encoding="utf-8"))
-            profile.update(normalize_device_profile(stored))
+            return normalize_device_profile(stored)
         except (OSError, ValueError) as exc:
             logger.warning("设备档案覆盖文件无效，已忽略：%s", exc)
+
+    profile = _read_identity_raw().get("profile")
+    if isinstance(profile, dict):
+        try:
+            return normalize_device_profile(profile)
+        except ValueError:
+            logger.warning("设备身份文件内容无效，将重新随机分配")
+
+    return create_identity()
+
+
+def shuffle_device_profile() -> Dict[str, str]:
+    """换一台设备：重新随机机型 + 新 OAID，并清掉旧 device_fp 缓存。
+
+    返回新档案。调用方负责 reload_device_profile() 让 UA 跟着刷新。
+    """
+    profile = create_identity(exclude_label=identity_label())
+    clear_device_cache()
     return profile
 
 
@@ -572,8 +748,9 @@ def _build_ext_fields(profile: Dict[str, str]) -> str:
     一次性报给 getFp，服务端才会签发"看起来像真机"的 device_fp。
     字段顺序、引号、数字/字符串类型都与 GsCore 完全一致（顺序错也可能被判定异常）。
 
-    与 GsCore 的唯一差别：机型相关的 8 个值改为读传入的 profile（默认就是
-    用户手机实测导出的 Redmi 24122RKC7C），而不是 GsCore 写死的一加 PHK110。
+    与 GsCore 的唯一差别：机型相关的 8 个值改为读传入的 profile
+    （来自 DEVICE_PRESETS 随机分配的身份，或用户手动粘贴的真机档案），
+    而不是 GsCore 写死的一加 PHK110。
     """
     random_data = random.randint(400000, 600000)
     random_data2 = random.randint(150000, 300000)
@@ -663,11 +840,11 @@ def generate_fake_fp(
     seed_id: Optional[str] = None,
     seed_time: Optional[str] = None,
 ) -> str:
-    """GsCore `generate_fake_fp` 的移植：用 DEVICE_MODEL 档案签发指纹。
+    """GsCore `generate_fake_fp` 的移植：用当前 DEVICE_MODEL 档案签发指纹。
 
     GsCore 原函数是把固定的七个机型参数传给 `generate_fp`；这里改为传整份
-    机型档案（默认是你手机实测导出的 Redmi 24122RKC7C），换手机只需改
-    DEVICE_MODEL 一处。
+    机型档案（DEVICE_MODEL 由 load_device_profile 决定：随机分配的身份或
+    用户手动粘贴的真机档案）。
     """
     return generate_fp(
         device_id=device_id,

@@ -924,6 +924,7 @@ def device_status() -> Dict[str, Any]:
     return {
         "ok": True,
         "custom": mihoyo_api.PROFILE_OVERRIDE_PATH.exists(),
+        "label": mihoyo_api.identity_label(),
         "profile": {
             "brand": profile.get("brand", ""),
             "model": profile.get("model", ""),
@@ -988,7 +989,24 @@ def reset_device_text() -> Dict[str, Any]:
 
     result = device_status()
     result["removed_cache"] = removed
-    result["message"] = "已恢复默认设备档案，请重新扫码"
+    result["message"] = "已切回随机设备，请重新扫码"
+    return result
+
+
+def shuffle_device() -> Dict[str, Any]:
+    """随机换一台设备：换机型 + 换 OAID，旧指纹缓存一并作废。"""
+    from core import mihoyo_api
+
+    mihoyo_api.shuffle_device_profile()   # 内部已清 device_fp 缓存
+    mihoyo_api.reload_device_profile()    # 让 UA 等缓存立刻跟上
+
+    result = device_status()
+    result["message"] = "已换一台设备，下次查询会用新指纹"
+    logger.info(
+        "设备已切换为 %s（%s）",
+        result["profile"]["model"],
+        result.get("label") or "未知",
+    )
     return result
 
 
@@ -1842,6 +1860,16 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("恢复默认设备档案失败")
                     self._json({"ok": False, "message": f"恢复失败：{exc}"}, 500)
+            return
+
+        if path == "/api/device/shuffle":
+            payload = self._read_json_body()
+            if payload is not None:
+                try:
+                    self._json(shuffle_device())
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("换设备失败")
+                    self._json({"ok": False, "message": f"换设备失败：{exc}"}, 500)
             return
 
         if path == "/api/schedule":

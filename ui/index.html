@@ -211,7 +211,7 @@
       <details class="card" id="dev-card">
         <summary>
           <h2>🛡️ 设备伪装
-            <span class="q" data-tip="米游社按设备指纹判断风险；用手机真实档案通过率最高，不填则用内置通用机型"></span>
+            <span class="q" data-tip="每台电脑首次启动会随机分配一台常见机型，互不重复；遇到风控提示时点「换一台设备」即可，也可以粘贴真机档案覆盖"></span>
           </h2>
           <span class="spacer"></span>
           <span class="badge" id="dev-badge">读取中</span>
@@ -232,12 +232,14 @@
             </div>
             <div class="dev-right">
               <textarea id="dev-text" class="dev-text" spellcheck="false"
-                placeholder='把「设备信息」App 复制出来的内容粘贴到这里，形如：
-{"deviceModel":"24122RKC7C","androidVersion":"16","deviceFingerprint":"...","oaid":"..."}'></textarea>
+                placeholder='可选：把「设备信息」App 复制出来的内容粘贴到这里，形如：
+{"deviceModel":"23127PN0CC","androidVersion":"14","deviceFingerprint":"...","oaid":"..."}'></textarea>
               <div class="toolbar">
                 <button id="btn-dev-save" class="btn primary"
                         title="保存后需重新扫码，否则登录设备与查询设备不一致">保存并清空指纹缓存</button>
-                <button id="btn-dev-reset" class="btn">恢复默认</button>
+                <button id="btn-dev-shuffle" class="btn"
+                        title="重新随机一台机型并生成新 OAID，旧指纹作废">换一台设备</button>
+                <button id="btn-dev-reset" class="btn sm" title="删掉手动粘贴的档案，回到随机机型">清除自定义</button>
               </div>
               <div class="hint" id="dev-current">正在读取当前设备档案…</div>
             </div>
