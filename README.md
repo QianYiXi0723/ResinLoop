@@ -382,13 +382,13 @@ save_config(cfg, "config.json")           # UTF-8、缩进 2、保留中文；�
 
 dailyNote 除了 DS 还强制校验**设备指纹**。本脚本的米游社请求层是按 **GsCore（`Genshin-bots/gsuid_core`）** 的 `gsuid_core/utils/api/mys/{base_request,tools,api}.py` 逐字移植的：
 
-1. **真机环境**：`getFp` 的 `ext_fields` 是 53 个字段的完整 Android Build 环境（**默认用你手机实测导出的档案**：Redmi 24122RKC7C / 机型代号 miro / 主板 sun / Android 16 / HyperOS 3.0.305.0 / OAID / 加速度计 / 陀螺仪 / 内存 / ROM / 运营商 / 电量 / 安装时间 …），字段名、顺序、字符串/数字类型与 GsCore `generate_fp` 完全一致；
-2. **请求头**：`x-rpc-app_version=2.102.1`、`x-rpc-client_type=5`、`X-Requested-With: com.mihoyo.hyperion`、UA 为 `Android 16; 24122RKC7C Build/BP2A.250605.031.A3`、`Referer/Origin: https://webstatic.mihoyo.com/`（尾斜杠也照抄）；
-3. **设备注册**：首次使用某设备时调 `deviceLogin` → `saveDevice`（通行证盐 DS，body 的 `device_name=Redmi24122RKC7C` / `os_version=36` / 19 位 `registration_id`），保证"注册设备 = 查询设备"；
+1. **真机环境**：`getFp` 的 `ext_fields` 是 53 个字段的完整 Android Build 环境（机型、Build 指纹、主板、屏幕分辨率、OAID、加速度计 / 陀螺仪读数、内存 / 存储容量、ROM 版本、运营商、电量、安装时间 …），字段名、顺序、字符串/数字类型与 GsCore `generate_fp` 完全一致。**机型不写死**：首次运行从内置的 7 款公开机型里随机挑一台（Xiaomi 14 / Xiaomi 13 / Redmi K70 Pro / Redmi K60 / Redmi Note 12 Turbo / OnePlus 11 / Samsung Galaxy S23），连同随机生成的 OAID 一起固化到 `logs/device_identity.json`，此后固定不变——每个人的环境都不一样，不存在「所有人共用一台设备」；
+2. **请求头**：`x-rpc-app_version=2.102.1`、`x-rpc-client_type=5`、`X-Requested-With: com.mihoyo.hyperion`、UA 由当前档案拼出（`Android <系统版本>; <型号> Build/<Build 号>`）、`Referer/Origin: https://webstatic.mihoyo.com/`（尾斜杠也照抄）；
+3. **设备注册**：首次使用某设备时调 `deviceLogin` → `saveDevice`（通行证盐 DS，body 的 `device_name=<品牌+型号>` / `os_version=<API level>` / 19 位 `registration_id`），保证"注册设备 = 查询设备"；
 4. **风控重试**（GsCore `_DEAD_CODE` 分支）：命中 `5003 / 10041 / 1034 / 10035` 时，自动追加 `x-rpc-challenge_game` / `x-rpc-page` / `x-rpc-tool-verison` 三个挑战头，重算 DS 后再试一次；
 5. **指纹缓存**：`logs/device_fp.json`，按「游戏 + UA + 机型 + OAID + 系统版本 + 代理」区分，任一变化自动重签，不会拿旧 IP 的指纹去查新 IP。
 
-> 换手机时只改一处：`core/mihoyo_api.py` 顶部的 `DEVICE_MODEL`（brand / model / device / board / oaid / device_info / os_version / sdk_version / screen_size / display），并按同样内容改 `USER_AGENT`。手机上用「设备信息」类 App 可以直接导出这些值。
+> 想换设备身份：网页「设备伪装」里的「换一台设备」按钮会换一款机型、重生成 OAID 并清掉旧指纹缓存；也可以把自己手机导出的完整档案粘进去覆盖（存 `logs/device_profile.json`，优先级高于随机身份）。两者都在 `.gitignore` 里，不会进版本库。
 
 #### 代理（换出口 IP，当前最有效的办法）
 
@@ -426,7 +426,7 @@ python main.py --probe-mihoyo
 
 > 历史排查记录：2026-10-26 先后试过 iOS/安卓/okhttp UA × client_type 2/5 × DS2 双盐 × 新旧指纹 × 完整 App 设备头，全部稳定 5003/10041；`getGameRecordCard` 返回 0、错误 UID 返回 10102，证明 Cookie / DS / 请求头全部有效，问题只在 dailyNote 的指纹校验。最终定位为**出口 IP 的指纹被标记**（与 Hutao 文档"同 IP 频繁交互会被封禁、无感验证无法绕过"一致），故引入代理支持。
 
-**2026-10-26 04:00 实测突破（当前已可用）**：把设备档案换成手机实测值（Redmi 24122RKC7C / Android 16）后：
+**2026-10-26 04:00 实测突破（当前已可用）**：把机型参数从「公共示例值」换成按真机结构拼出的完整档案（Android 16，Build / 主板 / 分辨率 / OAID 全部自洽）后：
 
 - 出口 IP 发生变化后，getFp 返回**全新指纹**（不再是此前被标记的那个），retcode 归一 0；
 - `deviceLogin=0`、`saveDevice=0`；
@@ -909,7 +909,7 @@ python main.py --force-alert   :: 强制发一条，验证推送通道本身通�
 
 **保存后必须重新扫码**：设备身份变了，旧 Cookie 对应的还是旧设备。
 
-> 这一步是可选的。不填就用内置的默认档案（Redmi K80 公开参数），也能跑。
+> 这一步是可选的。不填就用首次运行随机分配的公开机型档案，也能跑。
 >
 > `logs/device_profile.json` 已被 `.gitignore` 排除，不会进版本库。
 
