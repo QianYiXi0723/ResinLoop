@@ -355,22 +355,39 @@ def _read_identity_raw() -> Dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _update_identity(**fields: Any) -> Dict[str, Any]:
+    """合并字段写入 device_identity.json（原子写），保留既有键。
+
+    version / label / created_at / profile 与 device_id / aaid / vaid /
+    app_install_at / app_update_at 是平级键 —— 档案归档案，设备身份归身份。
+    """
+    with _IDENTITY_LOCK:
+        data = _read_identity_raw()
+        data.update(fields)
+        try:
+            _LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = IDENTITY_PATH.with_name(IDENTITY_PATH.name + ".tmp")
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            tmp.replace(IDENTITY_PATH)
+        except OSError as exc:
+            logger.warning("设备身份写入失败（本次仍生效，下次会重新随机）：%s", exc)
+        return data
+
+
 def _save_identity(label: str, profile: Dict[str, str]) -> None:
-    payload = {
-        "version": 1,
-        "label": label,
-        "created_at": int(time.time()),
-        "profile": profile,
-    }
-    try:
-        _LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = IDENTITY_PATH.with_name(IDENTITY_PATH.name + ".tmp")
-        tmp.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        tmp.replace(IDENTITY_PATH)
-    except OSError as exc:
-        logger.warning("设备身份写入失败（本次仍生效，下次会重新随机）：%s", exc)
+    """写基础四键（version/label/created_at/profile）。
+
+    走 _update_identity 的合并路径 —— device_id / aaid / vaid 等平级字段
+    不会被抹掉；create_identity 随后用 _update_identity 覆盖它们。
+    """
+    _update_identity(
+        version=1,
+        label=label,
+        created_at=int(time.time()),
+        profile=profile,
+    )
 
 
 def create_identity(exclude_label: str = "") -> Dict[str, str]:
@@ -384,6 +401,14 @@ def create_identity(exclude_label: str = "") -> Dict[str, str]:
     preset = random.choice(pool)
     profile = _materialize_preset(preset)
     _save_identity(preset["label"], profile)
+    now_ms = int(time.time() * 1000)
+    _update_identity(
+        device_id=str(uuid.uuid4()).lower(),
+        aaid=_generate_id(),
+        vaid=_generate_id(),
+        app_install_at=now_ms - 45 * 86400 * 1000,
+        app_update_at=now_ms - 7 * 86400 * 1000,
+    )
     logger.info(
         "设备身份：%s（%s / Android %s）",
         preset["label"],
@@ -398,6 +423,88 @@ def identity_label() -> str:
     if PROFILE_OVERRIDE_PATH.exists():
         return "自定义机型"
     return str(_read_identity_raw().get("label") or "")
+
+
+def identity_device_id() -> str:
+    """全局唯一安装级 device_id：无则从既有缓存认领/生成，并固化进身份文件。
+
+    双重检查锁：先无锁读（热路径），未命中再进锁迁移/生成。
+    """
+    did = str(_read_identity_raw().get("device_id") or "")
+    if did:
+        return did
+    with _IDENTITY_LOCK:
+        did = str(_read_identity_raw().get("device_id") or "")   # 双重检查
+        if did:
+            return did
+        did = _adopt_legacy_device_id()
+        _update_identity(device_id=did)
+        return did
+
+
+def _adopt_legacy_device_id() -> str:
+    """迁移：从 fp/绑定缓存里认领一个出现频次最高的已注册 device_id。
+
+    频次并列时取 fp 缓存 genshin 条目；两者皆无才生成新 uuid。
+    有意取舍：保留一个已注册设备、让其余成为孤儿 —— 比"三台全部重新生成"
+    更接近「一次签发、终身复用」，且全程零 getFp 调用。
+    """
+    fp_cache = _load_fp_cache()
+    bind_cache = _load_binding_cache()
+    counts: Dict[str, int] = {}
+    for entry in list(fp_cache.values()) + list(bind_cache.values()):
+        did = str((entry or {}).get("device_id") or "")
+        if did:
+            counts[did] = counts.get(did, 0) + 1
+    if not counts:
+        return str(uuid.uuid4()).lower()
+    best = max(counts.values())
+    tied = sorted(did for did, count in counts.items() if count == best)
+    genshin_id = str((fp_cache.get("genshin") or {}).get("device_id") or "")
+    if genshin_id in tied:
+        return genshin_id
+    return tied[0]
+
+
+def _identity_ids() -> Tuple[str, str]:
+    """(aaid, vaid)：缺失则生成并固化进身份文件（同一安装终身复用）。
+
+    整段收进 _IDENTITY_LOCK：首次并发调用时只有一个线程生成并落盘，
+    其余线程在锁内读到已落盘值 —— 消除"本次请求用了未落盘值"的瞬时不一致。
+    """
+    with _IDENTITY_LOCK:
+        data = _read_identity_raw()
+        aaid = str(data.get("aaid") or "")
+        vaid = str(data.get("vaid") or "")
+        if not aaid or not vaid:
+            aaid = aaid or _generate_id()
+            vaid = vaid or _generate_id()
+            _update_identity(aaid=aaid, vaid=vaid)
+        return aaid, vaid
+
+
+def _identity_app_times() -> Tuple[int, int]:
+    """(app_install_at, app_update_at) 毫秒；缺失按 created_at 确定性派生并固化。
+
+    基准一旦写入即恒定 —— appXxxTimeDiff 随真实时间单调递增（每次都声称
+    "刚刚安装"正是要修的语义错位）。保证 update >= install。
+    整段收进 _IDENTITY_LOCK：并发首调用共享同一次派生，杜绝基准漂移。
+    """
+    with _IDENTITY_LOCK:
+        data = _read_identity_raw()
+        install = int(data.get("app_install_at") or 0)
+        update = int(data.get("app_update_at") or 0)
+        if install and update and update >= install:
+            return install, update
+        created_ms = int(data.get("created_at") or 0) * 1000
+        now_ms = int(time.time() * 1000)
+        base = created_ms or now_ms
+        install = install or (base - 45 * 86400 * 1000)
+        update = update or (base - 7 * 86400 * 1000)
+        if update < install:
+            update = install
+        _update_identity(app_install_at=install, app_update_at=update)
+        return install, update
 
 
 def load_device_profile() -> Dict[str, str]:
@@ -432,6 +539,11 @@ def shuffle_device_profile() -> Dict[str, str]:
     """
     profile = create_identity(exclude_label=identity_label())
     clear_device_cache()
+    try:
+        _BINDING_CACHE_PATH.unlink()
+        logger.info("换机：已清理设备注册缓存，下次查询将重新注册")
+    except OSError:
+        pass   # 缓存本就不存在，无需清理
     return profile
 
 
@@ -754,18 +866,22 @@ def _build_ext_fields(profile: Dict[str, str]) -> str:
     """
     random_data = random.randint(400000, 600000)
     random_data2 = random.randint(150000, 300000)
-    time_diff = int(time.time() * 1000)
+    now_ms = int(time.time() * 1000)
+    aaid, vaid = _identity_ids()
+    install_at, update_at = _identity_app_times()
+    install_diff = str(now_ms - install_at)      # 保持字符串，类型不动
+    update_diff = now_ms - update_at             # 保持整数，类型不动
     return (
-        '{"proxyStatus":0,"isRoot":1,"romCapacity":"512",'
+        '{"proxyStatus":0,"isRoot":0,"romCapacity":"512",'
         '"deviceName":"私人手机",'
         f'"productName":"{profile["device"]}",'
         f'"romRemain":"491","hostname":"dg02-pool06-kvm82","screenSize":"{profile["screen_size"]}",'
-        f'"isTablet":0,"aaid":"{_generate_id()}","model":"{profile["model"]}",'
+        f'"isTablet":0,"aaid":"{aaid}","model":"{profile["model"]}",'
         f'"brand":"{profile["brand"]}","hardware":"qcom","deviceType":"{profile["device_type"]}",'
         '"devId":"REL","serialNumber":"unknown",'
-        f'"sdCapacity":{random_data},"buildTime":"1717740969000","buildUser":"root",'
-        f'"simState":5,"ramRemain":"{random_data2}","appUpdateTimeDiff":{time_diff},'
-        f'"deviceInfo":"{profile["device_info"]}","vaid":"{_generate_id()}",'
+        f'"sdCapacity":{random_data},"buildTime":"1717740969000","buildUser":"builder",'
+        f'"simState":5,"ramRemain":"{random_data2}","appUpdateTimeDiff":{update_diff},'
+        f'"deviceInfo":"{profile["device_info"]}","vaid":"{vaid}",'
         f'"buildType":"user","sdkVersion":"{profile["sdk_version"]}","ui_mode":"UI_MODE_TYPE_NORMAL",'
         '"isMockLocation":0,"cpuType":"arm64-v8a","isAirMode":0,"ringMode":1,'
         '"chargeStatus":1,'
@@ -777,7 +893,7 @@ def _build_ext_fields(profile: Dict[str, str]) -> str:
         f'"oaid":"{profile["oaid"]}","debugStatus":1,"ramCapacity":"{random_data}",'
         '"magnetometer":"27.1084x-48.5804x-24.8758",'
         f'"display":"{profile["display"]}",'
-        f'"appInstallTimeDiff":"{time_diff}","packageVersion":"2.20.2",'
+        f'"appInstallTimeDiff":"{install_diff}","packageVersion":"{APP_VERSION}",'
         '"gyroscope":"-0.02543317x0.005725792x0.003195791","batteryStatus":50,'
         f'"hasKeyboard":0,"board":"{profile["board"]}"}}'
     )
@@ -906,20 +1022,33 @@ def _get_device_info_locked(game_id: str) -> Tuple[str, str, str]:
 
     缓存条目同时记录 UA / 代理 / 机型档案：
       - 代理一变，出口 IP 就变了，必须重新签发指纹（getFp 按 IP 签发）；
-      - UA 或机型档案变了也要重签，否则服务端会看到"环境不一致"。
+      - UA 或机型档案变了也要重签，否则服务端会看到"环境不一致"；
+      - device_id 恒为全局身份（identity_device_id），迁移时只换 id 不换 fp。
     """
     cache = _load_fp_cache()
     entry = cache.get(game_id) or {}
     env_tag = _device_env_tag()
+    device_id = identity_device_id()
     if (
-        entry.get("device_id")
+        entry.get("device_id") == device_id
         and entry.get("device_fp")
         and all(entry.get(key) == value for key, value in env_tag.items())
     ):
         return entry["device_id"], entry["device_fp"], USER_AGENT
 
-    # GsCore 用 uuid4 小写作为 x-rpc-device_id
-    device_id = str(uuid.uuid4()).lower()
+    # 旧缓存迁移：device_id 换成全局身份，device_fp 原样保留（迁移零 getFp 调用）
+    if entry.get("device_fp"):
+        entry["device_id"] = device_id
+        entry.update(env_tag)
+        cache[game_id] = entry
+        _save_fp_cache(cache)
+        logger.info(
+            "%s 设备身份迁移：device_id=%s…（沿用原 device_fp，未重新签发）",
+            game_id, device_id[:8],
+        )
+        return device_id, entry["device_fp"], USER_AGENT
+
+    # 全新安装（无任何旧缓存）：按全局身份签发配套指纹
     device_fp = generate_fake_fp(device_id)
     cache[game_id] = {
         "device_id": device_id,
@@ -940,6 +1069,9 @@ def _get_device_info_locked(game_id: str) -> Tuple[str, str, str]:
 #: 雷区（服务器会看到"同一 IP 下的多台陌生设备"）。加锁后首线程签发、其余
 #: 线程命中缓存，与串行版行为完全一致。
 _DEVICE_LOCK = threading.RLock()
+#: 身份文件（device_identity.json）读写锁：device_id / aaid / vaid 的
+#: 认领、签发与迁移都是"读→判→写"，双重检查锁依赖它。
+_IDENTITY_LOCK = threading.RLock()
 
 
 def _device_env_tag() -> Dict[str, str]:
@@ -966,6 +1098,13 @@ def bind_device(
     「只登录某一款」时很关键：若把三款一起重签，那些仍挂在另一个米游社账号
     下的游戏会平白换一次设备身份，反而可能触发风控。
     """
+    global_id = identity_device_id()
+    if device_id != global_id:
+        logger.warning(
+            "扫码设备 %s… 已被全局身份 %s… 取代，按全局身份重签",
+            device_id[:8], global_id[:8],
+        )
+        device_id = global_id
     targets = tuple(games) if games else ("genshin", "starrail", "zzz")
     with _DEVICE_LOCK:   # 扫码重签与并行查询共用一把锁，避免指纹互相覆盖
         cache = _load_fp_cache()
@@ -1072,37 +1211,65 @@ def device_login_and_save(
     return results
 
 
+#: 设备注册并发纪律：绑定缓存文件读写串行；同 账号+游戏 的注册按 key 串行。
+_BINDING_FILE_LOCK = threading.Lock()
+_BINDING_LOCKS: Dict[str, threading.Lock] = {}
+_BINDING_LOCKS_GUARD = threading.Lock()
+
+
+def _binding_lock(cache_key: str) -> threading.Lock:
+    """取某 cache_key 专属的注册锁（无则创建；不同 key 不互相阻塞）。"""
+    with _BINDING_LOCKS_GUARD:
+        lock = _BINDING_LOCKS.get(cache_key)
+        if lock is None:
+            lock = threading.Lock()
+            _BINDING_LOCKS[cache_key] = lock
+        return lock
+
+
 def ensure_device_bound(
     ltuid: str, ltoken: str, device_id: str, device_fp: str, cookie: str = "", game_id: str = ""
 ) -> bool:
     """确保当前设备已注册到该米游社账号（每个 账号+游戏+设备+代理 只做一次）。
 
+    并发纪律：文件读写用 _BINDING_FILE_LOCK 串行（防互相覆盖），
+    同 账号+游戏 的注册用 per-key 锁串行（网络调用在文件锁外，不阻塞别的 key）。
     设备注册是"锦上添花"：失败只记警告，绝不阻断后续 dailyNote 查询。
     """
-    cache = _load_binding_cache()
     cache_key = f"{ltuid}:{game_id}" if game_id else str(ltuid)
-    entry = cache.get(cache_key) or {}
     proxy_tag = _PROXY or ""
-    if (
-        entry.get("device_id") == device_id
-        and entry.get("ok")
-        and entry.get("proxy") == proxy_tag
-    ):
-        return True
 
-    try:
-        results = device_login_and_save(ltuid, ltoken, device_id, device_fp, cookie=cookie)
-    except MiyousheQueryError as exc:
-        logger.warning("设备注册失败（不影响查询）：%s", exc)
-        return False
+    def _registered(cache: Dict[str, Any]) -> bool:
+        entry = cache.get(cache_key) or {}
+        return (
+            entry.get("device_id") == device_id
+            and entry.get("ok")
+            and entry.get("proxy") == proxy_tag
+        )
 
-    login_code = (results.get("login") or {}).get("retcode")
-    save_code = (results.get("save") or {}).get("retcode")
-    logger.info("设备注册结果：deviceLogin retcode=%s，saveDevice retcode=%s", login_code, save_code)
-    ok = login_code in (0, 200) and save_code in (0, 200)
-    cache[cache_key] = {"device_id": device_id, "ok": ok, "proxy": proxy_tag}
-    _save_binding_cache(cache)
-    return ok
+    with _BINDING_FILE_LOCK:
+        if _registered(_load_binding_cache()):
+            return True
+
+    with _binding_lock(cache_key):
+        with _BINDING_FILE_LOCK:
+            if _registered(_load_binding_cache()):   # 双重检查：等锁期间可能已被别线程注册
+                return True
+        try:
+            results = device_login_and_save(ltuid, ltoken, device_id, device_fp, cookie=cookie)
+        except MiyousheQueryError as exc:
+            logger.warning("设备注册失败（不影响查询）：%s", exc)
+            return False
+
+        login_code = (results.get("login") or {}).get("retcode")
+        save_code = (results.get("save") or {}).get("retcode")
+        logger.info("设备注册结果：deviceLogin retcode=%s，saveDevice retcode=%s", login_code, save_code)
+        ok = login_code in (0, 200) and save_code in (0, 200)
+        with _BINDING_FILE_LOCK:
+            cache = _load_binding_cache()   # 重读：等网络期间别的 key 可能已写盘
+            cache[cache_key] = {"device_id": device_id, "ok": ok, "proxy": proxy_tag}
+            _save_binding_cache(cache)
+        return ok
 
 
 # --------------------------------------------------------------------------- #

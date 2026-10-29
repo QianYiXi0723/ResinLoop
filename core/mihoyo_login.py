@@ -41,6 +41,7 @@ from .mihoyo_api import (
     bind_device,
     build_user_agent,
     generate_fake_fp,
+    identity_device_id,
     on_device_profile_change,
 )
 
@@ -374,9 +375,7 @@ def run_qr_login(timeout: int = DEFAULT_TIMEOUT) -> Dict[str, Any]:
     Raises:
         MiyousheLoginError: 任一步失败。
     """
-    import uuid
-
-    device_id = str(uuid.uuid4()).lower()  # 与 GsCore / dailyNote 请求头保持同一格式
+    device_id = identity_device_id()  # 全局唯一安装级设备：扫码/查询/注册三处共用
     session = create_qr(device_id)
     print(f"[1/4] 二维码会话已创建（设备 ID：{device_id[:8]}…）")
     render_qr(session["url"])
