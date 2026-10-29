@@ -2034,10 +2034,15 @@ function renderPushPreview(h){
       (c.unfinished_tasks ? '（漏 ' + c.unfinished_tasks + ' 项）' : ''));
   });
   const total = done.length + miss.length;
-  const allDone = total > 0 && !miss.length;
-  titleEl.textContent = allDone
-    ? ('游戏日常：' + total + '/' + total + ' 全部完成')
-    : ('游戏日常：' + miss.length + '/' + (total || tracked.length) + ' 个未完成');
+  /* 分母用「参与检查的游戏数」，与后端一致：查询失败的游戏照样占位，
+     分子一律是已完成数，避免出现「1/5 个未完成」和正文「已完成 2 款」打架。 */
+  const denom = tracked.length || total;
+  const allDone = denom > 0 && done.length === denom;
+  titleEl.textContent = !denom
+    ? '游戏日常：暂无有效记录'
+    : (allDone
+        ? ('游戏日常：' + denom + '/' + denom + ' 全部完成')
+        : ('游戏日常：' + done.length + '/' + denom + ' 已完成'));
 
   const lines = [];
   lines.push((row.label || '') + (row.weekday ? ' ' + row.weekday : '') +

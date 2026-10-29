@@ -115,11 +115,12 @@ class DailyReport:
         total = len(self.statuses)
         all_done = not self.unfinished and not self.failed
 
-        # 全部完成时换一套说法：0/4 个未完成 听起来像坏消息，改成 4/4 全部完成
+        # 标题一律用「已完成」做进度分子：查询失败的游戏仍占分母，但不会让标题
+        # 出现「1/5 个未完成」却和正文「已完成 2 款」对不上的观感。
         if all_done:
             title = f"游戏日常：{total}/{total} 全部完成"
         else:
-            title = f"游戏日常：{len(self.unfinished)}/{total} 个未完成"
+            title = f"游戏日常：{len(self.finished)}/{total} 已完成"
         if self.resource_alerts:
             title += f" · ⚠️ 体力将溢出（{len(self.resource_alerts)}）"
         if self.activity_alerts:
