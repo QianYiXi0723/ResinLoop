@@ -868,6 +868,30 @@ def run_test_push(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "results": rows}
 
 
+def push_preview_payload() -> Dict[str, Any]:
+    """GET /api/push_preview 的响应体：与手机实发同一条组装路径的标题/正文。
+
+    快照位置由 core.history 掌握（DATA_DIR / REPORT_SNAPSHOT_NAME，现场拼接，
+    测试重定向 DATA_DIR 即整体隔离）；文案组装全部在 core.analyzer
+    （push_preview_from_snapshot），本函数只管把快照从盘上读出来。
+    只读盘、不联网、不推送、不写 push_history。
+    """
+    from core import history as history_mod
+    from core.analyzer import push_preview_from_snapshot
+
+    snap: Optional[Dict[str, Any]] = None
+    snap_path = history_mod.DATA_DIR / history_mod.REPORT_SNAPSHOT_NAME
+    try:
+        loaded = json.loads(snap_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            snap = loaded
+    except FileNotFoundError:
+        pass   # 还没跑过巡检：交给 analyzer 返回「等待第一次巡检」
+    except Exception as exc:  # noqa: BLE001 - 快照坏了当没巡检过，页面不许 500
+        logger.warning("读取巡检快照失败，预览降级为空态：%s", exc)
+    return {"ok": True, **push_preview_from_snapshot(snap)}
+
+
 # --------------------------------------------------------------------------- #
 # 设备伪装
 # --------------------------------------------------------------------------- #
@@ -1993,6 +2017,27 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "items": load_push_history(8)})
             except Exception as exc:  # noqa: BLE001
                 self._json({"ok": False, "items": [], "message": str(exc)})
+            return
+
+        if parsed.path == "/api/push_preview":
+            # 推送预览（GET）：读巡检快照离线重建，组装与手机实发共用
+            # core.analyzer.to_push_payload 同一条路径 —— 文案只在一处维护
+            try:
+                self._json(push_preview_payload())
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("生成推送预览失败")
+                from core.analyzer import (
+                    WAITING_FIRST_CHECK_BODY,
+                    WAITING_FIRST_CHECK_TITLE,
+                )
+
+                self._json({
+                    "ok": False,
+                    "state": "waiting_first_check",
+                    "title": WAITING_FIRST_CHECK_TITLE,
+                    "body": WAITING_FIRST_CHECK_BODY,
+                    "message": f"生成预览失败：{exc}",
+                })
             return
 
         if parsed.path == "/api/settings":

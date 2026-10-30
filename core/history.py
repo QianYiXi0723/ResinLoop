@@ -39,6 +39,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 HISTORY_PATH = DATA_DIR / "history.json"
 
+#: 上一轮巡检完整快照的文件名（推送预览 /api/push_preview 的离线数据源）。
+#: 与 history.json 分文件：这里存任务明细与 stale 原因（逐字重建推送正文），
+#: history 只存计数（报表/热力图消费）。落盘/读取一律以 DATA_DIR 现场拼接，
+#: 测试重定向 DATA_DIR 即可整体隔离（勿改成模块加载期的绝对常量）。
+REPORT_SNAPSHOT_NAME = "last_report.json"
+
 #: 最多保留多少天（按日期清理，一天一条聚合，180 天也就几 KB）
 KEEP_DAYS = 180
 
@@ -264,8 +270,81 @@ def record(report: Any, *, at: Optional[datetime] = None) -> Dict[str, Any]:
     days = _prune(days)
     data["days"] = days
     _atomic_write(data)
+    save_report_snapshot(report, at=moment)
     logger.debug("已写入历史：%s（%d 个游戏）", date_key, len(day))
     return data
+
+
+def _snapshot_alert_dict(alert: Any) -> Dict[str, Any]:
+    """把一条活动提醒定格成可序列化 dict。
+
+    ``warn`` 存的是 ``warn_line()`` 的当场输出：days_left 是按当前时刻
+    现算的 property，不定格的话快照隔天回看倒计时会自己漂掉。
+    """
+    end = getattr(alert, "end", None)
+    warn = ""
+    try:
+        warn = alert.warn_line() or ""
+    except Exception:  # noqa: BLE001 - 单条提醒坏掉不拖累整份快照
+        pass
+    return {
+        "game": getattr(alert, "game_id", "") or "",
+        "game_name": getattr(alert, "game_name", "") or "",
+        "title": getattr(alert, "title", "") or "",
+        "end": end.strftime("%Y-%m-%d %H:%M:%S") if end else "",
+        "warn": warn,
+    }
+
+
+def save_report_snapshot(report: Any, *, at: Optional[datetime] = None) -> None:
+    """把上一轮巡检的完整判定快照原子写入 data/last_report.json。
+
+    供 GET /api/push_preview 离线重建 DailyReport 再走 to_push_payload
+    同一条组装路径——页面预览与手机实发共用一处文案逻辑。只写快照、
+    不联网、不影响巡检本身：任何失败都只记 WARNING。
+    """
+    try:
+        statuses = [
+            status.to_dict()
+            for status in (getattr(report, "statuses", None) or [])
+            if hasattr(status, "to_dict")
+        ]
+        if not statuses:
+            return   # 没有有效状态时不覆盖旧快照，预览继续显示上一轮真实结果
+        moment = at or getattr(report, "generated_at", None) or datetime.now()
+        payload = {
+            "version": 1,
+            "generated_at": moment.isoformat(timespec="seconds"),
+            "statuses": statuses,
+            "resource_alerts": [
+                alert.to_dict()
+                for alert in (getattr(report, "resource_alerts", None) or [])
+                if hasattr(alert, "to_dict")
+            ],
+            "activity_alerts": [
+                _snapshot_alert_dict(alert)
+                for alert in (getattr(report, "activity_alerts", None) or [])
+            ],
+        }
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(payload, ensure_ascii=False, indent=2)
+        json.loads(text)  # 复检：序列化出来的必须是合法 JSON
+
+        target = DATA_DIR / REPORT_SNAPSHOT_NAME
+        fd, tmp = tempfile.mkstemp(dir=str(DATA_DIR), prefix=".snapshot-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+                handle.write("\n")
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception as exc:  # noqa: BLE001 - 快照是锦上添花，绝不能弄坏巡检落盘
+        logger.warning("写入巡检快照失败（不影响巡检历史）：%s", exc)
 
 
 # --------------------------------------------------------------------------- #

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from .models import GameStatus, ResourceAlert
+from .models import GameStatus, ResourceAlert, TaskItem
 
 LINE = "-" * 52
 
@@ -322,3 +322,137 @@ def build_report(
         resource_alerts=detect_resource_alerts(statuses, thresholds),
         activity_alerts=list(activity_alerts or []),
     )
+
+
+# --------------------------------------------------------------------------- #
+# 推送预览（/api/push_preview）：快照重建 + 与实发共用 to_push_payload
+#
+# 页面「推送预览」卡的标题/正文一律出自本文件：正常态走 to_push_payload
+# 同一条组装路径（页面所见 = 手机所得），空态也在这里结构化返回。
+# tests/rl_test_push_preview.py 守卫「游戏日常：」不出现在前端源码里。
+# --------------------------------------------------------------------------- #
+
+WAITING_FIRST_CHECK_TITLE = "游戏日常：等待第一次巡检"
+WAITING_FIRST_CHECK_BODY = (
+    "还没有巡检数据。定时检查跑过一轮后，这里会按真实结果显示推送样式。"
+)
+NO_VALID_RECORDS_TITLE = "游戏日常：暂无有效记录"
+NO_VALID_RECORDS_BODY = "今天还没有拿到任何有效的巡检数据。"
+
+
+@dataclass
+class _SnapshotAlert:
+    """快照重建的活动提醒替身：to_push_payload 只调用 ``warn_line()``。
+
+    快照里存的是 warn_line() 的当场输出（见 history.save_report_snapshot），
+    这里原样吐回，保证隔天回看倒计时也逐字不漂。
+    """
+
+    warn_text: str = ""
+
+    def warn_line(self) -> str:
+        return self.warn_text
+
+
+def report_from_snapshot(snap: Any) -> Optional[DailyReport]:
+    """从 last_report.json 快照重建 DailyReport（结构不认识返回 None）。
+
+    快照由 core.history.save_report_snapshot 在每轮巡检落盘时写入
+    （GameStatus / ResourceAlert 的 to_dict 原样序列化）。重建出的对象喂给
+    to_push_payload，与真实推送走完全相同的组装路径。
+    """
+    if not isinstance(snap, dict):
+        return None
+    statuses: List[GameStatus] = []
+    for item in (snap.get("statuses") or []):
+        if not isinstance(item, dict):
+            continue
+        tasks = [
+            TaskItem(
+                name=str(task.get("name") or ""),
+                done=bool(task.get("done")),
+                progress=str(task.get("progress") or ""),
+                counted=bool(task.get("counted", True)),
+                recover_seconds=(
+                    task["recover_seconds"]
+                    if isinstance(task.get("recover_seconds"), int) else None
+                ),
+            )
+            for task in (item.get("tasks") or [])
+            if isinstance(task, dict)
+        ]
+        statuses.append(GameStatus(
+            game_id=str(item.get("game_id") or ""),
+            game_name=str(item.get("game_name") or item.get("game_id") or ""),
+            tasks=tasks,
+            nickname=str(item.get("nickname") or ""),
+            source=str(item.get("source") or "mock"),
+            error=item.get("error") or None,
+            stale=item.get("stale") or None,
+            no_account=item.get("no_account") or None,
+        ))
+    if not statuses:
+        return None
+
+    resource_alerts = [
+        ResourceAlert(
+            game_id=str(a.get("game_id") or ""),
+            game_name=str(a.get("game_name") or ""),
+            nickname=str(a.get("nickname") or ""),
+            resource=str(a.get("resource") or ""),
+            current=int(a.get("current") or 0),
+            maximum=int(a.get("maximum") or 0),
+            threshold=int(a.get("threshold") or 0),
+        )
+        for a in (snap.get("resource_alerts") or [])
+        if isinstance(a, dict)
+    ]
+    activity_alerts = [
+        _SnapshotAlert(str(a.get("warn") or ""))
+        for a in (snap.get("activity_alerts") or [])
+        if isinstance(a, dict)
+    ]
+    generated_raw = str(snap.get("generated_at") or "")
+    try:
+        generated_at = (
+            datetime.fromisoformat(generated_raw) if generated_raw else datetime.now()
+        )
+    except ValueError:
+        generated_at = datetime.now()
+
+    return DailyReport(
+        statuses=statuses,
+        generated_at=generated_at,
+        resource_alerts=resource_alerts,
+        activity_alerts=activity_alerts,
+    )
+
+
+def push_preview_from_snapshot(snap: Any) -> Dict[str, Any]:
+    """/api/push_preview 的响应体：空态结构化，正常态与实发逐字同源。
+
+    snap 为 None（没跑过巡检 / 快照缺失损坏）→ waiting_first_check；
+    快照里没有任何当日有效数据（全失败/全 stale/全未建号）→ no_valid_records；
+    其余 → to_push_payload 同一条组装路径（页面所见 = 手机所得）。
+    dry-run 性质：不联网、不推送、不写任何文件。
+    """
+    report = report_from_snapshot(snap)
+    if report is None:
+        return {
+            "state": "waiting_first_check",
+            "title": WAITING_FIRST_CHECK_TITLE,
+            "body": WAITING_FIRST_CHECK_BODY,
+        }
+    if not any(item.has_today_data for item in report.statuses):
+        return {
+            "state": "no_valid_records",
+            "title": NO_VALID_RECORDS_TITLE,
+            "body": NO_VALID_RECORDS_BODY,
+        }
+    title, body = report.to_push_payload()
+    return {
+        "state": "ok",
+        "title": title,
+        "body": body,
+        "generated_at": report.generated_at.isoformat(timespec="seconds"),
+    }
