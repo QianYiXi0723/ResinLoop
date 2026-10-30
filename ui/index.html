@@ -7,6 +7,35 @@
 <style>__STYLE__</style>
 </head>
 <body>
+<!-- 单色 SVG 图标族（chrome 层）：24 栅格 / stroke 1.8 / currentColor 随主题。
+     身份层（游戏/平台官方位图）与导航层分离 —— GitHub octicons + org 头像同一分层法 -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <symbol id="i-report" viewBox="0 0 24 24"><path d="M4 20V11M10 20V4M16 20v-6M3 20h18"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20.5 20.5l-4.9-4.9"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M9.5 14.5l5-5"/><path d="M11 6.8l1.8-1.8a4.2 4.2 0 015.9 5.9L16.9 12.7"/><path d="M13 17.2l-1.8 1.8a4.2 4.2 0 01-5.9-5.9l1.8-1.8"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M21 3L10.5 13.5"/><path d="M21 3l-6.8 18-3.7-7.3L3 10l18-7z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3.2 1.9"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="15" rx="2"/><path d="M8 3.5v4M16 3.5v4M4 10.5h16"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2.5L5.5 13.5H11l-1 8 7.5-11H12l1-8z"/></symbol>
+  <symbol id="i-gift" viewBox="0 0 24 24"><rect x="4" y="11.5" width="16" height="8.5" rx="1.5"/><path d="M3.5 8h17v3.5h-17z"/><path d="M12 8v12"/><path d="M12 8c-4.2 0-5-4-2.4-4C11.5 4 12 8 12 8zm0 0c4.2 0 5-4 2.4-4C12.5 4 12 8 12 8z"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="16" r="4"/><path d="M11 13L20 4M16 8l3 3M13.5 10.5l1.8 1.8"/></symbol>
+  <symbol id="i-gamepad" viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="10" rx="5"/><path d="M8 11.5v3M6.5 13h3M15.5 12.2v.01M17.8 14.2v.01"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 2.8V11c0 4.6-2.9 8.4-7 10-4.1-1.6-7-5.4-7-10V5.8L12 3z"/></symbol>
+  <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M12 3l7 2.8V11c0 4.6-2.9 8.4-7 10-4.1-1.6-7-5.4-7-10V5.8L12 3z"/><path d="M9 11.5l2.2 2.2L15.5 9.5"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 5.5H4v11h4v3.5l4.5-3.5H20V5.5z"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="M4.5 7.5L12 13l7.5-5.5"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><path d="M4.5 5v4h4"/><path d="M4.7 9A8 8 0 1112 20a8 8 0 01-7.3-4.8"/><path d="M12 8.5V12l2.6 1.6"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><path d="M4.5 6.5v.01M4.5 12v.01M4.5 17.5v.01"/></symbol>
+  <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="9.5" rx="1.5"/><path d="M3 18.5h18"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 13.6A8.2 8.2 0 1110.4 4 6.4 6.4 0 0020 13.6z"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M17.8 9.5a5.8 5.8 0 10-11.6 0c0 4.8-1.9 5.9-1.9 5.9h15.4s-1.9-1.1-1.9-5.9"/><path d="M10.4 19.2a1.9 1.9 0 003.2 0"/></symbol>
+  <symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M6.5 3.5h11M6.5 20.5h11M7.5 3.5v3.2L12 12l4.5-5.3V3.5M7.5 20.5v-3.2L12 12l4.5 5.3v3.2"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 14.5V4M8 8l4-4 4 4"/><path d="M4.5 15v4.5h15V15"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11.5" rx="1.5"/><path d="M9.5 20h5M12 16v4"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.2 5.2l1.7 1.7M17.1 17.1l1.7 1.7M18.8 5.2l-1.7 1.7M6.9 17.1l-1.7 1.7"/></symbol>
+  <symbol id="i-file-text" viewBox="0 0 24 24"><path d="M13.5 3.5H7A1.5 1.5 0 005.5 5v14A1.5 1.5 0 007 20.5h10a1.5 1.5 0 001.5-1.5V8.5l-5-5z"/><path d="M13.5 3.5v5h5M9 12.5h6M9 16h6"/></symbol>
+</svg>
 <div class="app">
   <div class="app-body">
   <aside class="side">
@@ -15,11 +44,10 @@
       <div><b>ResinLoop</b><span>日常巡查</span></div>
     </div>
     <nav class="nav">
-      <button type="button" data-tab="history" class="on"><span class="nav-ico">📊</span>每日报表</button>
-      <button type="button" data-tab="query"><span class="nav-ico">🔍</span>信息查询</button>
-      <button type="button" data-tab="account"><span class="nav-ico">🔗</span>账号绑定</button>
-      <button type="button" data-tab="notify"><span class="nav-ico">📮</span>通知绑定</button>
-      <button type="button" data-tab="schedule"><span class="nav-ico">⏰</span>定时与状态</button>
+      <button type="button" data-tab="history" class="on"><span class="nav-ico"><svg class="ico"><use href="#i-report"/></svg></span>每日报表</button>
+      <button type="button" data-tab="query"><span class="nav-ico"><svg class="ico"><use href="#i-search"/></svg></span>信息查询</button>
+      <button type="button" data-tab="account"><span class="nav-ico"><svg class="ico"><use href="#i-link"/></svg></span>账号与通知</button>
+      <button type="button" data-tab="schedule"><span class="nav-ico"><svg class="ico"><use href="#i-clock"/></svg></span>定时与状态</button>
     </nav>
     <div class="side-foot">
       <button type="button" class="theme-btn" id="btn-theme" data-mode="auto"
@@ -43,7 +71,7 @@
 
   <!-- ======================= KPI 摘要条（全局视觉锚点） ======================= -->
   <div class="kpi-bar" id="kpi-bar">
-    <div class="kpi card">
+    <div class="kpi card primary">
       <div class="kpi-label">今日完成
         <span class="q" data-tip="按今天最近一次巡检结果统计；查询失败与数据待更新都不计为未完成"></span></div>
       <div class="kpi-value value" id="k-today">–</div>
@@ -72,7 +100,7 @@
   <section class="tabpanel on" id="tab-history">
     <section class="card s12" id="week-card">
       <div class="card-head">
-        <h2>🗓️ 本周汇总</h2>
+        <h2><svg class="ico"><use href="#i-calendar"/></svg> 本周汇总</h2>
         <span class="q" data-tip="过去 7 天各游戏的完成天数，与每周日晚 21:00 推送的周报同口径"></span>
         <span class="spacer"></span>
         <button type="button" class="btn sm" id="btn-hist-refresh" style="height:24px" data-tip="重新查询一遍所有启用账号，并立即更新本页数据">刷新</button>
@@ -83,7 +111,7 @@
 
     <section class="card s12">
       <div class="card-head">
-        <h2>📊 游戏概览</h2>
+        <h2><svg class="ico"><use href="#i-grid"/></svg> 游戏概览</h2>
         <span class="q" data-tip="每款游戏一张卡：今日完成状态、当前体力与连续完成天数"></span>
         <span class="badge" id="h-month">-</span>
         <span class="spacer"></span>
@@ -94,7 +122,7 @@
 
     <section class="card s12">
       <div class="card-head">
-        <h2>📅 最近 7 天</h2>
+        <h2><svg class="ico"><use href="#i-list"/></svg> 最近 7 天</h2>
         <span class="q" data-tip="绿色 = 当天完成，红色 = 查过但未完成，灰 = 当天未运行或未查到"></span>
       </div>
       <div id="h-table"></div>
@@ -105,7 +133,7 @@
   <section class="tabpanel" id="tab-query">
     <section class="card s12">
       <div class="card-head">
-        <h2>⚡ 实时体力</h2>
+        <h2><svg class="ico"><use href="#i-zap"/></svg> 实时体力</h2>
         <span class="q" data-tip="手动查询所有启用账号，不写入历史、不推送"></span>
         <span class="spacer"></span>
         <button type="button" class="btn sm" id="btn-live-refresh">刷新</button>
@@ -116,7 +144,7 @@
 
     <section class="card s12">
       <div class="card-head">
-        <h2>🗓️ 活动日历</h2>
+        <h2><svg class="ico"><use href="#i-gift"/></svg> 活动日历</h2>
         <span class="q" data-tip="只保留给抽卡资源的活动（原石/星琼/菲林/合成玉·源石）；剩余 ≤72 小时时在推送末尾提醒"></span>
         <span class="spacer"></span>
         <button type="button" class="btn sm" id="btn-act-refresh">刷新</button>
@@ -132,39 +160,31 @@
     <div class="notice s12" id="notice" style="display:none"></div>
 
     <div class="acct-col s7">
-      <!-- 扫码胶囊 -->
+      <!-- 扫码 + 游戏监控：同一任务（定范围 → 扫码），合并一卡避免空旷卡头 -->
       <section class="card">
         <div class="card-head">
-          <h2>🔑 扫码登录</h2>
+          <h2><svg class="ico"><use href="#i-key"/></svg> 扫码登录</h2>
           <span class="q" data-tip="点击胶囊开始扫码，一次更新所选游戏的登录状态。胶囊上的黄点表示对应平台还有游戏未登录过，扫码后自动熄灭"></span>
+          <span class="spacer"></span>
+          <button type="button" class="btn sm" id="btn-selall" onclick="toggleAllCards()">全选</button>
         </div>
         <div class="card-body">
           <div class="caps-row">
             <button type="button" class="scan-cap" id="cap-m" onclick="startMihoyo()">
               <span class="cap-dot" id="cap-dot-m"></span>
-              <span class="cap-ico">⭐</span>
+              <span class="cap-ico" data-plat="miyoushe">⭐</span>
               <span class="cap-txt"><b>米游社</b><small>更新凭证</small></span>
             </button>
             <button type="button" class="scan-cap" id="cap-s" onclick="startSkland()">
               <span class="cap-dot" id="cap-dot-s"></span>
-              <span class="cap-ico">🏝️</span>
+              <span class="cap-ico" data-plat="skland">🏝️</span>
               <span class="cap-txt"><b>森空岛</b><small>更新凭证</small></span>
             </button>
+            <div class="btn-note caps-note">扫码只更新登录凭证；是否参与每日巡检由下方监控开关决定。</div>
           </div>
-          <div class="btn-note">扫码只更新登录凭证；是否参与每日巡检由下方监控开关决定。</div>
-        </div>
-      </section>
-
-      <!-- 游戏监控：Selector Card 网格 -->
-      <section class="card">
-        <div class="card-head">
-          <h2>🎮 游戏监控
+          <div class="scan-subhead"><svg class="ico"><use href="#i-gamepad"/></svg> 游戏监控
             <span class="q" data-tip="开启的游戏参与每日巡检并推送通知；关闭则不再巡检、不再推送。点击卡片任意位置即可切换"></span>
-          </h2>
-          <span class="spacer"></span>
-          <button type="button" class="btn sm" id="btn-selall" onclick="toggleAllCards()">全选</button>
-        </div>
-        <div class="card-body">
+          </div>
           <div class="sel-grid">
             <label class="sel-card on">
               <input type="checkbox" name="m" value="genshin" checked>
@@ -205,62 +225,163 @@
       <!-- 凭证健康：紧凑列表 -->
       <section class="card">
         <div class="card-head">
-          <h2>🔐 凭证健康
+          <h2><svg class="ico"><use href="#i-shield-check"/></svg> 凭证健康
             <span class="q" data-tip="绿点 = 已绑定 · 黄点 = 超过 7 天未更新 · 红点 = 未绑定；时间为相对时间，从未扫码更新的显示「从未更新」，下次扫码后开始记录"></span>
           </h2>
           <span class="spacer"></span>
           <span class="badge" id="cred-health-badge">-</span>
         </div>
         <div id="cred-health"><div class="emptybox">读取中…</div></div>
+        <!-- 三色图例常驻外显（Nielsen 启发式 6「靠识别而非回忆」）：
+             色点语义与行内 .cred-dot 同类同名，措辞与行文案逐字一致 -->
+        <div class="hint cred-legend">
+          <span><span class="cred-dot ok"></span>已绑定</span>
+          <span><span class="cred-dot warn"></span>超过 7 天未更新</span>
+          <span><span class="cred-dot err"></span>未绑定</span>
+        </div>
       </section>
 
-      <!-- 设备伪装：details 折叠，默认收起 -->
-      <details class="card" id="dev-card">
-        <summary>
-          <h2>🛡️ 设备伪装
+      <!-- 设备伪装：点击入口卡弹配置弹窗（低频专注任务用模态，不再抽屉展开） -->
+      <section class="card dev-entry" id="dev-card" onclick="openDev()">
+        <div class="card-head">
+          <h2><svg class="ico"><use href="#i-shield"/></svg> 设备伪装
             <span class="q" data-tip="每台电脑首次启动会随机分配一台常见机型，之后固定不变。风控多数是出口网络被标记，换设备只在新装或长期异常时才有用；频繁更换会被当成陌生设备，反而更容易触发风控"></span>
           </h2>
           <span class="spacer"></span>
           <span class="badge" id="dev-badge">读取中</span>
           <svg class="dev-arrow" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5l4.5 4.5L6 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </summary>
-        <div class="dev-body">
-          <div class="dev-grid">
-            <div class="dev-left">
-              <div class="dsteps">
-                <div class="dstep"><b>1</b><span>手机扫码下载并安装「设备信息」App</span></div>
-                <div class="dstep"><b>2</b><span>打开 App，点击「复制设备信息」</span></div>
-                <div class="dstep"><b>3</b><span>将复制的内容粘贴至右侧输入框，再点击保存</span></div>
+        </div>
+      </section>
+
+      <div class="modal-mask" id="dev-modal" hidden>
+        <div class="modal modal--dev">
+          <div class="modal-head">
+            <b>设备伪装</b>
+            <button type="button" class="modal-x" onclick="closeDev()" title="关闭">✕</button>
+          </div>
+          <div class="dev-body">
+            <div class="dev-grid">
+              <div class="dev-left">
+                <div class="dsteps">
+                  <div class="dstep"><b>1</b><span>手机扫码下载并安装「设备信息」App</span></div>
+                  <div class="dstep"><b>2</b><span>打开 App，点击「复制设备信息」</span></div>
+                  <div class="dstep"><b>3</b><span>将复制的内容粘贴至右侧输入框，再点击保存</span></div>
+                </div>
+                <div class="apk" id="apk-box">
+                  <div class="apk-qr" id="apk-qr"><span class="ph" style="font-size:11px">二维码生成中…</span></div>
+                  <div class="apk-meta" id="apk-meta"></div>
+                </div>
               </div>
-              <div class="apk" id="apk-box">
-                <div class="apk-qr" id="apk-qr"><span class="ph" style="font-size:11px">二维码生成中…</span></div>
-                <div class="apk-meta" id="apk-meta"></div>
-              </div>
-            </div>
-            <div class="dev-right">
-              <textarea id="dev-text" class="dev-text" spellcheck="false"
-                placeholder='可选：把「设备信息」App 复制出来的内容粘贴到这里，形如：
+              <div class="dev-right">
+                <textarea id="dev-text" class="dev-text" spellcheck="false"
+                  placeholder='可选：把「设备信息」App 复制出来的内容粘贴到这里，形如：
 {"deviceModel":"23127PN0CC","androidVersion":"14","deviceFingerprint":"...","oaid":"..."}'></textarea>
-              <div class="toolbar">
-                <button id="btn-dev-save" class="btn primary"
-                        title="保存后需重新扫码，否则登录设备与查询设备不一致">保存并清空指纹缓存</button>
-                <button id="btn-dev-shuffle" class="btn"
-                        title="重新随机一台机型并生成新 OAID，旧指纹作废；更换后建议稳定使用数日，不宜频繁变更">换一台设备</button>
-                <button id="btn-dev-reset" class="btn sm" title="删掉手动粘贴的档案，回到随机机型">清除自定义</button>
-              </div>
-              <div class="hint" id="dev-current">正在读取当前设备档案…</div>
-              <div class="hint" style="margin-top:14px"><b>查询代理（选填）</b> —— 米游社查询将经此出口，留空 = 直连；保存后下一轮检查生效。</div>
-              <div class="toolbar" style="gap:8px;margin-top:6px;align-items:center">
-                <input type="text" id="query-proxy" class="field" style="flex:1;min-width:0;height:38px"
-                       autocomplete="off" spellcheck="false"
-                       placeholder="http://127.0.0.1:7890（留空 = 直连）">
-                <button id="btn-proxy-save" class="btn sm">保存</button>
+                <div class="toolbar">
+                  <button id="btn-dev-save" class="btn primary"
+                          title="保存后需重新扫码，否则登录设备与查询设备不一致">保存并清空指纹缓存</button>
+                  <button id="btn-dev-shuffle" class="btn"
+                          title="重新随机一台机型并生成新 OAID，旧指纹作废；更换后建议稳定使用数日，不宜频繁变更">换一台设备</button>
+                  <button id="btn-dev-reset" class="btn sm" title="删掉手动粘贴的档案，回到随机机型">清除自定义</button>
+                </div>
+                <div class="hint" id="dev-current">正在读取当前设备档案…</div>
+                <div class="hint" style="margin-top:14px"><b>查询代理（选填）</b> —— 米游社查询将经此出口，留空 = 直连；保存后下一轮检查生效。</div>
+                <div class="toolbar" style="gap:8px;margin-top:6px;align-items:center">
+                  <input type="text" id="query-proxy" class="field" style="flex:1;min-width:0;height:38px"
+                         autocomplete="off" spellcheck="false"
+                         placeholder="http://127.0.0.1:7890（留空 = 直连）">
+                  <button id="btn-proxy-save" class="btn sm">保存</button>
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </details>
+      </div>
     </div>
+
+    <!-- ======== 通知推送（并入账号页）：渠道切换改分段控件——约定形态自带
+         可点击意符（Norman），原「渠道」空卡删除；两卡 8+4 配满 12 栅格 ======== -->
+    <div class="scan-subhead" style="grid-column:1/-1"><svg class="ico"><use href="#i-send"/></svg> 通知推送</div>
+
+    <section class="card s8">
+      <div class="card-head">
+        <h2 id="ed-title">Server酱（微信）
+          <span class="q" data-tip="出于安全，已保存的 Key 以掩码显示：不修改输入框即保持原值，清空后保存则删除该 Key"></span>
+        </h2>
+      </div>
+      <div class="card-body">
+        <div class="ch-list">
+          <div class="ch-item on" data-ch="serverchan" id="ch-item-serverchan">
+            <div><b>Server酱</b><span class="ch-ind"><span class="ch-dot" id="ch-dot-serverchan"></span><span class="ch-state" id="ch-state-serverchan">读取中…</span></span><small>推送到微信</small></div>
+          </div>
+          <div class="ch-item" data-ch="qmsg" id="ch-item-qmsg">
+            <div><b>Qmsg 酱</b><span class="ch-ind"><span class="ch-dot" id="ch-dot-qmsg"></span><span class="ch-state" id="ch-state-qmsg">读取中…</span></span><small>推送到 QQ</small></div>
+          </div>
+        </div>
+        <div id="ed-serverchan">
+          <div class="field">
+            <input type="password" id="serverchan-key" autocomplete="off" spellcheck="false"
+                   autocapitalize="off" placeholder="SCT 开头的 SendKey">
+          </div>
+          <div class="hint" id="serverchan-hint">正在读取…</div>
+          <div class="row3" style="margin-top:14px">
+            <label class="opt" style="height:40px"><input type="checkbox" id="serverchan-enabled"> 启用 Server酱</label>
+          </div>
+        </div>
+        <div id="ed-qmsg" hidden>
+          <div class="field">
+            <input type="password" id="qmsg-key" autocomplete="off" spellcheck="false"
+                   autocapitalize="off" placeholder="Qmsg 酱的 key">
+          </div>
+          <div class="hint" id="qmsg-hint">正在读取…</div>
+          <div class="row3" style="margin-top:14px">
+            <label class="opt" style="height:40px"><input type="checkbox" id="qmsg-enabled"> 启用 Qmsg 酱</label>
+          </div>
+        </div>
+        <div class="toolbar">
+          <button type="button" id="btn-save" class="btn primary">保存配置</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="s4 stack">
+      <section class="card">
+        <div class="card-head">
+          <h2><svg class="ico"><use href="#i-mail"/></svg> 推送预览
+            <span class="q" data-tip="按当前启用的游戏与最近一次巡检结果，模拟手机收到的推送样式；仅预览，不发送"></span>
+          </h2>
+          <span class="spacer"></span>
+          <span class="badge" id="pv-channel">-</span>
+        </div>
+        <div class="card-body">
+          <div class="phone-mock">
+            <div class="pv-bubble">
+              <div class="pv-app"><i></i>ResinLoop</div>
+              <div class="pv-title" id="pv-title">-</div>
+              <div class="pv-body" id="pv-body">-</div>
+            </div>
+          </div>
+          <div class="toolbar">
+            <button type="button" id="btn-test" class="btn"
+                    title="使用当前输入的值试发一条，不会写入配置">发送测试推送</button>
+          </div>
+          <div id="test-result" hidden></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 最近推送（结构化 push_history.json，成功/失败都记） -->
+    <section class="card s12">
+      <div class="card-head">
+        <h2><svg class="ico"><use href="#i-history"/></svg> 最近推送
+          <span class="q" data-tip="来自 data/push_history.json 的真实发送记录（含测试与定时推送），最多显示 8 条；每条固定高度，内容过长会折叠，点右上角箭头展开；成功与失败都会记录"></span>
+        </h2>
+        <span class="spacer"></span>
+        <button type="button" class="btn sm" id="btn-push-refresh">刷新</button>
+      </div>
+      <div class="card-body">
+        <div class="recent" id="pv-recent"><div>读取中…</div></div>
+      </div>
+    </section>
 
     <!-- 第一步：选择要登录的游戏 -->
     <div class="modal-mask" id="pick-modal" hidden>
@@ -297,106 +418,13 @@
     </div>
   </section>
 
-  <!-- ======================= 通知绑定（三区：列表 / 编辑 / 预览） ======================= -->
-  <section class="tabpanel" id="tab-notify">
-    <!-- 左：渠道列表 -->
-    <section class="card s3">
-      <div class="card-head"><h2>📮 渠道</h2></div>
-      <div class="card-body">
-        <div class="ch-list">
-          <div class="ch-item on" data-ch="serverchan" id="ch-item-serverchan">
-            <div><b>Server酱</b><span class="ch-ind"><span class="ch-dot" id="ch-dot-serverchan"></span><span class="ch-state" id="ch-state-serverchan">读取中…</span></span><small>推送到微信</small></div>
-          </div>
-          <div class="ch-item" data-ch="qmsg" id="ch-item-qmsg">
-            <div><b>Qmsg 酱</b><span class="ch-ind"><span class="ch-dot" id="ch-dot-qmsg"></span><span class="ch-state" id="ch-state-qmsg">读取中…</span></span><small>推送到 QQ</small></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 中：当前渠道编辑区 -->
-    <section class="card s5">
-      <div class="card-head">
-        <h2 id="ed-title">💬 Server酱（微信）
-          <span class="q" data-tip="出于安全，已保存的 Key 以掩码显示：不修改输入框即保持原值，清空后保存则删除该 Key"></span>
-        </h2>
-      </div>
-      <div class="card-body">
-        <div id="ed-serverchan">
-          <div class="field">
-            <input type="password" id="serverchan-key" autocomplete="off" spellcheck="false"
-                   autocapitalize="off" placeholder="SCT 开头的 SendKey">
-          </div>
-          <div class="hint" id="serverchan-hint">正在读取…</div>
-          <div class="row3" style="margin-top:14px">
-            <label class="opt" style="height:40px"><input type="checkbox" id="serverchan-enabled"> 启用 Server酱</label>
-          </div>
-        </div>
-        <div id="ed-qmsg" hidden>
-          <div class="field">
-            <input type="password" id="qmsg-key" autocomplete="off" spellcheck="false"
-                   autocapitalize="off" placeholder="Qmsg 酱的 key">
-          </div>
-          <div class="hint" id="qmsg-hint">正在读取…</div>
-          <div class="row3" style="margin-top:14px">
-            <label class="opt" style="height:40px"><input type="checkbox" id="qmsg-enabled"> 启用 Qmsg 酱</label>
-          </div>
-        </div>
-        <div class="toolbar">
-          <button type="button" id="btn-save" class="btn primary">保存配置</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- 右：预览 + 测试 + 最近推送 -->
-    <div class="s4 stack">
-      <section class="card">
-        <div class="card-head">
-          <h2>📨 推送预览
-            <span class="q" data-tip="按当前启用的游戏与最近一次巡检结果，模拟手机收到的推送样式；仅预览，不发送"></span>
-          </h2>
-          <span class="spacer"></span>
-          <span class="badge" id="pv-channel">-</span>
-        </div>
-        <div class="card-body">
-          <div class="phone-mock">
-            <div class="pv-bubble">
-              <div class="pv-app"><i></i>ResinLoop</div>
-              <div class="pv-title" id="pv-title">-</div>
-              <div class="pv-body" id="pv-body">-</div>
-            </div>
-          </div>
-          <div class="toolbar">
-            <button type="button" id="btn-test" class="btn"
-                    title="使用当前输入的值试发一条，不会写入配置">发送测试推送</button>
-          </div>
-          <div id="test-result" hidden></div>
-        </div>
-      </section>
-    </div>
-
-    <!-- 底部整行：最近推送（结构化 push_history.json，成功/失败都记） -->
-    <section class="card s12">
-      <div class="card-head">
-        <h2>🕘 最近推送
-          <span class="q" data-tip="来自 data/push_history.json 的真实发送记录（含测试与定时推送），最多显示 8 条；每条固定高度，内容过长会折叠，点右上角箭头展开；成功与失败都会记录"></span>
-        </h2>
-        <span class="spacer"></span>
-        <button type="button" class="btn sm" id="btn-push-refresh">刷新</button>
-      </div>
-      <div class="card-body">
-        <div class="recent" id="pv-recent"><div>读取中…</div></div>
-      </div>
-    </section>
-  </section>
-
   <!-- ======================= 定时与状态 ======================= -->
   <section class="tabpanel" id="tab-schedule">
 
     <!-- A 卡：提醒时间点（底部折入守护进程状态条，DOM ID 与原 JS 钩子全部保留） -->
     <section class="card card--times sch-times">
       <div class="card-head card__header">
-        <h2>⏰ 提醒时间点
+        <h2><svg class="ico"><use href="#i-clock"/></svg> 提醒时间点
           <span class="q" data-tip="每天到点检查一次并推送；点击时间轴空白处直接添加；拖动圆点改时间（吸附 5 分钟，按住 Shift 精调到 1 分钟，拖动中按 Esc 取消）；修改立即生效，无需重启"></span>
         </h2>
         <span class="spacer"></span>
@@ -405,6 +433,7 @@
       <div class="card__body">
         <div class="ruler" id="d-ruler"></div>
         <div class="chips" id="d-times"></div>
+        <div class="hint" id="today-next" hidden></div>
         <div class="row3 has-spin">
           <input type="time" id="d-new-time" value="22:00" step="60">
           <div class="spin">
@@ -415,7 +444,7 @@
         </div>
       </div>
       <div class="daemon-bar">
-        <span class="daemon-title"><i class="dot" id="d-dot"></i>🛡️ 守护进程</span>
+        <span class="daemon-title"><i class="dot" id="d-dot"></i><svg class="ico"><use href="#i-shield"/></svg> 守护进程</span>
         <span class="badge" id="d-state">读取中</span>
         <span class="daemon-kv"><span>下次</span><b id="d-next">-</b></span>
         <span class="daemon-kv"><span>最近</span><b id="d-last">-</b></span>
@@ -432,15 +461,15 @@
     <!-- B 卡：规则列表（三段式行，列表限宽 720px，卡体内滚动） -->
     <section class="card card--rules set-card">
       <div class="card-head card__header">
-        <h2>⚙️ 开机与提醒行为</h2>
+        <h2><svg class="ico"><use href="#i-gear"/></svg> 开机与提醒行为</h2>
         <span class="spacer"></span>
         <span class="q" data-tip="点击任意一行展开详细设置"></span>
       </div>
       <div class="card__body">
         <div class="rule-list">
-          <details class="set-item" id="acc-autostart">
-            <summary class="set-head">
-              <span class="set-lead"><i class="set-ico">💻</i>
+          <div class="set-item static" id="acc-autostart">
+            <div class="set-head">
+              <span class="set-lead"><i class="set-ico"><svg class="ico"><use href="#i-laptop"/></svg></i>
                 <span class="set-txt"><b>开机自启动</b>
                   <small>登录后自动在后台运行并挂载托盘</small></span>
               </span>
@@ -448,15 +477,13 @@
                 <span class="badge" id="autostart-state">读取中</span>
                 <label class="toggle"><input type="checkbox" id="autostart-toggle"><i></i></label>
               </span>
-            </summary>
-            <div class="set-body">
-              <div class="hint" id="autostart-hint">读取中…</div>
             </div>
-          </details>
+            <div class="hint" id="autostart-hint" hidden style="padding:0 16px 10px">读取中…</div>
+          </div>
 
           <details class="set-item" id="acc-catchup">
             <summary class="set-head">
-              <span class="set-lead"><i class="set-ico">😴</i>
+              <span class="set-lead"><i class="set-ico"><svg class="ico"><use href="#i-moon"/></svg></i>
                 <span class="set-txt"><b>休眠提醒</b>
                   <small>休眠或关机错过时间点后，在窗口内补跑一次</small></span>
               </span>
@@ -476,7 +503,7 @@
 
           <details class="set-item" id="acc-resource">
             <summary class="set-head">
-              <span class="set-lead"><i class="set-ico">🔔</i>
+              <span class="set-lead"><i class="set-ico"><svg class="ico"><use href="#i-bell"/></svg></i>
                 <span class="set-txt"><b>体力溢出提醒</b>
                   <small>当前体力 ≥ 阈值时额外推送一条；0 = 关闭该游戏</small></span>
               </span>
@@ -510,7 +537,7 @@
 
           <details class="set-item" id="acc-activity">
             <summary class="set-head">
-              <span class="set-lead"><i class="set-ico">⏳</i>
+              <span class="set-lead"><i class="set-ico"><svg class="ico"><use href="#i-hourglass"/></svg></i>
                 <span class="set-txt"><b>活动结束提醒</b>
                   <small>活动结束前设定天数时，在推送末尾追加提醒</small></span>
               </span>
@@ -529,9 +556,9 @@
             </div>
           </details>
 
-          <details class="set-item" id="acc-alwaysnotify">
-            <summary class="set-head">
-              <span class="set-lead"><i class="set-ico">📤</i>
+          <div class="set-item static" id="acc-alwaysnotify">
+            <div class="set-head">
+              <span class="set-lead"><i class="set-ico"><svg class="ico"><use href="#i-upload"/></svg></i>
                 <span class="set-txt"><b>完成也推送</b>
                   <small>默认仅在存在未完成项时推送；开启后全部完成也发一条平安通知</small></span>
               </span>
@@ -539,11 +566,8 @@
               <span class="set-end">
                 <label class="toggle"><input type="checkbox" id="always-notify"><i></i></label>
               </span>
-            </summary>
-            <div class="set-body">
-              <div class="hint">默认仅在存在未完成项时推送；勾选后即使全部完成也会推送一条。</div>
             </div>
-          </details>
+          </div>
         </div><!-- /rule-list -->
       </div><!-- /card__body -->
     </section>
@@ -551,7 +575,7 @@
     <!-- C 卡：今日巡检动态（时间轴，跨满两行，卡体内滚动） -->
     <section class="card card--timeline sch-feed">
       <div class="card-head card__header">
-        <h2>🧾 今日巡检动态
+        <h2><svg class="ico"><use href="#i-list"/></svg> 今日巡检动态
           <span class="q" data-tip="每日巡检写入的历史记录（最近 7 天）：节点绿 = 全部完成、琥珀 = 有未完成、灰 = 无记录"></span>
         </h2>
         <span class="spacer"></span>
@@ -568,7 +592,7 @@
   <!-- 固定底栏：不随内容滚动；收缩 48px / 展开 200px -->
   <details class="console" id="log-console">
     <summary class="console-head">
-      <span class="console-title">🧾 运行日志</span>
+      <span class="console-title"><svg class="ico"><use href="#i-file-text"/></svg> 运行日志</span>
       <span class="console-last" id="console-last">展开后加载真实巡检日志</span>
       <button type="button" class="mini" id="btn-console-refresh">刷新</button>
     </summary>

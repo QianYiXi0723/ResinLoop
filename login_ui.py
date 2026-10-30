@@ -59,8 +59,10 @@ STATIC_TYPES: Dict[str, str] = {
     ".ico": "image/x-icon",
 }
 
-#: 页面里引用图标的游戏（顺序即 fallback 顺序）
-ICON_GAMES = ("genshin", "starrail", "zzz", "arknights")
+#: 页面里引用位图图标的实体（游戏 + 平台胶囊；顺序即 fallback 顺序）。
+#: 全部进 mtime 缓存戳：换任何一张图，页面 URL 立即失效旧缓存
+ICON_GAMES = ("genshin", "starrail", "zzz", "arknights", "endfield",
+              "miyoushe", "skland")
 #: 图标目录（/static/icons/... 对应的真实路径）
 ICON_DIR = STATIC_DIR / "icons"
 
@@ -1120,6 +1122,8 @@ def _normalize_times(times: Any) -> List[str]:
         text = str(item).strip()
         if not _TIME_RE.match(text):
             raise ValueError(f"「{text}」不是合法时间，格式应为 HH:MM（如 08:30）")
+        hour, minute = text.split(":")
+        text = f"{int(hour):02d}:{minute}"   # 9:00 → 09:00：core 的存储校验只收 2 位小时
         if text not in result:
             result.append(text)
     if not result:
@@ -1162,9 +1166,22 @@ def schedule_status() -> Dict[str, Any]:
     app = raw.get("app") if isinstance(raw.get("app"), dict) else {}
     times = [str(item) for item in (app.get("check_times") or [])]
     target = next_check_time(times)
+    # 今天还剩的时间点（cron-job.org「next runs」范式）：只认服务器时钟，
+    # 前端严禁自行取 Date.now() 判断先后 —— 字段由这里算好直接给
+    now_hm = (datetime.now().hour, datetime.now().minute)
+    today_next = []
+    for t in times:
+        try:
+            a, b = str(t).split(":")[:2]
+            if (int(a), int(b)) >= now_hm:
+                today_next.append(str(t))
+        except (ValueError, IndexError):
+            continue
+    today_next.sort(key=lambda s: tuple(int(x) for x in s.split(":")[:2]))
     return {
         "ok": True,
         "times": times,
+        "today_next": today_next,
         "catch_up_minutes": _normalize_catch_up(app.get("catch_up_minutes")),
         "catch_up_enabled": _normalize_bool(app.get("catch_up_enabled"), True),
         "resource_alert_enabled": _normalize_bool(app.get("resource_alert_enabled"), True),
@@ -1331,6 +1348,10 @@ def save_activity_alert(enabled: Any = None, days: Any = None) -> Dict[str, Any]
 #: 实时查询结果缓存（秒）。切页签不该每次都重新打 5 个游戏的接口。
 _LIVE_TTL_SECONDS = 45
 _LIVE_CACHE: Dict[str, Any] = {"at": 0.0, "payload": None}
+#: force 刷新的并发闸：collect_statuses 一轮几十秒，两个「刷新」同时点会双打
+#: 五游戏接口（风控面翻倍）并交错写同一磁盘缓存。持锁做二次新鲜度判定，
+#: 等锁期间别人刷完就直接吃他的结果。
+_LIVE_LOCK = threading.Lock()
 #: 磁盘缓存：服务重启后也能秒回上一次的结果，页面冷启动绝不该现场打接口
 _LIVE_DISK_CACHE = BASE_DIR / "data" / "live_cache.json"
 
@@ -1347,12 +1368,19 @@ def _live_disk_read() -> Optional[Dict[str, Any]]:
 
 
 def _live_disk_write(payload: Dict[str, Any]) -> None:
-    """成功查询后原子落盘；写失败只影响下次秒开，不影响本次返回。"""
+    """成功查询后原子落盘；写失败只影响下次秒开，不影响本次返回。
+
+    临时文件用 mkstemp 唯一名：并发刷新时固定 tmp 名会被两个线程交错写、
+    replace 撞对方句柄（Windows PermissionError），缓存半截/未更新。
+    """
     try:
         _LIVE_DISK_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _LIVE_DISK_CACHE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(_LIVE_DISK_CACHE)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".live_cache-", suffix=".tmp", dir=str(_LIVE_DISK_CACHE.parent)
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False))
+        os.replace(tmp_name, _LIVE_DISK_CACHE)
     except OSError:
         logger.exception("实时查询磁盘缓存写入失败")
 
@@ -1373,12 +1401,28 @@ def _filter_live_games(payload: Dict[str, Any], enabled: Optional[set]) -> Dict[
 
     缓存写入时的启用集合可能与当前不同（用户中途取消勾选）；
     过滤只影响本响应的 games 列表，不改动缓存文件本身。
-    enabled 为 None（配置读不出）时原样返回并已记 warning，不静默。"""
+    enabled 为 None（配置读不出）时原样返回并已记 warning，不静默。
+
+    新勾选的游戏在旧缓存里没有查询结果：给一张「尚未查询」占位卡而不是
+    让它凭空消失（占位符兜底纪律）。秒开铁律不破 —— 占位不现场打接口，
+    用户点「刷新」或等下一轮巡检才真正查询；占位标记 placeholder=True，
+    前端据此渲染中性卡，且绝不落入缓存文件。"""
     if enabled is None:
         return payload
     out = dict(payload)
-    out["games"] = [g for g in (payload.get("games") or [])
-                    if isinstance(g, dict) and g.get("game") in enabled]
+    games = [g for g in (payload.get("games") or [])
+             if isinstance(g, dict) and g.get("game") in enabled]
+    present = {g.get("game") for g in games}
+    missing = enabled - present
+    if missing:
+        names = _game_display_map()
+        for gid in sorted(missing):
+            games.append({
+                "game": gid,
+                "game_name": names.get(gid, gid),
+                "placeholder": True,
+            })
+    out["games"] = games
     return out
 
 
@@ -1439,7 +1483,16 @@ def live_status(force: bool = False) -> Dict[str, Any]:
     from core.config import RESOURCE_TASK_NAMES
     from main import collect_statuses
 
-    statuses = collect_statuses(cfg)
+    with _LIVE_LOCK:
+        # 等锁期间别的线程可能刚完成刷新：二次判定进程缓存新鲜度，
+        # 新鲜就吃它的结果——这就是并发「刷新」不去重会双打接口的原因所在
+        cached = _LIVE_CACHE.get("payload")
+        if cached is not None and (time.time() - float(_LIVE_CACHE.get("at") or 0)) < _LIVE_TTL_SECONDS:
+            payload = dict(cached)
+            payload["cached"] = True
+            return _filter_live_games(payload, enabled)
+
+        statuses = collect_statuses(cfg)
 
     games: List[Dict[str, Any]] = []
     for status in statuses:
@@ -1651,7 +1704,8 @@ def run_mihoyo(session: Session) -> None:
                 )
             else:
                 session.add_result(game, label, True)
-        session.step = len(updated_ids)
+        with session._lock:   # snapshot() 在锁里读 step，写侧同锁防读改写交错
+            session.step = len(updated_ids)
         updated = [MIHOYO_GAMES.get(g, g) for g in updated_ids]
 
         note = "设备指纹已绑定到这些游戏，可直接运行 python main.py 验证"
@@ -1775,7 +1829,8 @@ def run_skland(session: Session) -> None:
         else:
             session.add_result(target, name, True)
         written.append(name)
-        session.step += 1
+        with session._lock:   # 同 snapshot() 的读锁口径
+            session.step += 1
         logger.info("%s 写入成功（一次扫码）", name)
 
     if not written:
@@ -1846,7 +1901,9 @@ def get_page() -> str:
             try:
                 _PAGE_CACHE["html"] = _assemble_page()
                 _PAGE_CACHE["stamp"] = stamp
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
+                # 半写瞬间的 ui/*.js 会以 UnicodeDecodeError（ValueError 子类）
+                # 冒出来，只捕 OSError 挡不住——降级必须覆盖两种
                 if not cached:
                     raise RuntimeError(
                         f"前端三件套读取失败（ui/ 目录不完整？）：{exc}"

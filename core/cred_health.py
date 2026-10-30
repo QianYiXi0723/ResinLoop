@@ -32,6 +32,9 @@ def _load() -> Dict[str, Any]:
     """读账本；不存在 / 损坏一律当空结构（带 warning），绝不抛出。"""
     try:
         raw = json.loads(CRED_HEALTH_PATH.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            logger.warning("cred_health.json 结构异常（顶层不是对象），按空账本处理")
+            return {"version": 1, "items": {}}
         items = raw.get("items")
         if isinstance(items, dict):
             return {"version": 1, "items": items}

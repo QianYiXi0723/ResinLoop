@@ -544,8 +544,29 @@ def setup_logging(console: bool = False) -> None:
     setup_logger(logging_cfg, base_dir=BASE_DIR, console=console)
 
 
+#: 一轮检查的进程内重入门闩：调度 / 补发 / 托盘手动 / .run_now 四个线程入口都可能
+#: 同时进来（一轮检查 30~90 秒，托盘按钮随时可点）。非阻塞获取——上一轮没跑完就
+#: 跳过本次触发：定时槽在 _tick 里「先记账后执行」，跳过不会造成重复触发，而当轮
+#: 在跑的那次本身就是完整检查（提醒决策看推送状态不看槽位）；手动触发再点一次即可。
+_CHECK_GATE = threading.Lock()
+
+
 def run_check(reason: str, dry_run: bool = False) -> int:
-    """跑一轮检查，任何异常都不许冒出去。返回退出码（失败也返回非 0）。"""
+    """跑一轮检查，任何异常都不许冒出去。返回退出码（失败也返回非 0）。
+
+    进程内重入保护见 _CHECK_GATE；CLI --once 是独立进程，不在此闸内。
+    """
+    if not _CHECK_GATE.acquire(blocking=False):
+        logger.warning("上一轮检查尚未结束，本次触发跳过：%s", reason)
+        return 0
+    try:
+        return _run_check_locked(reason, dry_run=dry_run)
+    finally:
+        _CHECK_GATE.release()
+
+
+def _run_check_locked(reason: str, dry_run: bool = False) -> int:
+    """run_check 的实体（调用方必须已持 _CHECK_GATE）。"""
     try:
         from core.config import load_config
         from main import _apply_mihoyo_query_config, run_once
@@ -612,7 +633,10 @@ def _wait(seconds: float, stop_event: threading.Event) -> bool:
             try:
                 RUN_NOW_FLAG.unlink()
             except OSError as exc:
-                logger.warning("手动巡检标记删除失败（%s），本轮仍照常触发", exc)
+                # 删不掉就跳过本轮触发（下个 tick 再试）——照常触发的话标记残留
+                # 会以「30 秒 + 一轮检查」的节奏无限重复手动巡检
+                logger.warning("手动巡检标记删除失败（%s），本轮跳过等待下个 tick 重试", exc)
+                continue
             logger.info("收到立即巡检请求 %s", RUN_NOW_FLAG.name)
             return True
     return False
@@ -798,6 +822,19 @@ def start_daemon() -> Dict[str, Any]:
             "already": True,
             "pid": current["pid"],
             "message": f"守护进程已在运行（PID {current['pid']}）",
+        }
+
+    # 心跳超时 ≠ 进程没了：一轮慢检查（活动缓存首拉 + 五游戏查询，最坏两分钟上下）
+    # 就能让 status() 显示未运行。此时清状态拉新的会造出双守护进程（同槽位双推送、
+    # 旧实例从此 UI 停不掉）——先验旧 pid 指向的进程是否真活着，活着就拒绝拉起。
+    old_pid = current.get("pid")
+    if old_pid and pid_alive(old_pid):
+        return {
+            "ok": False,
+            "message": (
+                f"检测到守护进程仍在运行（PID {old_pid}，心跳超时可能只是检查耗时长），"
+                "已拒绝重复拉起；确认卡死请先在托盘退出或稍后再试"
+            ),
         }
 
     # 清掉上次异常退出留下的 pid / 心跳，避免误判

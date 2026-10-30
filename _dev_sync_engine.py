@@ -102,9 +102,31 @@ def main() -> int:
             changes.append((target, body, group))
 
     if check_only:
-        if not changes:
+        # 同步只增不删：工作树里删掉/改名的文件会在 engine/ 永久残留——
+        # --check 顺带把这类残留报出来（只报不删，清理由人决定）
+        expected = {target for target, _body, _group in plan()}
+        extras: list[Path] = []
+        covered = [ENGINE / name for name in PY_FILES] + [
+            ENGINE / "app.py", ENGINE / "core", ENGINE / "ui",
+            ENGINE / "tools", ENGINE / "static" / "icons",
+        ]
+        for root in covered:
+            if root.is_file():
+                if root not in expected:
+                    extras.append(root)
+            elif root.is_dir():
+                extras.extend(
+                    f for f in root.rglob("*") if f.is_file() and f not in expected
+                )
+        if not changes and not extras:
             print("engine/ 与工作树一致，无漂移。")
             return 0
+        if extras:
+            print(f"engine/ 有 {len(extras)} 个工作树已不存在的残留文件（同步只增不删，确认后手动清理）：")
+            for f in extras:
+                print(f"  [残留] {f.relative_to(ROOT)}")
+        if not changes:
+            return 1
         print(f"engine/ 落后工作树 {len(changes)} 个文件：")
         for target, _body, group in changes:
             print(f"  [{group}] {target.relative_to(ROOT)}")

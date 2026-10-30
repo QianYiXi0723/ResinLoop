@@ -21,6 +21,9 @@ import hashlib
 import hmac
 import json
 import logging
+import os
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -109,12 +112,20 @@ def _load_cred_cache(path: Path) -> Dict[str, Dict[str, str]]:
         return {}
 
 
+#: 凭证缓存读改写闸：并行查询同游戏多账号时，无锁整份覆盖会丢掉对方刚写入的
+#: 条目（写入方各自持着旧快照）；网络换取在锁外，锁只包「重读→更新→原子写」。
+_CRED_CACHE_LOCK = threading.Lock()
+
+
 def _save_cred_cache(path: Path, cache: Dict[str, Dict[str, str]]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8"
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
         )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(cache, ensure_ascii=False, indent=2))
+        os.replace(tmp_name, path)
     except OSError as exc:
         logger.warning("森空岛凭证缓存写入失败（不影响本次运行）：%s", exc)
 
@@ -301,9 +312,12 @@ def get_skland_credentials(
             "请补齐 token（鹰角通行证 Token 即可，脚本会自动换取）"
         )
     if direct_token:
-        result = _exchange_cred(direct_token)
-        cache[direct_token] = {**result, "saved_at": int(time.time())}
-        _save_cred_cache(cache_path, cache)
+        result = _exchange_cred(direct_token)   # 网络换取在锁外，不阻塞别的 key
+        with _CRED_CACHE_LOCK:
+            # 锁内重读：等网络期间其他线程可能已写盘，直接用进锁前的旧快照会丢条目
+            cache = _load_cred_cache(cache_path)
+            cache[direct_token] = {**result, "saved_at": int(time.time())}
+            _save_cred_cache(cache_path, cache)
         logger.info("已用鹰角 token 换取并缓存森空岛凭证（%s）", cache_path.name)
         return result
 

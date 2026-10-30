@@ -21,7 +21,11 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 
@@ -196,9 +200,7 @@ def cmd_login_skland(config_path: Path, game: str) -> int:
         if str(query_node.get("provider", "")).strip().lower() == "mock":
             query_node["provider"] = "miyoushe"
             _safe_console("已自动把 query.provider 从 mock 切到 miyoushe（否则查的是模拟数据）")
-        config_path.write_text(
-            json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
+        _atomic_write_json(config_path, raw)
         for target in written:
             # 清掉该游戏的旧 cred 缓存，强制下次用新 token 重新换取
             (BASE_DIR / "logs" / f"skland_cred_{target}.json").unlink(missing_ok=True)
@@ -274,9 +276,7 @@ def cmd_login_mihoyo(config_path: Path, proxy: Optional[str] = None) -> int:
         if str(query_node.get("provider", "")).strip().lower() == "mock":
             query_node["provider"] = "miyoushe"
             switched = True
-        config_path.write_text(
-            json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
+        _atomic_write_json(config_path, raw)
     except (OSError, ValueError) as exc:
         _safe_console(f"[配置写入失败] {exc}")
         _safe_console("请手动把下面的 Cookie 填到三款游戏的 credential.cookie：")
@@ -421,6 +421,29 @@ def cmd_init(config_path: Path) -> int:
     return 0
 
 
+#: 凭证失效候选 retcode（数值精确匹配；集合 = 2A 任务书清单的现行口径，禁自行增删）。
+#: 不能子串匹配——"retcode=-100" in msg 会把 -10003（DS 盐失效）误判成凭证失效。
+_CRED_AUTH_RETCODES = frozenset({10001, -100, 1034, 5003, 10041})
+_RETCODE_RE = re.compile(r"retcode=(-?\d+)")
+
+
+def _atomic_write_json(path: Path, raw: dict) -> None:
+    """config.json 的 CLI 写入与 login_ui.save_raw_config 同纪律：mkstemp 唯一临时名
+    + os.replace 原子替换。裸 write_text 与控制台保存交错会整文件丢字段，
+    写一半被杀则 config.json 成非法 JSON（daemon 调度静默瘫痪）。"""
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".config-", suffix=".tmp", dir=str(path.parent)
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(raw, ensure_ascii=False, indent=2) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def _query_account(account, provider: str) -> GameStatus:
     """查询单个账号（线程内执行，第二阶段提速的并行单元）。
 
@@ -468,14 +491,16 @@ def _query_account(account, provider: str) -> GameStatus:
         )
     except Exception as exc:  # 兜底，绝不让查询异常打断整轮
         logger.exception("%s 查询异常", account.game_name)
+        # 凭证失效判定按 retcode 数值精确匹配：不能子串匹配——
+        # "retcode=-100" in msg 会把 -10003（DS 盐失效）误判成凭证失效
+        m = _RETCODE_RE.search(str(exc))
+        cred_kind = "auth" if (m and int(m.group(1)) in _CRED_AUTH_RETCODES) else "other"
         return GameStatus(
             game_id=account.game,
             game_name=account.game_name,
             nickname=account.nickname,
             error=f"查询异常：{exc}",
-            cred_kind=("auth" if ("retcode=10001" in str(exc) or "retcode=-100" in str(exc)
-                                  or "retcode=1034" in str(exc) or "retcode=5003" in str(exc)
-                                  or "retcode=10041" in str(exc)) else "other"),
+            cred_kind=cred_kind,
         )
 
 
@@ -627,8 +652,15 @@ def run_once(config: AppConfig, dry_run: bool = False) -> int:
 
     cred_alerts = []
     accounts = config.enabled_accounts
+    game_seen: dict = {}
     for idx, status in enumerate(statuses):
-        account = accounts[idx] if idx < len(accounts) else None
+        # 按游戏匹配账号，不能按全量下标：collect_statuses 在 mihoyo 被过滤时返回的
+        # statuses 比全量 accounts 短，下标会把方舟配到原神的 uid 上。同游戏多账号
+        # 按「该游戏内第几次出现」对齐（collect_statuses 过滤保序，两边顺序一致）。
+        same_game = [acc for acc in accounts if acc.game == status.game_id]
+        seen = game_seen.get(status.game_id, 0)
+        game_seen[status.game_id] = seen + 1
+        account = same_game[seen] if seen < len(same_game) else None
         key = f"#{idx}:{status.game_id}"
         if account is not None:
             try:

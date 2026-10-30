@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import shutil
 import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -128,24 +129,28 @@ span{{color:#9aa3af;font-size:12px}}
             self._text(404, "not found")
             return
 
-        try:
-            data = target.read_bytes()
-        except OSError as exc:
-            self._text(500, f"读取失败：{exc}")
-            return
-
         ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
         if name.lower().endswith(".apk"):
             ctype = "application/vnd.android.package-archive"
-        self._send_bytes(
-            200,
-            data,
-            ctype,
-            {
-                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}",
-                "Cache-Control": "no-store",
-            },
-        )
+        extra = {
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}",
+            "Cache-Control": "no-store",
+        }
+        # 流式发送：APK 动辄上百 MB，整读进内存再写响应会随并发下载线性吃内存
+        size = target.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(size))
+        for key, value in extra.items():
+            self.send_header(key, value)
+        self.end_headers()
+        if self.command == "HEAD":
+            return                      # HEAD 只报 size，不读文件内容
+        try:
+            with target.open("rb") as src:
+                shutil.copyfileobj(src, self.wfile, length=1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            pass                        # 手机中途取消下载，属正常断开
 
     def do_HEAD(self) -> None:  # noqa: N802
         self.do_GET()

@@ -13,6 +13,11 @@ _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 def _load() -> Dict[str, Any]:
     try:
         raw = json.loads(PUSH_FAIL_PATH.read_text(encoding="utf-8"))
+        # 文件可能被外部改成合法 JSON 但非对象（[]/null/"x"）——raw.get 会
+        # AttributeError 冒出去炸整轮巡检，先验形状
+        if not isinstance(raw, dict):
+            logger.warning("push_fail.json 结构异常（顶层不是对象），按空账本处理")
+            return {"version": 1, "items": {}}
         if isinstance(raw.get("items"), dict):
             return {"version": 1, "items": raw["items"]}
         logger.warning("push_fail.json 结构异常（items 不是对象），按空账本处理")

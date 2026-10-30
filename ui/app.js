@@ -1,6 +1,6 @@
 
 /* =========================== Tab 切换 =========================== */
-const PANEL_NAMES = ['history', 'query', 'account', 'notify', 'schedule'];
+const PANEL_NAMES = ['history', 'query', 'account', 'schedule'];
 let schedTimer = null;
 
 function switchTab(name){
@@ -14,9 +14,9 @@ function switchTab(name){
   });
 
   if (name === 'query') loadQuery();
-  if (name === 'notify') { loadPush(); loadPushPreview(); loadPushRecent(); }
   if (name === 'schedule') { loadSchedule(); startSchedPoll(); loadThresholds(); loadAutostart(); loadAlwaysNotify(); loadRunLog(); } else { stopSchedPoll(); }
-  if (name === 'account') { loadDevice(); loadAccounts(); refreshNotice(); }
+  /* 账号与通知已合并为一页：通知的三路加载并入 account 分支 */
+  if (name === 'account') { loadDevice(); loadAccounts(); refreshNotice(); loadPush(); loadPushPreview(); loadPushRecent(); }
   if (name === 'history') { loadHistory(); loadLive(false); }
 }
 
@@ -35,7 +35,7 @@ document.querySelectorAll('.nav button[data-tab]').forEach(function(btn){
 document.addEventListener('click', function(e){
   /* 点击高亮：点卡片/折叠框加 .active（蓝描边），点其它卡片时切换。
      常驻只是「点过」的痕迹，光标离开就由下面的 pointerout 撤掉（见下方注释）。
-     details 折叠框同样适用（dev-card 也是 .card）。
+     各 .card 均适用（dev-card 入口卡也是 .card）。
      【死命令：同一事件只绑一次】原独立监听已并入本处理函数 */
   const card = e.target.closest('.card');
   document.querySelectorAll('.card.active').forEach(function(c){
@@ -176,7 +176,7 @@ function updateLoginButtons(){
 /* 从后端拉取真实的巡检开关与凭证状态，覆盖页面默认值 */
 function loadAccounts(){
   fetch('/api/accounts').then(function(r){ return r.json(); }).then(function(d){
-    if (!d || !d.ok) return;
+    if (!d || !d.ok) { credLoadFailed(); return; }
     /* 存一份映射，扫码选择弹窗按它显示游戏名与凭证状态 */
     window.__accounts = {};
     (d.items || []).forEach(function(it){ window.__accounts[it.id] = it; });
@@ -191,7 +191,13 @@ function loadAccounts(){
     renderKpiCred(d);
     renderCapsuleDots(d);
     updateLoginButtons();
-  }).catch(function(){});
+  }).catch(credLoadFailed);
+}
+
+/* 读取失败要有真反馈：凭证健康/KPI 停在「读取中…」是假加载 */
+function credLoadFailed(){
+  renderCredHealth({ ok: false, items: [] });
+  kpiSet('k-cred-sub', '读取失败');
 }
 
 /* 胶囊黄点：该平台任一游戏未绑定凭证 → 点亮 */
@@ -237,9 +243,16 @@ function renderCredHealth(d){
   const box = document.getElementById('cred-health');
   const badge = document.getElementById('cred-health-badge');
   if (!box) return;
-  const items = (d && d.items) || [];
+  if (d && d.ok === false) {
+    box.innerHTML = '<div class="emptybox">读取账号状态失败，请点「刷新」或稍后重试。</div>';
+    if (badge) badge.textContent = '-';
+    return;
+  }
+  /* 列与徽章同口径 = 仅启用账号：与「今日完成 0/3」同一分母（KPI tip 的文档契约），
+     未勾选游戏的凭证数据保留在配置里，重新勾选即原样恢复 */
+  const items = ((d && d.items) || []).filter(function(i){ return i.enabled; });
   if (!items.length) {
-    box.innerHTML = '<div class="emptybox">config.json 里没有账号节点。</div>';
+    box.innerHTML = '<div class="emptybox">没有启用任何游戏账号。</div>';
     if (badge) badge.textContent = '-';
     return;
   }
@@ -253,7 +266,7 @@ function renderCredHealth(d){
       const age = it.has_credential ? credAgeDays(it.credential_updated_at) : null;
       let st, stText, timeTxt;
       if (!it.has_credential) {
-        st = 'err'; stText = '未绑定'; timeTxt = '—';
+        st = 'err'; stText = '未绑定'; timeTxt = '从未更新';
       } else if (age == null) {
         st = 'ok'; stText = '已绑定'; timeTxt = '从未更新';
       } else if (age > 7) {
@@ -262,7 +275,8 @@ function renderCredHealth(d){
         st = 'ok'; stText = '已绑定'; timeTxt = relTime(it.credential_updated_at);
       }
       return '<div class="cred-row' + (st === 'err' ? ' bad' : '') +
-             (st === 'warn' ? ' stale' : '') + '">' +
+             (st === 'warn' ? ' stale' : '') + '" data-gid="' + escHtml(it.id) +
+             '" title="点击扫码更新该游戏凭证">' +
         selIconHtml(it.id, it.name || it.id) +
         '<div class="cred-info"><b>' + escHtml(it.name || it.id) + '</b>' +
         '<small>' + stText +
@@ -272,6 +286,15 @@ function renderCredHealth(d){
         '</div>';
     }).join('') + '</div>';
 }
+
+/* 凭证行点击直达扫码（Discord 连接页范式：状态与动作同卡）：
+   只预选该游戏，不改监控开关、不沿用「已绑定即预勾」默认 */
+document.getElementById('cred-health').addEventListener('click', function(e){
+  const row = e.target.closest('[data-gid]');
+  if (!row) return;
+  const box = document.querySelector('.sel-grid input[value="' + row.dataset.gid + '"]');
+  if (box) openPickModal(box.name, [row.dataset.gid]);
+});
 
 /* 选择卡/凭证行的游戏图标：五款游戏都有官方图（终末地自 v1.1.8 起用 App Store 图） */
 function selIconHtml(gid, name){
@@ -374,7 +397,7 @@ async function start(provider, targets){
     const d = await r.json();
     if (!d.ok) { showError(d.message); setBusy(false); return; }
     sid = d.sid;
-    poll();
+    poll(pollEpoch);
   } catch (e) {
     showError('无法连接本地服务：' + e);
     setBusy(false);
@@ -387,7 +410,7 @@ const PROVIDER_LABEL = { m: '米游社', s: '森空岛' };
 let pickGroup = null;
 
 /* 点胶囊 → 打开选择弹窗（默认勾选已绑定凭证的游戏，未绑定不勾） */
-function openPickModal(group){
+function openPickModal(group, forced){
   pickGroup = group;
   const accs = window.__accounts || {};
   const boxes = [...document.querySelectorAll('input[name="' + group + '"]')];
@@ -397,8 +420,11 @@ function openPickModal(group){
     const bound = it.has_credential === true;
     const known = it.has_credential === true || it.has_credential === false;
     const stateText = bound ? '已绑定凭证' : (known ? '未绑定' : '凭证状态未知');
+    /* forced（凭证行点击直达）：只勾指定游戏——动作针对单个条目，
+       不沿用「已绑定即预勾」默认，也绝不触碰监控开关 */
+    const checked = forced ? (forced.indexOf(b.value) !== -1) : bound;
     return '<label class="pick-row">' +
-      '<input type="checkbox" value="' + escHtml(b.value) + '"' + (bound ? ' checked' : '') + '>' +
+      '<input type="checkbox" value="' + escHtml(b.value) + '"' + (checked ? ' checked' : '') + '>' +
       selIconHtml(b.value, name) +
       '<span class="pick-name">' + escHtml(name) +
         '<small>' + stateText + '</small></span>' +
@@ -415,6 +441,33 @@ function closePick(){
   document.getElementById('pick-modal').hidden = true;
   pickGroup = null;
 }
+
+/* 设备伪装：点击入口卡弹配置弹窗（低频专注任务用模态，不再抽屉展开） */
+function openDev(){
+  document.getElementById('dev-modal').hidden = false;
+}
+function closeDev(){
+  document.getElementById('dev-modal').hidden = true;
+}
+/* Esc 统一退出所有模态（Nielsen #3/#4：同类组件同一套紧急出口）；
+   stage 关闭走 reset()——进行中的扫码会话关闭即中断，语义等同其 ✕ 按钮 */
+document.addEventListener('keydown', function(e){
+  if (e.key !== 'Escape') return;
+  if (!document.getElementById('dev-modal').hidden) { closeDev(); return; }
+  if (!document.getElementById('pick-modal').hidden) { closePick(); return; }
+  if (!document.getElementById('stage').hidden) reset();
+});
+/* 遮罩点击关闭：pick/dev/addtime（关闭均无副作用）；stage 例外——
+   进行中的扫码会话防误触中断（错误预防优先于一致，故意不一致） */
+document.querySelectorAll('.modal-mask').forEach(function(mask){
+  if (mask.id === 'stage') return;
+  mask.addEventListener('click', function(e){
+    if (e.target !== mask) return;
+    if (mask.id === 'pick-modal') closePick();
+    else if (mask.id === 'dev-modal') closeDev();
+    else if (mask.id === 'addtime-modal') rlCloseAddTime();
+  });
+});
 
 function pickedGames(){
   return [...document.querySelectorAll('#pick-list input:checked')].map(function(i){
@@ -453,18 +506,26 @@ function showError(msg){
   document.getElementById('qrbox').innerHTML = '<span class="ph">未能创建二维码</span>';
 }
 
-function poll(){
+/* 扫码轮询的会话代数：reset()/重新 start() 时 +1。在途 fetch 杀不掉——
+   响应回来先对代数，旧代的直接作废，否则刚关掉的浮层会被旧响应弹回来、
+   新旧两条轮询链还会并存（频率翻倍 + 旧会话覆盖新会话渲染）。 */
+let pollEpoch = 0;
+
+function poll(epoch){
+  const my = epoch;
   fetch('/api/state?sid=' + encodeURIComponent(sid))
     .then(function(r){ return r.json(); })
     .then(function(d){
+      if (my !== pollEpoch) return;   // 旧代在途响应：作废
       render(d);
       if (d.state === 'done' || d.state === 'error') { setBusy(false); loadAccounts(); return; }
-      timer = setTimeout(poll, 1000);
+      timer = setTimeout(poll, 1000, my);
     })
-    .catch(function(){ timer = setTimeout(poll, 2000); });
+    .catch(function(){ if (my === pollEpoch) timer = setTimeout(poll, 2000, my); });
 }
 
 function reset(){
+  pollEpoch += 1;                     // 在途响应全部作废
   if (timer) { clearTimeout(timer); timer = null; }
   sid = null;
   setBusy(false);
@@ -487,7 +548,7 @@ function refreshNotice(){
     if (d.configured) { box.style.display = 'none'; return; }
     box.style.display = 'block';
     box.innerHTML =
-      '<b>尚未配置推送通道</b>，手机收不到提醒。去 <a data-goto="notify">「通知绑定」</a> 填写。';
+      '<b>尚未配置推送通道</b>，手机收不到提醒。去 <a data-goto="account">「账号与通知」</a> 填写。';
   }).catch(function(){});
 }
 
@@ -512,10 +573,12 @@ function renderDevice(d){
   document.getElementById('dev-badge').textContent =
     d.custom ? '真机档案' : (label || '随机机型');
   document.getElementById('dev-badge').className = 'badge ' + (d.custom ? 'ok' : '');
+  /* 档案字段来自用户粘贴的第三方导出文本（设备伪装页的核心工作流），
+     落盘持久化后每次启动都回显——此处必须转义，否则是持久化 XSS */
   document.getElementById('dev-current').innerHTML =
-    '当前设备：<b>' + (p.brand || '?') + ' ' + (p.model || '?') + '</b>' +
-    ' · Android ' + (p.os_version || '?') +
-    ' · OAID <code>' + (p.oaid || '?') + '</code>' +
+    '当前设备：<b>' + escHtml(p.brand || '?') + ' ' + escHtml(p.model || '?') + '</b>' +
+    ' · Android ' + escHtml(p.os_version || '?') +
+    ' · OAID <code>' + escHtml(p.oaid || '?') + '</code>' +
     ' · 指纹缓存' + (d.cache_exists ? '存在' : '<b>已清空</b>');
   const resetBtn = document.getElementById('btn-dev-reset');
   if (resetBtn) resetBtn.hidden = !d.custom;
@@ -534,15 +597,15 @@ function renderDevice(d){
     qrBox.querySelector('img').src = 'data:image/png;base64,' + apk.qr;
     let shown = apk.url;
     try { shown = decodeURIComponent(apk.url); } catch (e) {}
-    meta.innerHTML = apk.name + '（' + apk.size_text + '）<br>' + shown +
-      (apk.warning ? '<br><span style="color:var(--warn)">⚠ ' + apk.warning + '</span>' : '');
+    meta.innerHTML = escHtml(apk.name) + '（' + escHtml(apk.size_text) + '）<br>' + escHtml(shown) +
+      (apk.warning ? '<br><span class="warn-t">⚠ ' + escHtml(apk.warning) + '</span>' : '');
   } else {
     qrBox.innerHTML =
       '<div style="padding:10px 8px;text-align:center">' +
       '<div style="font-size:11px;color:var(--muted);line-height:1.5">二维码不可用</div>' +
       '<button class="btn sm" id="btn-apk-retry" style="margin-top:6px">生成下载二维码</button>' +
       '</div>';
-    meta.innerHTML = '<span style="color:var(--warn)">' + (apk.message || '未找到 APK') + '</span>';
+    meta.innerHTML = '<span class="warn-t">' + escHtml(apk.message || '未找到 APK') + '</span>';
     const btn = document.getElementById('btn-apk-retry');
     if (btn) btn.addEventListener('click', restartApkService);
   }
@@ -560,11 +623,11 @@ async function restartApkService(){
       box.querySelector('img').src = 'data:image/png;base64,' + d.qr;
       let shown = d.url;
       try { shown = decodeURIComponent(d.url); } catch (e) {}
-      meta.innerHTML = d.name + '（' + d.size_text + '）<br>' + shown;
+      meta.innerHTML = escHtml(d.name) + '（' + escHtml(d.size_text) + '）<br>' + escHtml(shown);
       toast('下载服务已就绪，端口 ' + d.port);
     } else {
       if (btn) { btn.disabled = false; btn.textContent = '生成下载二维码'; }
-      meta.innerHTML = '<span style="color:var(--warn)">' + (d.message || '仍然不可用') + '</span>';
+      meta.innerHTML = '<span class="warn-t">' + escHtml(d.message || '仍然不可用') + '</span>';
       toast('仍然不可用：' + (d.message || ''), true);
     }
   } catch (e) {
@@ -771,8 +834,8 @@ function loadPush(){
 
 /* ---------- 三区结构：渠道列表切换 + 最近推送记录 ---------- */
 const CHANNEL_NAMES = {
-  serverchan: '💬 Server酱（微信）',
-  qmsg: '🐧 Qmsg 酱（QQ）'
+  serverchan: 'Server酱（微信）',
+  qmsg: 'Qmsg 酱（QQ）'
 };
 let selChannel = 'serverchan';
 
@@ -908,7 +971,7 @@ function renderAlwaysNotify(v){
 function loadAlwaysNotify(){
   fetch('/api/push').then(function(r){ return r.json(); }).then(function(d){
     if (d.ok) renderAlwaysNotify(d.always_notify);
-  }).catch(function(){ /* 静默：进页不打断，通知绑定页的 loadPush 负责报错 */ });
+  }).catch(function(){ /* 静默：/api/push 失败时 loadPush 的 toast 已报错，本摘要等任一次成功渲染跟进 */ });
 }
 
 const anSelfSave = document.getElementById('always-notify');
@@ -940,7 +1003,7 @@ async function testPush(){
     if (!d.ok) { toast(d.message || '发送失败', true); return; }
     const rows = (d.results || []).map(function(x){
       return '<div><span class="' + (x.ok ? 'i-ok' : 'i-no') + '">' +
-             (x.ok ? '✓' : '✗') + '</span>' + x.label + ' — ' + x.message + '</div>';
+             (x.ok ? '✓' : '✗') + '</span>' + escHtml(x.label) + ' — ' + escHtml(x.message) + '</div>';
     }).join('');
     box.innerHTML = '<div class="res">' + rows + '</div>';
     box.hidden = false;
@@ -1041,6 +1104,20 @@ function renderSchedule(d, force){
         '<button title="删除" data-remove="' + t + '">×</button></span>';
     }).join('');
   }
+  /* cron-job.org「next runs」范式：今天还剩哪几轮由服务端算好带来
+     （today_next，服务器时钟口径）；字段缺失（后端未换血）时静默隐藏 */
+  const tn = document.getElementById('today-next');
+  if (tn) {
+    if (!d.today_next) {
+      tn.hidden = true;
+    } else if (d.today_next.length) {
+      tn.textContent = '今天还有 ' + d.today_next.length + ' 轮：' + d.today_next.join('、');
+      tn.hidden = false;
+    } else {
+      tn.textContent = '今天的时间点都已跑完';
+      tn.hidden = false;
+    }
+  }
   renderRuler(times);
   document.getElementById('d-count').textContent = times.length + ' 个';
   /* 下次提醒：守护进程停止时与 KPI 保持一致显示「已暂停」，不再给一个够不着的时刻 */
@@ -1087,7 +1164,12 @@ async function toggleActivityAlert(){
   const want = box.checked;
   box.disabled = true;
   try {
-    const d = await postJSON('/api/activity_alert', { enabled: want });
+    // 同 catch_up：开关提交时把天数输入框的当前值带上（非法值留在框里由保存按钮兜）
+    const acInput = document.getElementById('activity-days');
+    const acParsed = acInput && acInput.value.trim() !== '' ? parseInt(acInput.value, 10) : NaN;
+    const acPayload = { enabled: want };
+    if (!isNaN(acParsed)) acPayload.days = acParsed;
+    const d = await postJSON('/api/activity_alert', acPayload);
     if (!d.ok) { box.checked = !want; toast(d.message || '设置失败', true); return; }
     renderActivitySwitch(d.activity_alert_enabled);
     toast(want ? '已开启活动结束提醒' : '已关闭活动结束提醒');
@@ -1127,8 +1209,11 @@ async function toggleCatchUp(){
   const want = box.checked;
   box.disabled = true;
   try {
+    // 顺带把输入框里的当前值一起提交（resin 开关同款口径），别让拨开关吞掉刚输入的数字
+    const cuInput = document.getElementById('catch-up-minutes');
+    const cuParsed = cuInput && cuInput.value.trim() !== '' ? parseInt(cuInput.value, 10) : NaN;
     const d = await postJSON('/api/catch_up',
-      { minutes: lastCatchUp.minutes, enabled: want });
+      { minutes: isNaN(cuParsed) ? lastCatchUp.minutes : cuParsed, enabled: want });
     if (!d.ok) {
       box.checked = !want;
       toast(d.message || '设置失败', true);
@@ -1168,7 +1253,13 @@ async function saveCatchUp(){
 function loadSchedule(){
   fetch('/api/schedule').then(function(r){ return r.json(); })
     .then(renderSchedule)
-    .catch(function(){});
+    .catch(function(){
+      /* 持续失败给真状态（3 秒轮询自愈成功后由 renderSchedule 正常回写，不 toast 防刷屏） */
+      const st = document.getElementById('d-state');
+      if (st) { st.textContent = '连接失败'; st.className = 'badge err'; }
+      const tn = document.getElementById('today-next');
+      if (tn) tn.hidden = true;
+    });
 }
 
 /* ========================= 开机自启 ========================= */
@@ -1199,13 +1290,14 @@ function renderAutostart(d){
   }
   if (hint) {
     if (!supported) {
+      hint.hidden = false;
       hint.textContent = (d && d.message) || '仅支持 Windows';
     } else if (d.stale) {
+      hint.hidden = false;
       hint.innerHTML = '注册表路径已失效：把开关关掉再打开一次即可刷新。';
-    } else if (d.enabled) {
-      hint.innerHTML = '下次登录 Windows 自动在托盘启动。';
     } else {
-      hint.innerHTML = '勾选后下次登录 Windows 自动在托盘启动。';
+      /* 正常态无增量信息（副标题已说明），不再占一行 */
+      hint.hidden = true;
     }
   }
   refreshSetSummaries();
@@ -1948,50 +2040,51 @@ function renderLive(d){
   if (!games.length) {
     box.innerHTML = '<div class="emptybox">没有启用的账号。</div>';
   } else {
-    box.innerHTML = '<table class="tbl"><thead><tr>' +
-      '<th>游戏</th><th>日常</th><th>体力</th><th>进度</th></tr></thead><tbody>' +
-      games.map(function(g){
-        const name = escHtml(g.game_name || g.game);
-        if (!g.ok) {
-          return '<tr><td>' + gameIconHtml(g.game) + name + '</td>' +
-            '<td><span class="badge err">失败</span></td>' +
-            '<td class="wrap err-t">' + escHtml(g.error || '未知错误') + '</td>' +
-            '<td>—</td></tr>';
-        }
-        if (g.stale) {
-          /* 数据待更新 ≠ 失败：凭证/网络/解析都正常，只是游戏里今天还没刷新。
-             灰色中性徽章 + 灰字说明，不画红字、不算进失败数。 */
-          return '<tr><td>' + gameIconHtml(g.game) + name + '</td>' +
-            '<td><span class="badge">数据待更新</span></td>' +
-            '<td class="wrap dim">' + escHtml(g.stale) + '</td>' +
-            '<td class="dim">—</td></tr>';
-        }
-        if (g.no_account) {
-          /* 未创建角色 ≠ 失败：凭证有效，只是这个账号下没这款游戏（勾选并
-             扫码了但没玩过它）。灰色提示，建号后自动生效。 */
-          return '<tr><td>' + gameIconHtml(g.game) + name + '</td>' +
-            '<td><span class="badge">未创建角色</span></td>' +
-            '<td class="wrap dim">' + escHtml(g.no_account) + '</td>' +
-            '<td class="dim">—</td></tr>';
-        }
-        const r = g.resource;
-        const st = g.finished
-          ? '<span class="dim">已完成</span>'
-          : '<span class="badge warn">未完成</span>';
-        if (!r || r.current == null) {
-          return '<tr><td>' + gameIconHtml(g.game) + name + '</td><td>' + st + '</td>' +
-            '<td class="dim">—</td><td class="dim">暂不支持</td></tr>';
-        }
-        const pct = (r.percent == null) ? 0 : r.percent;
-        const max = (r.maximum == null) ? '?' : r.maximum;
-        return '<tr><td>' + gameIconHtml(g.game) + name + '</td><td>' + st + '</td>' +
-          '<td class="mono">' + r.current + ' <span class="dim">/ ' + max +
-          ' · ' + escHtml(r.name) + '</span></td>' +
-          '<td><span class="bar"><i class="' + (pct >= 85 ? 'hot' : '') +
-          '" style="width:' + pct + '%"></i><i class="progress-glow' +
-          (pct >= 85 ? ' hot' : '') + '" style="left:' + pct + '%"></i></span><span class="dim">' + pct + '%</span>' +
-          staminaEtaHtml(g.game, r) + '</td></tr>';
-      }).join('') + '</tbody></table>';
+    /* 每游戏一张便笺卡（HoYoLAB 实时便笺形态）：卡片直接作为网格子项
+       （不加包装层——包装 div 会独占一条网格轨道，把卡片挤成竖排） */
+    box.innerHTML = games.map(function(g){
+      const name = escHtml(g.game_name || g.game);
+      const head = '<div class="live-card-head">' + gameIconHtml(g.game) +
+        '<b class="live-name">' + name + '</b>';
+      /* 占位卡：新勾选的游戏缓存里还没查询结果 —— 诚实占位，不伪造数据 */
+      if (g.placeholder) {
+        return '<div class="live-card">' + head + '<span class="st">尚未查询</span></div>' +
+          '<div class="live-msg dim">点「刷新」查询实时体力，或等下一轮定时巡检。</div></div>';
+      }
+      if (!g.ok) {
+        return '<div class="live-card">' + head + '<span class="st err">失败</span></div>' +
+          '<div class="live-msg err-t">' + escHtml(g.error || '未知错误') + '</div></div>';
+      }
+      if (g.stale) {
+        /* 数据待更新 ≠ 失败：凭证/网络/解析都正常，只是游戏里今天还没刷新 */
+        return '<div class="live-card">' + head + '<span class="st">数据待更新</span></div>' +
+          '<div class="live-msg dim">' + escHtml(g.stale) + '</div></div>';
+      }
+      if (g.no_account) {
+        /* 未创建角色 ≠ 失败：凭证有效，建号后自动生效 */
+        return '<div class="live-card">' + head + '<span class="st">未创建角色</span></div>' +
+          '<div class="live-msg dim">' + escHtml(g.no_account) + '</div></div>';
+      }
+      const st = g.finished ? '<span class="st ok">已完成</span>'
+                            : '<span class="st warn">未完成</span>';
+      const r = g.resource;
+      if (!r || r.current == null) {
+        return '<div class="live-card">' + head + st + '</div>' +
+          '<div class="live-msg dim">暂不支持体力查询</div></div>';
+      }
+      const pct = (r.percent == null) ? 0 : r.percent;
+      const max = (r.maximum == null) ? '?' : r.maximum;
+      return '<div class="live-card">' + head + st + '</div>' +
+        '<div class="live-res"><b class="mono">' + r.current +
+        ' <span class="dim">/ ' + max + '</span></b><span class="dim">' +
+        escHtml(r.name) + '</span></div>' +
+        '<div class="bar"><i class="' + (pct >= 85 ? 'hot' : '') +
+        '" style="width:' + pct + '%"></i><i class="progress-glow' +
+        (pct >= 85 ? ' hot' : '') + '" style="left:' + pct + '%"></i></div>' +
+        '<div class="live-eta"><span class="dim">' + pct + '%</span>' +
+        staminaEtaHtml(g.game, r) + '</div>' +
+        '</div>';
+    }).join('');
   }
   if (hint) {
     hint.textContent = '查询时间 ' + (d.generated_at || '-') +
@@ -2009,10 +2102,36 @@ function renderLive(d){
   if (lastHistory) renderKpiToday(lastHistory);
 }
 
+/* ========================= 刷新反馈（转圈按钮 + 卡片闪光） ========================= */
+function flashCard(el){
+  /* 刷新完成后对应卡片高亮一闪；reflow 重启动画保证连点也能再次触发 */
+  const card = el && el.closest ? el.closest('.card') : null;
+  if (!card) return;
+  card.classList.remove('flash');
+  void card.offsetWidth;
+  card.classList.add('flash');
+  setTimeout(function(){ card.classList.remove('flash'); }, 950);
+}
+function btnSpin(btn, promise){
+  /* 按钮进入转圈态；promise 落定（无论成败）恢复原文字并让所属卡片闪光 */
+  if (!btn) return promise;
+  const orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>';
+  const done = function(){
+    btn.disabled = false;
+    btn.innerHTML = orig;
+    flashCard(btn);
+  };
+  promise.then(done, done);
+  return promise;
+}
+
 function loadLive(force){
   const btn = document.getElementById('btn-live-refresh');
   const box = document.getElementById('live-grid');
-  if (btn) { btn.disabled = true; btn.textContent = '查询中…'; }
+  if (!liveLoaded) force = true;   // 打开控制台后自动强刷一次（仅首次；首刷失败下次重试）
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>'; }
   /* 已有缓存渲染的表格时不再打占位符 —— 静默刷新，数据到了平滑替换 */
   if (box && !liveRendered) box.innerHTML = '<div class="emptybox">正在查询，请稍候…</div>';
   kpiBusy(true);
@@ -2029,6 +2148,7 @@ function loadLive(force){
     .then(function(){
       kpiBusy(false);
       if (btn) { btn.disabled = false; btn.textContent = '刷新'; }
+      flashCard(btn);
     });
 }
 
@@ -2059,11 +2179,25 @@ const GAME_ICON = {
   starrail: '/static/icons/starrail',
   zzz: '/static/icons/zzz',
   arknights: '/static/icons/arknights',
-  endfield:  '/static/icons/endfield'
+  endfield:  '/static/icons/endfield',
+  miyoushe:  '/static/icons/miyoushe',
+  skland:    '/static/icons/skland'
 };
 
 /* 图标定义就绪后，把账号绑定页选择卡的静态占位换成官方图标 */
 fillSelIcons();
+
+/* 扫码胶囊平台图标：与游戏图标同一资产链路（/static/icons + mtime 戳），
+   emoji 仅作水合前的占位，身份层不再依赖 emoji 渲染 */
+function fillCapIcons(){
+  document.querySelectorAll('.cap-ico[data-plat]').forEach(function(el){
+    const tmp = document.createElement('div');
+    tmp.innerHTML = selIconHtml(el.getAttribute('data-plat'), '');
+    const node = tmp.firstChild;
+    if (node) { el.textContent = ''; el.appendChild(node); }
+  });
+}
+fillCapIcons();
 
 function actIconHtml(it){
   const base = GAME_ICON[it.game];
@@ -2236,8 +2370,8 @@ function loadActivities(){
 async function refreshActivities(){
   const btn = document.getElementById('btn-act-refresh');
   if (!btn) return;
-  const old = btn.textContent;
-  btn.disabled = true; btn.textContent = '刷新中…';
+  const old = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
   try {
     const d = await postJSON('/api/activities/refresh', {});
     if (d.ok === false) { toast(d.message || '刷新失败', true); return; }
@@ -2246,7 +2380,8 @@ async function refreshActivities(){
   } catch (e) {
     toast('刷新失败：' + e, true);
   } finally {
-    btn.disabled = false; btn.textContent = old;
+    btn.disabled = false; btn.innerHTML = old;
+    flashCard(btn);
   }
 }
 
@@ -2323,7 +2458,10 @@ function renderWeeklyCard(d){
   const chips = stats.map(function(s){
     totalDone += s.done;
     const missed = s.known - s.done;             // 查过但没做完（与周报同口径）
-    let html = '<span class="week-chip"><b>' + escHtml(s.name) + '</b> <span class="mono">' +
+    // 身份一致性：同一页里概览卡/最近 7 天都亮官方图标，汇总 chip 不该是
+    // 唯一无脸的——复用 gcard-ico 类，小窗紧凑模式（≤1099 隐藏图标）自动同治
+    let html = '<span class="week-chip">' + gameIconHtml(s.gid, 'gcard-ico') +
+      '<b>' + escHtml(s.name) + '</b> <span class="mono">' +
       s.done + '/' + totalDays + '</span>';
     if (s.done >= totalDays) html += '<span class="dim"> 全勤</span>';
     else if (missed > 0) html += '<span class="miss"> 漏 ' + missed + '</span>';
@@ -2331,6 +2469,49 @@ function renderWeeklyCard(d){
   }).join('');
   box.innerHTML = '<div class="week-chips">' + chips + '</div>';
   if (badge) badge.textContent = totalDone + '/' + (stats.length * totalDays);
+}
+
+/* ---------- 周完成率徽章（本周 vs 上周） ----------
+   /api/history?days=14 独立旁路：loadHistory 主链仍拉 7 天喂报表/KPI，
+   这里另拉 14 天只喂徽章，两路互不影响、失败互不传染。
+   /api/history 的 days 数组「今天在最上面」（core/history.py _summary_unsafe），
+   故 [0..6] 为本周、[7..13] 为上周。
+   口径与 weeklyStatsOf / history.weekly_digest 一致：known 天才算分母，
+   整天没查过不算漏；上周没数据（如全新安装）时只显示本周，不编造对比。 */
+function weekRateOf(dayRows, tracked){
+  let done = 0, known = 0;
+  (dayRows || []).forEach(function(row){
+    const games = (row && row.games) || {};
+    (tracked || []).forEach(function(gid){
+      const c = games[gid];
+      if (!c || !c.known) return;
+      known++;
+      if (c.finished) done++;
+    });
+  });
+  return known > 0 ? Math.round(done / known * 100) : null;
+}
+
+function loadWeekTrend(){
+  fetch('/api/history?days=14').then(function(r){ return r.json(); })
+    .then(function(d){
+      const badge = document.getElementById('week-badge');
+      if (!badge) return;
+      const rows = (d && d.days) || [];
+      const tracked = (d && d.tracked) || [];
+      const cur = weekRateOf(rows.slice(0, 7), tracked);
+      if (cur === null) { badge.textContent = '-'; return; }
+      const prev = weekRateOf(rows.slice(7, 14), tracked);
+      let html = '本周 ' + cur + '%';
+      if (prev !== null) {
+        html += ' · 上周 ' + prev + '%';
+        const diff = cur - prev;
+        if (diff >= 1) html += ' <b class="wk-up">↑</b>';
+        else if (diff <= -1) html += ' <b class="wk-dn">↓</b>';
+      }
+      badge.innerHTML = html;
+    })
+    .catch(function(){ /* 静默：徽章保留主链已画的 done/total 口径 */ });
 }
 
 function renderHistory(d){
@@ -2432,7 +2613,10 @@ function gameCardHtml(g){
   return '<div class="card gcard">' +
     '<div class="gcard-head">' + gameIconHtml(gid) +
       '<div class="gcard-name"><b>' + escHtml(gameBaseName(g)) + '</b>' +
-        '<small>' + (today && today.last ? escHtml(shortStamp(today.last)) : '—') + '</small></div>' +
+        /* 上次检查时间带标签（裸时刻会被当成乱码线）；无数据不渲染占位线 */
+        (today && today.last
+          ? '<small>上次检查 ' + escHtml(shortStamp(today.last)) + '</small>'
+          : '') + '</div>' +
       '<div class="gcard-streak"><b class="value">' + Number(g.streak || 0) + '</b><small>连续天数</small></div>' +
     '</div>' +
     '<div class="gcard-today">' + todayHtml + '</div>' +
@@ -2511,6 +2695,7 @@ function loadHistory(){
         cacheSet('history', d);   // 落缓存，下次秒开
         renderHistory(d);
         renderKpiToday(d);
+        loadWeekTrend();          // 周对比徽章旁路：独立 fetch，失败不影响主链
       } catch (e) {
         console.error('渲染历史报表失败', e);
         renderHistoryEmpty('报表渲染出错，请点「刷新」重试。');
@@ -2527,18 +2712,20 @@ function loadHistory(){
     .then(function(){ kpiBusy(false); });
 }
 
-document.getElementById('btn-history-refresh').addEventListener('click', loadHistory);
+document.getElementById('btn-history-refresh').addEventListener('click', function(){
+  btnSpin(this, loadHistory());
+});
 
 /* 报表页手动刷新：先实时查询（查询过程会落历史），再重拉报表 —— 顺序不能反，
    否则拿到的还是上一轮旧数据。失败静默保留旧数据，与 loadHistory 同一口径 */
 document.getElementById('btn-hist-refresh').addEventListener('click', function(){
   const btn = this;
   if (!btn || btn.disabled) return;              // 防连点
-  btn.disabled = true; btn.textContent = '查询中…';
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
   Promise.resolve(loadLive(true))                // 实时查询（写历史）→ 再拉报表
     .then(function(){ return loadHistory(); })
     .catch(function(err){ console.error('刷新报表失败', err); })
-    .then(function(){ btn.disabled = false; btn.textContent = '刷新'; });
+    .then(function(){ btn.disabled = false; btn.textContent = '刷新'; flashCard(btn); });
 });
 
 /* ========================= 主题（三态：跟随系统 / 深色 / 浅色） ========================= */
@@ -2550,9 +2737,9 @@ document.getElementById('btn-hist-refresh').addEventListener('click', function()
 const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
 const THEME_MODES = ['auto', 'dark', 'light'];
 const THEME_META = {
-  auto:  ['\u{1F5A5}\u{FE0F}', '跟随系统'],
-  dark:  ['\u{1F319}', '深色'],
-  light: ['\u{2600}\u{FE0F}', '浅色'],
+  auto:  ['<svg class="ico"><use href="#i-monitor"/></svg>', '跟随系统'],
+  dark:  ['<svg class="ico"><use href="#i-moon"/></svg>', '深色'],
+  light: ['<svg class="ico"><use href="#i-sun"/></svg>', '浅色'],
 };
 
 function readThemeMode(){
@@ -2570,7 +2757,7 @@ function applyTheme(){
   const ico = document.getElementById('theme-ico');
   const txt = document.getElementById('theme-txt');
   const btn = document.getElementById('btn-theme');
-  if (ico) ico.textContent = meta[0];
+  if (ico) ico.innerHTML = meta[0];
   if (txt) txt.textContent = meta[1];
   if (btn) btn.dataset.mode = mode;
 }
@@ -2591,7 +2778,10 @@ if (themeBtn) {
 }
 
 /* ========================= 推送预览 ========================= */
-function renderPushPreview(h){
+/* 文案与手机实发同源：标题/正文一律来自 GET /api/push_preview
+   （后端 core/analyzer.py 的 to_push_payload 同一条组装路径），
+   前端只渲染、绝不自拼 —— tests/rl_test_push_preview.py 守卫这条纪律。 */
+function renderPushPreview(j){
   const titleEl = document.getElementById('pv-title');
   const bodyEl = document.getElementById('pv-body');
   const chEl = document.getElementById('pv-channel');
@@ -2605,62 +2795,18 @@ function renderPushPreview(h){
   if (chEl) chEl.textContent = channels.length
     ? ('推送到 ' + channels.join(' + ')) : '未启用推送渠道';
 
-  const days = (h && h.days) || [];
-  let row = null;
-  for (let i = days.length - 1; i >= 0; i--) {
-    if (days[i].is_today) { row = days[i]; break; }
-  }
-  if (!row && days.length) row = days[days.length - 1];
-
-  if (!row) {
-    titleEl.textContent = '游戏日常：等待第一次巡检';
-    bodyEl.textContent = '还没有巡检数据。定时检查跑过一轮后，这里会按真实结果显示推送样式。';
-    return;
-  }
-
-  const cells = row.games || {};
-  const nameOf = {};
-  ((h && h.games) || []).forEach(function(g){ nameOf[g.game] = g.game_name || g.game; });
-  const tracked = (h && h.tracked) || [];
-  const done = [], miss = [];
-  let lastTime = '';
-  tracked.forEach(function(gid){
-    const c = cells[gid];
-    if (!c || !c.known) return;
-    if (c.last && c.last > lastTime) lastTime = c.last;
-    if (c.finished) done.push(nameOf[gid] || gid);
-    else miss.push((nameOf[gid] || gid) +
-      (c.unfinished_tasks ? '（漏 ' + c.unfinished_tasks + ' 项）' : ''));
-  });
-  const total = done.length + miss.length;
-  /* 分母用「参与检查的游戏数」，与后端一致：查询失败的游戏照样占位，
-     分子一律是已完成数，避免出现「1/5 个未完成」和正文「已完成 2 款」打架。 */
-  const denom = tracked.length || total;
-  const allDone = denom > 0 && done.length === denom;
-  titleEl.textContent = !denom
-    ? '游戏日常：暂无有效记录'
-    : (allDone
-        ? ('游戏日常：' + denom + '/' + denom + ' 全部完成')
-        : ('游戏日常：' + done.length + '/' + denom + ' 已完成'));
-
-  const lines = [];
-  lines.push((row.label || '') + (row.weekday ? ' ' + row.weekday : '') +
-             (lastTime ? ' · ' + lastTime : ''));
-  miss.forEach(function(m){ lines.push('[未完成] ' + m); });
-  if (done.length) lines.push('[已完成] ' + done.join('、'));
-  lines.push(allDone ? '今天的日常全部完成，可以放心摆烂了。'
-                     : '别拖到 23:59，记得把日常清了。');
-  bodyEl.textContent = lines.join('\n');
+  titleEl.textContent = (j && j.title) || '';
+  bodyEl.textContent = (j && j.body) || '';
 }
 
 function loadPushPreview(){
-  fetch('/api/history?days=1').then(function(r){ return r.json(); })
+  fetch('/api/push_preview').then(function(r){ return r.json(); })
     .then(renderPushPreview)
     .catch(function(){
       const t = document.getElementById('pv-title');
-      if (t) t.textContent = '游戏日常：预览不可用';
+      if (t) t.textContent = '预览暂不可用';
       const b = document.getElementById('pv-body');
-      if (b) b.textContent = '读取巡检数据失败，请稍后重试。';
+      if (b) b.textContent = '读取推送预览失败，请稍后重试。';
     });
 }
 
@@ -2868,11 +3014,12 @@ function renderKpiToday(h){
     : (done === total ? '今日全部完成' : (total - done) + ' 款未完成'));
 }
 
-/* 凭证健康：已绑定凭证的账号 / 启用账号 */
+/* 凭证健康：已绑定凭证的账号 / 启用账号（口径=启用，与今日完成 KPI 同分母；
+   未勾选游戏不计入 —— payload 自带 enabled 字段，此前两处消费都无视了它） */
 function renderKpiCred(d){
   const el = document.getElementById('k-cred');
   if (!el) return;
-  const items = (d && d.items) || [];
+  const items = ((d && d.items) || []).filter(function(i){ return i.enabled; });
   if (!items.length) {
     el.textContent = '–';
     el.className = 'kpi-value value';

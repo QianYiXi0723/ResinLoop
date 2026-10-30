@@ -844,6 +844,19 @@ FETCHERS = {
 }
 
 
+def _merge_notified_and_save(cache: Dict[str, Any]) -> None:
+    """落盘前重读磁盘合并 notified，再原子写。
+
+    refresh 的网络抓取花数秒，期间守护进程可能已 mark_notified（跨进程无锁）——
+    直接 save_cache(进锁前的旧快照) 会把去重标记整份回滚，同一活动重复推送。
+    合并以磁盘为准（磁盘上的标记更新），本地旧快照只补磁盘没有的键。
+    """
+    fresh = load_cache()
+    merged = {**(cache.get("notified") or {}), **(fresh.get("notified") or {})}
+    cache["notified"] = _prune_notified(merged)
+    save_cache(cache)
+
+
 def refresh(force: bool = False) -> Dict[str, Any]:
     """刷新缓存（默认 20 小时内不重复请求）。失败保留旧数据，只记 last_error。"""
     cache = load_cache()
@@ -864,7 +877,7 @@ def refresh(force: bool = False) -> Dict[str, Any]:
     cache["last_attempt"] = now_text
     if errors and not collected:
         cache["last_error"] = "；".join(errors)
-        save_cache(cache)
+        _merge_notified_and_save(cache)
         logger.warning("活动缓存未更新（沿用旧数据）：%s", cache["last_error"])
         return summary()
 
@@ -893,8 +906,7 @@ def refresh(force: bool = False) -> Dict[str, Any]:
         cache["last_error"] = "部分游戏拉取失败：" + "；".join(errors)
     else:
         cache.pop("last_error", None)
-    cache["notified"] = _prune_notified(cache.get("notified") or {})
-    save_cache(cache)
+    _merge_notified_and_save(cache)
     ignored = _ignored_ids()
     hidden = sum(
         1 for item in kept
@@ -975,7 +987,11 @@ def pending_alerts(
     today: Optional[datetime] = None,
 ) -> List[ActivityAlert]:
     """剩余 <= hours 且已开始的活动，今天还没提醒过的。"""
-    day_key = (today or datetime.now()).strftime("%Y-%m-%d")
+    # 「今天」按 04:00 游戏日界算（game_moment 唯一入口）——用真实日期的话，
+    # 跨零点补发/深夜手动巡检会拿到空去重集，同一活动几小时内推两条。
+    from core.history import game_moment
+
+    day_key = (today or game_moment()).strftime("%Y-%m-%d")
     cache = load_cache()
     raw_notified = cache.get("notified", {}).get(day_key, [])
     notified = set(raw_notified) if isinstance(raw_notified, list) else set()
@@ -997,7 +1013,10 @@ def pending_alerts(
 
 def mark_notified(alerts: Iterable[ActivityAlert], *, today: Optional[datetime] = None) -> None:
     """把今天已经推送过的活动记下来，避免同一天每轮检查都催一遍。"""
-    day_key = (today or datetime.now()).strftime("%Y-%m-%d")
+    # 与 pending_alerts 同口径：04:00 游戏日界（见其注释）
+    from core.history import game_moment
+
+    day_key = (today or game_moment()).strftime("%Y-%m-%d")
     ids = [alert.uid for alert in alerts if alert.uid]
     if not ids:
         return

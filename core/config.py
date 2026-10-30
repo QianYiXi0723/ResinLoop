@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -246,7 +248,7 @@ class AccountConfig:
         return cls(
             game=game,
             nickname=str(data.get("nickname", "")),
-            enabled=bool(data.get("enabled", True)),
+            enabled=_coerce_bool(data.get("enabled", True)),
             credential={str(k): str(v) for k, v in credential.items()},
         )
 
@@ -283,7 +285,7 @@ class BarkConfig:
         if not isinstance(data, dict):
             raise ConfigError("push.bark 必须是 JSON 对象")
         return cls(
-            enabled=bool(data.get("enabled", True)),
+            enabled=_coerce_bool(data.get("enabled", True)),
             server=str(data.get("server") or "https://api.day.app").rstrip("/"),
             device_key=str(data.get("device_key") or "").strip(),
             group=str(data.get("group") or "游戏日常"),
@@ -325,7 +327,7 @@ class ServerChanConfig:
         if not isinstance(data, dict):
             raise ConfigError("push.serverchan 必须是 JSON 对象")
         return cls(
-            enabled=bool(data.get("enabled", True)),
+            enabled=_coerce_bool(data.get("enabled", True)),
             sendkey=str(data.get("sendkey") or "").strip(),
             timeout=int(data.get("timeout") or 10),
         )
@@ -360,7 +362,7 @@ class QmsgConfig:
         if not isinstance(data, dict):
             raise ConfigError("push.qmsg 必须是 JSON 对象")
         return cls(
-            enabled=bool(data.get("enabled", True)),
+            enabled=_coerce_bool(data.get("enabled", True)),
             key=str(data.get("key") or "").strip(),
             server=str(data.get("server") or "https://qmsg.zendee.cn").strip().rstrip("/"),
             timeout=int(data.get("timeout") or 10),
@@ -395,7 +397,7 @@ class FeishuConfig:
         if not isinstance(data, dict):
             raise ConfigError("push.feishu 必须是 JSON 对象")
         return cls(
-            enabled=bool(data.get("enabled", True)),
+            enabled=_coerce_bool(data.get("enabled", True)),
             webhook=str(data.get("webhook") or "").strip(),
             secret=str(data.get("secret") or "").strip(),
             timeout=int(data.get("timeout") or 10),
@@ -430,7 +432,7 @@ class DingTalkConfig:
         if not isinstance(data, dict):
             raise ConfigError("push.dingtalk 必须是 JSON 对象")
         return cls(
-            enabled=bool(data.get("enabled", True)),
+            enabled=_coerce_bool(data.get("enabled", True)),
             webhook=str(data.get("webhook") or "").strip(),
             secret=str(data.get("secret") or "").strip(),
             timeout=int(data.get("timeout") or 10),
@@ -553,7 +555,7 @@ class QueryConfig:
         return cls(
             provider=str(data.get("provider") or "mock").strip().lower(),
             timeout=int(data.get("timeout") or 10),
-            mihoyo_enabled=bool(data.get("mihoyo_enabled", True)),
+            mihoyo_enabled=_coerce_bool(data.get("mihoyo_enabled", True)),
             proxy=str(data.get("proxy") or "").strip(),
             mihoyo_device_mode=mode,
             mihoyo_task_scope=scope,
@@ -717,6 +719,24 @@ def _parse_bool(raw: Any, label: str, default: bool = True) -> bool:
     raise ConfigError(f"app.{label} = {raw!r} 非法，请填 true 或 false")
 
 
+def _coerce_bool(raw: Any, default: bool = True) -> bool:
+    """宽松布尔解析（账号/渠道 enabled 等逐项字段）：与 _parse_bool 同样的字面量
+    集合，但认不出的值回落 default 而不是拒整份配置。专治手写
+    "enabled": "false" 被 bool() 当成 True——字符串非空恒真。"""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    text = str(raw).strip().lower()
+    if text in ("1", "true", "yes", "on", "开", "开启"):
+        return True
+    if text in ("0", "false", "no", "off", "关", "关闭"):
+        return False
+    return default
+
+
 def _parse_catch_up_minutes(raw: Any) -> int:
     """解析补发窗口（分钟）：留空/非法走默认值，0 或负数表示关闭补发。"""
     if raw is None or (isinstance(raw, str) and not raw.strip()):
@@ -856,11 +876,23 @@ def load_config(path: str | Path, auto_create: bool = False) -> AppConfig:
 
 
 def save_config(config: AppConfig, path: str | Path | None = None) -> Path:
-    """把配置对象写回 JSON（UTF-8、缩进两格、保留中文），返回实际写入路径。"""
+    """把配置对象写回 JSON（UTF-8、缩进两格、保留中文），返回实际写入路径。
+
+    与 login_ui.save_raw_config 同纪律：mkstemp 唯一临时名 + os.replace 原子替换，
+    防并发交错与半截文件。"""
     target = Path(path or config.config_path or "config.json").expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(config.to_dict(), ensure_ascii=False, indent=2) + "\n"
-    target.write_text(payload, encoding="utf-8")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".config-", suffix=".tmp", dir=str(target.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+        os.replace(tmp_name, target)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
     config.config_path = target
     return target
 

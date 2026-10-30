@@ -18,9 +18,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import random
 import re
 import string
+import tempfile
 import threading
 import time
 import uuid
@@ -337,6 +339,30 @@ def normalize_device_profile(raw: Dict[str, Any]) -> Dict[str, str]:
     screen_size = pick("screenSize", "screen_size", "resolution")
     manufacturer = pick("manufacturer") or _MANUFACTURERS.get(brand.lower(), brand)
 
+    # 可选字段兜底：「设备信息」App 的导出未必含 OAID/分辨率/SDK 等字段，而下游
+    # （ext_fields / UA / 注册 body / 环境标签）全是硬下标访问，缺一个键三款游戏
+    # 全部 KeyError。兜底值从档案内容确定性派生——同一次粘贴永远得到同一值，
+    # 否则 env_tag 每次加载都在变，会引发指纹重签循环。
+    if not oaid:
+        digest = hashlib.md5(f"{device_info}|{model}".encode("utf-8")).hexdigest()
+        oaid = digest + digest                       # 64 位 hex，与真机 OAID 同形
+    if not os_version:
+        os_version = "13"
+    if not sdk_version:
+        sdk_version = _ANDROID_SDK.get(os_version, "33")
+    if not screen_size:
+        screen_size = "2400x1080"
+    if not display:
+        display = model
+    if not board:
+        board = model
+    if not brand:
+        brand = manufacturer or "Android"
+    if not manufacturer:
+        manufacturer = brand or "Android"
+    if not device:
+        device = model
+
     if not model:
         raise ValueError(
             "没找到机型字段 deviceModel。请粘贴 App 导出的完整 JSON 文本。"
@@ -595,9 +621,16 @@ def save_device_profile(raw: Dict[str, Any]) -> Dict[str, str]:
     """校验并写入设备档案覆盖文件，返回归一化后的档案。"""
     profile = normalize_device_profile(raw)
     _LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    PROFILE_OVERRIDE_PATH.write_text(
-        json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".device_profile-", suffix=".tmp", dir=str(_LOGS_DIR)
     )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(profile, ensure_ascii=False, indent=2) + "\n")
+        os.replace(tmp_name, PROFILE_OVERRIDE_PATH)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
     return profile
 
 
@@ -947,6 +980,12 @@ def _build_ext_fields(profile: Dict[str, str]) -> str:
     )
 
 
+#: generate_fp 最近一次是否走了本地降级（True=服务端没签成、用的是随机假指纹）。
+#: 只在 _DEVICE_LOCK 内读写；降级指纹只供当轮查询、**不落盘**——落盘就永远不会
+#: 重签，服务端没签过的指纹会一直用下去，风控不自愈。
+_FP_LAST_DEGRADED = False
+
+
 def generate_fp(
     device_id: str,
     profile: Optional[Dict[str, str]] = None,
@@ -984,6 +1023,7 @@ def generate_fp(
         body = response.json() if response.status_code == 200 else {}
     except Exception as exc:
         logger.warning("getFp 请求失败（%s），降级为本地随机指纹（大概率触发风控）", exc)
+        _FP_LAST_DEGRADED = True
         return _generate_fp_locally()
 
     data = body.get("data") or {}
@@ -991,11 +1031,13 @@ def generate_fp(
     fp = str(data.get("device_fp") or "")
     if fp and code in (200, None):
         logger.debug("getFp 签发成功：%s…（code=%s）", fp[:8], code)
+        _FP_LAST_DEGRADED = False
         return fp
     logger.warning(
         "getFp 未签发有效指纹：retcode=%s code=%s msg=%s，降级本地随机指纹",
         body.get("retcode"), code, str(data.get("msg") or "")[:80],
     )
+    _FP_LAST_DEGRADED = True
     return _generate_fp_locally()
 
 
@@ -1084,20 +1126,38 @@ def _get_device_info_locked(game_id: str) -> Tuple[str, str, str]:
     ):
         return entry["device_id"], entry["device_fp"], USER_AGENT
 
-    # 旧缓存迁移：device_id 换成全局身份，device_fp 原样保留（迁移零 getFp 调用）
+    # 旧缓存迁移（阶段 B）：device_id 换成全局身份，device_fp 原样保留（迁移零 getFp）。
+    # 仅当「指纹签发环境与当前环境一致」才沿用——旧代码的缓存没有环境标签，那个年代
+    # 只可能是直连（proxy=""）签发的；带环境标签的按标签比。代理/UA/机型任何一项
+    # 对不上都必须落到重签路径：否则旧 IP 签的指纹配着新代理永不过期，风控不自愈。
     if entry.get("device_fp"):
-        entry["device_id"] = device_id
-        entry.update(env_tag)
-        cache[game_id] = entry
-        _save_fp_cache(cache)
-        logger.info(
-            "%s 设备身份迁移：device_id=%s…（沿用原 device_fp，未重新签发）",
-            game_id, device_id[:8],
+        entry_proxy = entry.get("proxy", "")   # 缺 proxy 标签的旧缓存视为直连签发
+        env_mismatch = (
+            entry_proxy != (_PROXY or "")
+            or ("ua" in entry and entry["ua"] != USER_AGENT)
+            or ("model" in entry and entry["model"] != DEVICE_MODEL["model"])
         )
-        return device_id, entry["device_fp"], USER_AGENT
+        if not env_mismatch:
+            entry["device_id"] = device_id
+            entry.update(env_tag)
+            cache[game_id] = entry
+            _save_fp_cache(cache)
+            logger.info(
+                "%s 设备身份迁移：device_id=%s…（沿用原 device_fp，未重新签发）",
+                game_id, device_id[:8],
+            )
+            return device_id, entry["device_fp"], USER_AGENT
+        logger.info("%s 设备环境变化（代理/UA/机型），重新签发指纹", game_id)
 
-    # 全新安装（无任何旧缓存）：按全局身份签发配套指纹
+    # 全新安装 / 环境变化：按全局身份签发配套指纹
     device_fp = generate_fake_fp(device_id)
+    if _FP_LAST_DEGRADED:
+        # getFp 没签成、本轮用的是本地随机指纹：只供本轮、不写缓存（写进去
+        # 就永久复用）；下轮进这里重试签发，签成之日即缓存真实指纹之时。
+        logger.warning(
+            "%s 本轮使用降级随机指纹（未缓存，下轮重试 getFp 签发）", game_id
+        )
+        return device_id, device_fp, USER_AGENT
     cache[game_id] = {
         "device_id": device_id,
         "device_fp": device_fp,
@@ -1155,11 +1215,15 @@ def bind_device(
         env_tag = _device_env_tag()
         for game_id in targets:
             device_fp = generate_fake_fp(device_id)
-            cache[game_id] = {
-                "device_id": device_id,
-                "device_fp": device_fp,
-                **env_tag,
-            }
+            if _FP_LAST_DEGRADED:
+                # 与自动签发同一原则：降级随机指纹不落盘（下轮自动签发会重试）
+                logger.warning("%s 扫码重签遇到 getFp 降级，本轮指纹未缓存", game_id)
+            else:
+                cache[game_id] = {
+                    "device_id": device_id,
+                    "device_fp": device_fp,
+                    **env_tag,
+                }
             fps[game_id] = device_fp
         _save_fp_cache(cache)
     logger.info(
@@ -1250,7 +1314,7 @@ def device_login_and_save(
         except Exception as exc:
             raise MiyousheQueryError(f"{key} 设备注册请求失败：{exc}") from exc
         results[key] = payload
-        logger.debug("[device] %s 原始返回：%s", key, str(payload)[:300])
+        logger.debug("[device] %s 原始返回（脱敏）：%s", key, _sanitize_for_log(payload)[:300])
     return results
 
 
