@@ -21,6 +21,7 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -32,6 +33,8 @@ ZIP_NAME = "ResinLoop_v2.1_Windows_x64"
 #: 壳的产物（构建流程见 shell/；本脚本不负责编译，只负责组装）
 SHELL_EXE = ROOT / "ResinLoop.exe"
 SHELL_LOADER = ROOT / "WebView2Loader.dll"
+#: C# 工程目录（只用于"壳是否比源码新"守卫）
+SHELL_DIR = ROOT / "shell"
 #: 便携解释器来源（Embeddable + 预装 site-packages，构建方法见 tests/rl_test_engine_standalone.py）
 ENGINE_PY = ROOT / "engine" / "python"
 #: engine 入口模板（exe 发行版专用：纯 HTTP、无窗口；与源码仓 app.py 是两份）
@@ -111,7 +114,7 @@ README_TXT = """ResinLoop v2.1 · 日常巡查 —— 小白使用说明
 支持：原神、崩坏：星穹铁道、绝区零、明日方舟、明日方舟：终末地
 
 本版本是免安装绿色版：不用装 Python、不用装任何运行库，
-整个文件夹拷到哪台 Windows 10/11 电脑都能直接用。
+整个文件夹拷到哪台 64 位 Windows 10/11 电脑都能直接用。
 
 
 第一步：双击 ResinLoop.exe
@@ -187,6 +190,47 @@ def _require(path: Path, what: str) -> Path:
     return path
 
 
+def verify_shell_fresh() -> None:
+    """壳必须比 C# 源码新 —— 否则包里塞的是上一版 exe。
+
+    这种「旧壳新包」能通过条数、md5、zip 逐项校验，只有 mtime 拦得住，
+    所以校验放在复制之前；CSV/JS 改动不受影响，只有 .cs / .csproj 会触发。
+    """
+    if not SHELL_EXE.exists() or not SHELL_DIR.is_dir():
+        return  # 缺件交给 _require 报错，此处只判新旧
+
+    sources = [
+        p
+        for pattern in ("*.cs", "*.csproj")
+        for p in SHELL_DIR.rglob(pattern)
+        if p.is_file() and not ({"obj", "bin"} & set(p.relative_to(SHELL_DIR).parts))
+    ]
+    if not sources:
+        return
+
+    def fmt(ts: float) -> str:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
+    newest = max(sources, key=lambda p: p.stat().st_mtime)
+    exe_mtime = SHELL_EXE.stat().st_mtime
+    if newest.stat().st_mtime > exe_mtime:
+        print("[FATAL] 壳比 C# 源码旧 —— 包里会塞进旧 exe（md5 / 条目数校验都查不出来）")
+        print(f"        最新源码 : {newest.relative_to(ROOT)}  {fmt(newest.stat().st_mtime)}")
+        print(f"        现有壳   : {SHELL_EXE.name}  {fmt(exe_mtime)}")
+        print("        先重编译再打包：")
+        print("          dotnet publish shell -c Release -o shell/publish")
+        print("          ILRepack /out:<仓库根>/ResinLoop.exe（参数见 shell/ 构建说明）")
+        sys.exit(1)
+
+    # publish 过但漏了 ILRepack：根 exe 还是上一次的合并产物
+    published = SHELL_DIR / "publish" / "ResinLoop.exe"
+    if published.exists() and published.stat().st_mtime > exe_mtime:
+        print("[FATAL] shell/publish/ResinLoop.exe 比仓库根的壳新 —— ILRepack 没跑")
+        print(f"        publish  : {fmt(published.stat().st_mtime)}")
+        print(f"        根 exe   : {fmt(exe_mtime)}")
+        sys.exit(1)
+
+
 def build_engine(out_engine: Path) -> None:
     """engine/ = 便携解释器 + 当前工作树代码（零凭据零缓存）。"""
     # 1) 便携 Python（解释器 + 预装依赖，纯库无隐私；剥掉 __pycache__ 减肥）
@@ -243,6 +287,8 @@ def build_engine(out_engine: Path) -> None:
 
 
 def main() -> None:
+    verify_shell_fresh()
+
     if OUT.exists():
         shutil.rmtree(OUT)
     OUT.mkdir(parents=True)
