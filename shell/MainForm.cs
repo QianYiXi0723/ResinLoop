@@ -31,6 +31,10 @@ namespace ResinLoop
         private static readonly string EngineApp = Path.Combine(Root, "engine", "app.py");
         private static readonly string ShellLog = Path.Combine(Root, "logs", "shell.log");
 
+        //: 虚拟主机名：页面与静态资源由 WebView2 直接从 engine\ui 读盘，
+        //: 不经过 Python 的本地 HTTP 服务。/api/* 由本进程代转到引擎端口。
+        private const string UiHost = "resinloop.local";
+
         private readonly bool _startMinimized;
         private readonly int? _forcedPort;   // --port N：优先在该端口复用/拉起引擎（默认 8765→8899 探测）
         private Process _engine;          // 本壳拉起的引擎；复用现有实例时为 null（退出时不收尸）
@@ -41,6 +45,7 @@ namespace ResinLoop
         private WebView2 _web;
         private bool _reallyExit;
         private bool _trayHintShown;
+        private int _apiHits;             // 已被拦截代转的 /api/* 次数（只用于首条日志）
 
         public MainForm(bool startMinimized, int? forcedPort)
         {
@@ -48,16 +53,28 @@ namespace ResinLoop
             _forcedPort = forcedPort;
 
             Text = "ResinLoop · 日常巡查";
-            // 每日报表三卡（本周汇总／游戏概览／最近 7 天）纵向分摊高度，窗口太矮时
-            // 「游戏概览」会被压成只能露出半张卡的小框。默认给足 1280×920，
-            // 同时按主屏工作区夹住上限 —— 1366 高的本子也不会撑爆屏幕被裁。
-            const int wantW = 1280, wantH = 920;
+            // 尺寸口径必须与脚本版 app.py 一致：980×800（逻辑像素），最小 820×620。
+            // 980 落在页面 1000px 断点下方，走单列紧凑布局（右侧「凭证健康／设备伪装」
+            // 栏折到页尾，往下滚即可见）。两个入口尺寸不一致时，同一份 UI 会呈现成
+            // 两套信息架构。
+            // PerMonitorV2 下 WinForms 的 Size 单位是物理像素，必须手动乘 DPI 系数
+            // （与 pywebview 的 Size(w*scale, h*scale) 同口径）。不乘的话 125% 缩放时
+            // 窗口只有 784 逻辑宽，比脚本版整整窄 20%。
+            AutoScaleMode = AutoScaleMode.None;
+            float dpiScale;
+            using (Graphics screenG = Graphics.FromHwnd(IntPtr.Zero))
+                dpiScale = screenG.DpiX > 0 ? screenG.DpiX / 96f : 1f;
+            const int baseW = 980, baseH = 800, baseMinW = 820, baseMinH = 620;
+            int wantW = (int)Math.Round(baseW * dpiScale);
+            int wantH = (int)Math.Round(baseH * dpiScale);
+            int minW = (int)Math.Round(baseMinW * dpiScale);
+            int minH = (int)Math.Round(baseMinH * dpiScale);
             Rectangle wa = Screen.PrimaryScreen != null
                 ? Screen.PrimaryScreen.WorkingArea
                 : new Rectangle(0, 0, wantW, wantH);
-            Size = new Size(Math.Min(wantW, Math.Max(960, wa.Width - 40)),
-                            Math.Min(wantH, Math.Max(600, wa.Height - 40)));
-            MinimumSize = new Size(Math.Min(1024, Size.Width), Math.Min(700, Size.Height));
+            Size = new Size(Math.Max(minW, Math.Min(wantW, wa.Width - 40)),
+                            Math.Max(minH, Math.Min(wantH, wa.Height - 40)));
+            MinimumSize = new Size(minW, minH);
             StartPosition = FormStartPosition.CenterScreen;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { /* 图标缺省兜底 */ }
 
@@ -137,14 +154,344 @@ namespace ResinLoop
                 var env = await CoreWebView2Environment.CreateAsync(
                     userDataFolder: Path.Combine(Root, "logs", "webview2"));
                 await _web.EnsureCoreWebView2Async(env);
-                _web.CoreWebView2.Navigate(_url);
-                Log("壳加载 " + _url);
+
+                // UI 走虚拟主机映射：index.html / app.js / style.css 由 WebView2 直接读 engine\ui，
+                // 页面不再依赖 Python 的本地 HTTP 服务——引擎还没起完也能先把界面画出来，
+                // 不占端口、不受系统代理影响，顺手把 /favicon.ico 的 404 也免了。
+                // 前端 fetch('/api/...') 与图标 /static/... 由本进程拦截代转，JS 一行不改。
+                if (TryMapUiFolder())
+                {
+                    _web.CoreWebView2.Navigate("https://" + UiHost + "/index.html");
+                    Log("壳加载 https://" + UiHost + "/index.html（engine\\ui 页面接管，不走本地 HTTP）");
+                }
+                else
+                {
+                    _web.CoreWebView2.Navigate(_url);
+                    Log("壳加载 " + _url + "（页面接管不可用，回退本地 HTTP）");
+                }
             }
             catch (Exception ex)
             {
                 Log("启动异常：" + ex);
                 MessageBox.Show("启动失败：" + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// 挂上 https://resinloop.local/* 的拦截器：页面、样式、脚本、图标、接口全部由本进程应答。
+        /// 不使用 SetVirtualHostNameToFolderMapping —— 实测映射到文件夹的主机不会触发
+        /// WebResourceRequested，/api/* 就拦不住（页面会拿到 404 HTML，表现为 Failed to fetch）。
+        /// 这里按官方静态服务样例的路线：不注册虚拟主机，整站自己兜。
+        /// 失败（目录缺失、SDK 不支持）时返回 false，调用方回退到本地 HTTP。
+        /// </summary>
+        private bool TryMapUiFolder()
+        {
+            string uiDir = Path.Combine(Root, "engine", "ui");
+            if (!Directory.Exists(uiDir))
+            {
+                Log("engine\\ui 不存在，跳过页面接管");
+                return false;
+            }
+            try
+            {
+                _web.CoreWebView2.AddWebResourceRequestedFilter(
+                    "https://" + UiHost + "/*", CoreWebView2WebResourceContext.All);
+                _web.CoreWebView2.WebResourceRequested += OnWebResourceRequested;
+                _web.CoreWebView2.NavigationCompleted += OnPageLoaded;
+                _web.CoreWebView2.WebMessageReceived += OnWebMessage;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log("页面接管失败：" + ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>页面加载完成后做一次 DOM 自检，结果写进 logs\shell.log，供构建门禁断言。</summary>
+        private async void OnPageLoaded(object sender, CoreWebView2NavigationCompletedEventArgs e)
+        {
+            Log("页面加载 " + (e.IsSuccess ? "成功" : "失败：" + e.WebErrorStatus));
+            if (!e.IsSuccess) return;
+            try
+            {
+                string n = await _web.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('.tabpanel').length");
+                Log("DOM 自检 tabpanel=" + n);
+                // 探针：在页面里真发一次 fetch('/api/env')，验证 /api/* 确实被壳拦截代转，
+                // 而不是打到了虚拟主机的静态目录（那样会拿到 404 HTML）。
+                // 注意 ExecuteScriptAsync 不等待 Promise（只会返回 {}），所以结果用 web message 回传。
+                await _web.CoreWebView2.ExecuteScriptAsync(
+                    "fetch('/api/env').then(r => r.text().then(t =>" +
+                    " window.chrome.webview.postMessage('rlprobe:' + r.status + '/LEN' + t.length)))" +
+                    ".catch(e => window.chrome.webview.postMessage('rlprobe:ERR:' + e));");
+            }
+            catch (Exception ex)
+            {
+                Log("DOM 自检异常：" + ex.Message);
+            }
+        }
+
+        private void OnWebMessage(object sender, CoreWebView2WebMessageReceivedEventArgs e)
+        {
+            string msg;
+            try { msg = e.TryGetWebMessageAsString(); }
+            catch { return; }
+            if (msg == null) return;
+            if (msg.StartsWith("rlprobe:", StringComparison.Ordinal))
+                Log("API 探针 " + msg.Substring("rlprobe:".Length));
+        }
+
+        private void OnWebResourceRequested(object sender, CoreWebView2WebResourceRequestedEventArgs e)
+        {
+            string uri = e.Request.Uri;
+            int at = uri.IndexOf("/api/", StringComparison.OrdinalIgnoreCase);
+            if (at >= 0)
+            {
+                if (Interlocked.Increment(ref _apiHits) == 1)
+                    Log("首个 API 拦截：" + uri.Substring(at));
+                ForwardToEngine(uri.Substring(at), e.Request.Method, e);
+                return;
+            }
+            at = uri.IndexOf("/static/", StringComparison.OrdinalIgnoreCase);
+            if (at >= 0)
+            {
+                ServeLocalStatic(uri.Substring(at), e);
+                return;
+            }
+            ServeUiAsset(uri, e);
+        }
+
+        /// <summary>页面本体：index.html / app.js / style.css 等，全部从 engine\ui 读盘。</summary>
+        private void ServeUiAsset(string uri, CoreWebView2WebResourceRequestedEventArgs e)
+        {
+            string path;
+            try { path = new Uri(uri).AbsolutePath; }
+            catch { path = "/index.html"; }
+            if (string.IsNullOrEmpty(path) || path == "/") path = "/index.html";
+
+            // 浏览器总会自发请求 /favicon.ico；这里给 204，免得控制台里挂一条 404 噪音
+            if (string.Equals(path, "/favicon.ico", StringComparison.OrdinalIgnoreCase))
+            {
+                e.Response = _web.CoreWebView2.Environment.CreateWebResourceResponse(
+                    new MemoryStream(new byte[0]), 204, "No Content", "Cache-Control: no-store\r\n");
+                return;
+            }
+
+            string baseDir = Path.GetFullPath(Path.Combine(Root, "engine", "ui"));
+            string full = Path.GetFullPath(Path.Combine(baseDir, path.TrimStart('/').Replace('/', Path.DirectorySeparatorChar)));
+            if (!full.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase) || !File.Exists(full))
+            {
+                e.Response = _web.CoreWebView2.Environment.CreateWebResourceResponse(
+                    new MemoryStream(Encoding.UTF8.GetBytes("not found")), 404, "Not Found",
+                    "Content-Type: text/plain; charset=utf-8\r\n");
+                return;
+            }
+            try
+            {
+                byte[] body;
+                string ctype = GuessContentType(Path.GetExtension(full));
+
+                // index.html 是模板：__STYLE__ / __APP_JS__ 两个占位符要内联成 style.css 与 app.js，
+                // 与 login_ui.py 的 _assemble_page() 保持同一口径（那边是 HTTP 路径在用）。
+                // 不做这一步，页面会静默丢掉全部 JS（表现为所有 tab 都停在「读取中…」）。
+                if (string.Equals(Path.GetFileName(full), "index.html", StringComparison.OrdinalIgnoreCase))
+                {
+                    string html = File.ReadAllText(full, Encoding.UTF8);
+                    string cssPath = Path.Combine(baseDir, "style.css");
+                    string jsPath = Path.Combine(baseDir, "app.js");
+                    if (!File.Exists(cssPath) || !File.Exists(jsPath))
+                        throw new FileNotFoundException("ui\\style.css 或 ui\\app.js 缺失");
+                    html = html.Replace("__STYLE__", File.ReadAllText(cssPath, Encoding.UTF8))
+                               .Replace("__APP_JS__", File.ReadAllText(jsPath, Encoding.UTF8));
+                    body = Encoding.UTF8.GetBytes(html);
+                    ctype = "text/html; charset=utf-8";
+                }
+                else
+                {
+                    body = File.ReadAllBytes(full);
+                }
+
+                e.Response = _web.CoreWebView2.Environment.CreateWebResourceResponse(
+                    new MemoryStream(body), 200, "OK",
+                    "Content-Type: " + ctype + "\r\nCache-Control: no-store\r\n");
+            }
+            catch (Exception ex)
+            {
+                Log("页面资源读取失败 " + path + "：" + ex.Message);
+                e.Response = _web.CoreWebView2.Environment.CreateWebResourceResponse(
+                    new MemoryStream(Encoding.UTF8.GetBytes("error")), 500, "Internal Error",
+                    "Content-Type: text/plain; charset=utf-8\r\n");
+            }
+        }
+
+        /// <summary>/static/… 直接读 engine\static（图标等），不经 Python。</summary>
+        private void ServeLocalStatic(string pathAndQuery, CoreWebView2WebResourceRequestedEventArgs e)
+        {
+            string rel = pathAndQuery.Substring("/static/".Length);
+            int q = rel.IndexOf('?');
+            if (q >= 0) rel = rel.Substring(0, q);
+            string baseDir = Path.GetFullPath(Path.Combine(Root, "engine", "static"));
+            string full = Path.GetFullPath(Path.Combine(baseDir, rel.Replace('/', Path.DirectorySeparatorChar)));
+            if (!full.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase) || !File.Exists(full))
+            {
+                e.Response = _web.CoreWebView2.Environment.CreateWebResourceResponse(
+                    new MemoryStream(Encoding.UTF8.GetBytes("not found")), 404, "Not Found",
+                    "Content-Type: text/plain; charset=utf-8\r\n");
+                return;
+            }
+            try
+            {
+                byte[] body = File.ReadAllBytes(full);
+                e.Response = _web.CoreWebView2.Environment.CreateWebResourceResponse(
+                    new MemoryStream(body), 200, "OK",
+                    "Content-Type: " + GuessContentType(Path.GetExtension(full)) + "\r\nCache-Control: no-store\r\n");
+            }
+            catch (Exception ex)
+            {
+                Log("静态资源读取失败 " + rel + "：" + ex.Message);
+                e.Response = _web.CoreWebView2.Environment.CreateWebResourceResponse(
+                    new MemoryStream(Encoding.UTF8.GetBytes("error")), 500, "Internal Error",
+                    "Content-Type: text/plain; charset=utf-8\r\n");
+            }
+        }
+
+        private static string GuessContentType(string ext)
+        {
+            switch ((ext ?? "").ToLowerInvariant())
+            {
+                case ".png": return "image/png";
+                case ".jpg":
+                case ".jpeg": return "image/jpeg";
+                case ".gif": return "image/gif";
+                case ".webp": return "image/webp";
+                case ".svg": return "image/svg+xml";
+                case ".ico": return "image/x-icon";
+                case ".html":
+                case ".htm": return "text/html; charset=utf-8";
+                case ".js":
+                case ".mjs": return "text/javascript; charset=utf-8";
+                case ".css": return "text/css; charset=utf-8";
+                case ".json": return "application/json; charset=utf-8";
+                case ".woff2": return "font/woff2";
+                case ".txt": return "text/plain; charset=utf-8";
+                default: return "application/octet-stream";
+            }
+        }
+
+        /// <summary>
+        /// 把页面发往 https://resinloop.local/api/* 的请求代转到引擎端口。
+        /// 必须显式 req.Proxy = null：系统代理会拦截 loopback，返回空响应。
+        /// </summary>
+        private void ForwardToEngine(string pathAndQuery, string method, CoreWebView2WebResourceRequestedEventArgs e)
+        {
+            CoreWebView2Deferral deferral = e.GetDeferral();
+
+            byte[] reqBody = null;
+            string reqType = null;
+            try
+            {
+                if (e.Request.Content != null)
+                {
+                    using (var ms = new MemoryStream())
+                    {
+                        e.Request.Content.CopyTo(ms);
+                        reqBody = ms.ToArray();
+                    }
+                    if (reqBody.Length > 0) reqType = e.Request.Headers.GetHeader("Content-Type");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("读取请求体失败：" + ex.Message);
+            }
+
+            int port = _port;
+            Task.Run(() =>
+            {
+                int code = 502;
+                string reason = "Bad Gateway";
+                byte[] body = Encoding.UTF8.GetBytes("{\"ok\":false,\"message\":\"引擎不可达\"}");
+                string ctype = "application/json; charset=utf-8";
+                try
+                {
+                    var req = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + port + pathAndQuery);
+                    req.Method = method;
+                    req.Proxy = null;
+                    req.Timeout = 30000;
+                    req.ReadWriteTimeout = 30000;
+                    req.KeepAlive = false;
+                    req.Accept = "application/json";
+                    if (reqBody != null && reqBody.Length > 0)
+                    {
+                        req.ContentType = string.IsNullOrEmpty(reqType) ? "application/json" : reqType;
+                        req.ContentLength = reqBody.Length;
+                        using (var rs = req.GetRequestStream()) rs.Write(reqBody, 0, reqBody.Length);
+                    }
+                    using (var resp = (HttpWebResponse)req.GetResponse())
+                    {
+                        code = (int)resp.StatusCode;
+                        reason = resp.StatusDescription;
+                        if (!string.IsNullOrEmpty(resp.ContentType)) ctype = resp.ContentType;
+                        using (var rs = resp.GetResponseStream())
+                        using (var ms = new MemoryStream())
+                        {
+                            if (rs != null) rs.CopyTo(ms);
+                            body = ms.ToArray();
+                        }
+                    }
+                }
+                catch (WebException wex)
+                {
+                    var hr = wex.Response as HttpWebResponse;
+                    if (hr != null)
+                    {
+                        code = (int)hr.StatusCode;
+                        reason = hr.StatusDescription;
+                        if (!string.IsNullOrEmpty(hr.ContentType)) ctype = hr.ContentType;
+                        using (var rs = hr.GetResponseStream())
+                        using (var ms = new MemoryStream())
+                        {
+                            if (rs != null) rs.CopyTo(ms);
+                            body = ms.ToArray();
+                        }
+                        hr.Dispose();
+                    }
+                    else
+                    {
+                        Log("转发 " + pathAndQuery + " 失败：" + wex.Message);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log("转发 " + pathAndQuery + " 异常：" + ex.Message);
+                }
+
+                try
+                {
+                    _web.BeginInvoke(new Action(() =>
+                    {
+                        try
+                        {
+                            e.Response = _web.CoreWebView2.Environment.CreateWebResourceResponse(
+                                new MemoryStream(body), code, reason,
+                                "Content-Type: " + ctype + "\r\nCache-Control: no-store\r\n");
+                        }
+                        catch (Exception ex)
+                        {
+                            Log("构造响应失败：" + ex.Message);
+                        }
+                        finally
+                        {
+                            deferral.Complete();
+                        }
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    Log("回投失败：" + ex.Message);
+                    deferral.Complete();
+                }
+            });
         }
 
         private int PickPort()
@@ -210,12 +557,15 @@ namespace ResinLoop
             s.IsBuiltInErrorPageEnabled = true;
             // 隐藏滚动条（页面深浅色由用户自己选，见 UI 侧栏底部的三态按钮）
             _web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
-                "const st=document.createElement('style');" +
+                "(function(){var apply=function(){var st=document.createElement('style');" +
                 "st.textContent='::-webkit-scrollbar{width:0;height:0}::-webkit-scrollbar-thumb{background:transparent}';" +
                 // 注意：这里原本还有一句 removeItem('rl-theme')，用来保证页面主题
                 // 与壳同口径。现已改为允许用户在侧栏底部手动切换深浅配色（auto/dark/light，
                 // 偏好存在 localStorage 里），所以不再清理，否则每次启动都会抹掉用户的选择。
-                "document.documentElement.appendChild(st);");
+                "document.documentElement.appendChild(st);};" +
+                // 文档创建时 documentElement 可能还不存在，直接 appendChild 会抛 null 引用
+                "if(document.documentElement){apply()}else{document.addEventListener('DOMContentLoaded',apply)}" +
+                "})();");
             _web.CoreWebView2.NewWindowRequested += (s2, e2) => { e2.Handled = true; };  // 屏蔽弹新窗
             Log("WebView2 就绪：右键菜单/DevTools/加速键已关，滚动条已隐藏");
         }

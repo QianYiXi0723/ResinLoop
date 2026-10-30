@@ -96,6 +96,8 @@ tests/**/*.bak-*
 # C# 壳构建产物（本地测试用，正式发布走 release/）
 /ResinLoop.exe
 /WebView2Loader.dll
+/Microsoft.Web.WebView2.Core.dll
+/Microsoft.Web.WebView2.WinForms.dll
 /build_ilrepack/
 /build_ilrepack.zip
 

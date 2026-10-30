@@ -42,6 +42,8 @@ LOGS_DIR = BASE_DIR / "logs"
 LOG_FILE = LOGS_DIR / "desktop.log"
 
 WINDOW_TITLE = "ResinLoop · 日常巡查"
+# 与壳（shell/MainForm.cs wantW/wantH）保持同一默认值：980 落在页面 1000px 断点下方，
+# 走单列紧凑布局。两个入口尺寸不一致时，同一份 UI 会呈现成两套信息架构。
 WINDOW_WIDTH = 980
 WINDOW_HEIGHT = 800
 WINDOW_MIN = (820, 620)

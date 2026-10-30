@@ -17,7 +17,7 @@ rem    ResinLoop.exe is only the C# shell. All business code lives in
 rem    engine\ (portable python + *.py + ui\). So you do NOT need to
 rem    pack a zip to test the exe: "dev.bat exe" copies the current
 rem    working tree into engine\ and starts the shell.
-rem    Only a change to shell\*.cs needs a real rebuild + ILRepack.
+rem    Only a change to shell\*.cs needs a real rebuild: shell\build.ps1
 rem
 rem  Why not start.bat:
 rem    start.bat is the end-user entry: it runs a dependency check
@@ -122,7 +122,7 @@ exit /b 1
 :no_exe
 echo.
 echo [ERROR] ResinLoop.exe not found in %DIR%
-echo         Build the shell first: see shell\ (msbuild + ILRepack).
+echo         Build the shell first: shell\build.ps1 (see its header).
 echo.
 pause
 exit /b 1

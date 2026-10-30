@@ -2,17 +2,22 @@
 """构建 exe 发行包（C# 壳 + engine/ 便携 Python）。
 
 产物：
-  release/ResinLoop_v2.1.1/                      可直接发给小白的目录
-  dist/ResinLoop_v2.1.1_Windows_x64.zip
+  release/ResinLoop_v2.1.2/                      可直接发给小白的目录
+  dist/ResinLoop_v2.1.2_Windows_x64.zip
 
 包内容（面向最终用户，越少越好）：
-  ResinLoop.exe          C# 壳（net48，ILRepack 单文件化，内嵌图标）
-  WebView2Loader.dll     唯一无法合并的原生件
-  engine/                便携 Python 3.11 + 项目代码（零凭据，首次运行自建配置）
+  ResinLoop.exe                          C# 壳（net48，多文件发布，内嵌图标）
+  Microsoft.Web.WebView2.Core.dll        WebView2 托管库（不再 ILRepack 合并）
+  Microsoft.Web.WebView2.WinForms.dll    WebView2 WinForms 控件
+  WebView2Loader.dll                     WebView2 原生加载器
+  engine/                                便携 Python 3.11 + 项目代码（零凭据，首启自建配置）
   小白使用说明.txt
 
-前置：壳已编译并单文件化（仓库根有 ResinLoop.exe / WebView2Loader.dll），
+前置：壳已构建（仓库根上述四件齐全，跑 shell/build.ps1），
       engine/python/ 已就位（Embeddable + 预装依赖）。
+
+为什么不再单文件：net48 没有官方 PublishSingleFile，只能手搓 ILRepack，而它换来的
+只有 10,888 字节和两个文件，代价是 2026-10-30 那次 TypeLoadException。详见 shell/build.ps1 头部。
 
 注意：本文件会提交到仓库，**不得硬编码任何真实 key**；
 自检敏感值全部在运行时从本地 config.json / logs 动态提取。
@@ -26,13 +31,18 @@ from pathlib import Path
 from typing import List, Optional
 
 ROOT = Path(__file__).resolve().parent
-OUT = ROOT / "release" / "ResinLoop_v2.1.1"
+OUT = ROOT / "release" / "ResinLoop_v2.1.2"
 ZIP_DIR = ROOT / "dist"
-ZIP_NAME = "ResinLoop_v2.1.1_Windows_x64"
+ZIP_NAME = "ResinLoop_v2.1.2_Windows_x64"
 
-#: 壳的产物（构建流程见 shell/；本脚本不负责编译，只负责组装）
+#: 壳的产物（构建流程见 shell/build.ps1；本脚本不负责编译，只负责组装）
 SHELL_EXE = ROOT / "ResinLoop.exe"
-SHELL_LOADER = ROOT / "WebView2Loader.dll"
+#: 壳必须随包的伴生件 —— WebView2Loader.dll 是原生件，另外两个是托管库（不再合并进 exe）
+SHELL_COMPANIONS = (
+    "Microsoft.Web.WebView2.Core.dll",
+    "Microsoft.Web.WebView2.WinForms.dll",
+    "WebView2Loader.dll",
+)
 #: C# 工程目录（只用于"壳是否比源码新"守卫）
 SHELL_DIR = ROOT / "shell"
 #: 便携解释器来源（Embeddable + 预装 site-packages，构建方法见 tests/rl_test_engine_standalone.py）
@@ -107,7 +117,12 @@ def collect_secrets() -> List[str]:
     return sorted(found)
 
 
-README_TXT = """ResinLoop v2.1.1 · 日常巡查 —— 小白使用说明
+# 文案铁律（改这段前先读）：
+#   1. 不写「点哪个按钮 → 勾哪几个 → 怎么扫」这类分步扫码教学；
+#   2. 绑定关系按游戏写，不写平台之间的扫码次数对比
+#      （「米游社 1 次 / 森空岛每款 1 次」），也不写「一次扫码绑三款」「每款必须单独扫」；
+#   3. 不替用户判断谁是「小白」，语气与 README / 界面保持一致。
+README_TXT = """ResinLoop v2.1.2 · 日常巡查 —— 小白使用说明
 ================================================
 
 每天定时查一次游戏日常进度，没做完就推送到手机（微信 / QQ）。
@@ -127,12 +142,14 @@ README_TXT = """ResinLoop v2.1.1 · 日常巡查 —— 小白使用说明
 点横幅上的「去扫码登录 →」进入下一步。
 
 
-第二步：账号绑定（扫个码的事）
+第二步：绑定账号
 ------------------------------------------------
-【账号绑定】页：
-  1. 点「米游社」胶囊 → 勾选原神/星铁/绝区零 → 手机米游社 App 扫码
-  2. 点「森空岛」胶囊 → 每款游戏单独扫一次码
-  3. 扫完页面上的红点会变绿点，横幅自动消失，开始展示真实数据
+【账号绑定】页按平台分组：米游社（原神 / 崩坏：星穹铁道 / 绝区零）、
+森空岛（明日方舟 / 明日方舟：终末地）。每个游戏的登录状态分开显示，
+跟着页面上的提示做就行。
+
+状态点：绿 = 已绑定，黄 = 超过 7 天未更新，红 = 未绑定。
+全部绑定后，顶部的演示模式横幅会自己消失。
 
 【游戏监控】的开关 = 这款游戏要不要每天提醒，随手拨一下就行。
 
@@ -185,7 +202,8 @@ def write_crlf_bom(path: Path, text: str) -> None:
 def _require(path: Path, what: str) -> Path:
     if not path.exists():
         print(f"[FATAL] 缺少 {what}：{path}")
-        print("        壳请先构建（shell/ 工程 + ILRepack），引擎见 tests/rl_test_engine_standalone.py 前置说明")
+        print("        壳请先构建（powershell -ExecutionPolicy Bypass -File shell\\build.ps1），"
+              "引擎见 tests/rl_test_engine_standalone.py 前置说明")
         sys.exit(1)
     return path
 
@@ -218,14 +236,13 @@ def verify_shell_fresh() -> None:
         print(f"        最新源码 : {newest.relative_to(ROOT)}  {fmt(newest.stat().st_mtime)}")
         print(f"        现有壳   : {SHELL_EXE.name}  {fmt(exe_mtime)}")
         print("        先重编译再打包：")
-        print("          dotnet publish shell -c Release -o shell/publish")
-        print("          ILRepack /out:<仓库根>/ResinLoop.exe（参数见 shell/ 构建说明）")
+        print("          powershell -ExecutionPolicy Bypass -File shell\\build.ps1")
         sys.exit(1)
 
-    # publish 过但漏了 ILRepack：根 exe 还是上一次的合并产物
+    # publish 过但没拷回根层：根 exe 还是上一次的
     published = SHELL_DIR / "publish" / "ResinLoop.exe"
     if published.exists() and published.stat().st_mtime > exe_mtime:
-        print("[FATAL] shell/publish/ResinLoop.exe 比仓库根的壳新 —— ILRepack 没跑")
+        print("[FATAL] shell/publish/ResinLoop.exe 比仓库根的壳新 —— 没跑 shell\\build.ps1 的复制步骤")
         print(f"        publish  : {fmt(published.stat().st_mtime)}")
         print(f"        根 exe   : {fmt(exe_mtime)}")
         sys.exit(1)
@@ -293,9 +310,10 @@ def main() -> None:
         shutil.rmtree(OUT)
     OUT.mkdir(parents=True)
 
-    # 1) 壳两件
-    shutil.copy2(_require(SHELL_EXE, "C# 壳 ResinLoop.exe（先构建+ILRepack）"), OUT / "ResinLoop.exe")
-    shutil.copy2(_require(SHELL_LOADER, "WebView2Loader.dll"), OUT / "WebView2Loader.dll")
+    # 1) 壳四件（exe + 2 个托管库 + 原生 loader）
+    shutil.copy2(_require(SHELL_EXE, "C# 壳 ResinLoop.exe（先跑 shell\\build.ps1）"), OUT / "ResinLoop.exe")
+    for name in SHELL_COMPANIONS:
+        shutil.copy2(_require(ROOT / name, name), OUT / name)
 
     # 2) engine
     build_engine(OUT / "engine")

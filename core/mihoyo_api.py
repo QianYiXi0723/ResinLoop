@@ -94,6 +94,24 @@ PROFILE_OVERRIDE_PATH = _LOGS_DIR / "device_profile.json"
 #: 与上面的「用户手动覆盖」分开存：手动覆盖优先，删掉它就回落到自动身份。
 IDENTITY_PATH = _LOGS_DIR / "device_identity.json"
 
+# ============================ 模块级锁 ============================
+# 【位置死命令】这两个锁必须定义在文件上部、`DEVICE_MODEL = load_device_profile()`
+# 之前。首次运行（无 device_identity.json）时模块级初始化就会走
+# load_device_profile → create_identity → _save_identity → _update_identity，
+# 那条链要拿 _IDENTITY_LOCK；若锁定义在文件末尾，模块尚未执行到那里，会抛
+# NameError: name '_IDENTITY_LOCK' is not defined —— 表现为全新安装后
+# /api/device 无响应、一切走米游社的查询全挂。不要为了「就近使用」把锁往下搬。
+
+#: 设备身份串行锁：并行查询时，多个米游社系游戏同时走到 _get_device_info 会
+#: 各自生成不同的 uuid/device_fp 并互覆缓存 —— 每次运行指纹都在变，正是风控
+#: 雷区（服务器会看到"同一 IP 下的多台陌生设备"）。加锁后首线程签发、其余
+#: 线程命中缓存，与串行版行为完全一致。
+_DEVICE_LOCK = threading.RLock()
+
+#: 身份文件（device_identity.json）读写锁：device_id / aaid / vaid 的
+#: 认领、签发与迁移都是"读→判→写"，双重检查锁依赖它。
+_IDENTITY_LOCK = threading.RLock()
+
 
 #: 机型预设库 —— 首次运行随机挑一台，之后固定（固化在 logs/device_identity.json）。
 #: 每项只写「不能派生」的 8 个字段，device_info / display / sdk_version / manufacturer
@@ -388,6 +406,16 @@ def _save_identity(label: str, profile: Dict[str, str]) -> None:
         created_at=int(time.time()),
         profile=profile,
     )
+
+
+def _generate_id(length: int = 64) -> str:
+    """大写字母+数字随机串（GsCore `generate_ID` 同款，用于 aaid / vaid）。
+
+    【位置死命令】必须在 create_identity 之前 —— 首次运行时模块级
+    `load_device_profile()` → `create_identity()` 会调用它，定义在文件末尾
+    会抛 NameError。本函数只依赖 random/string，放前面没有副作用。
+    """
+    return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 
 def create_identity(exclude_label: str = "") -> Dict[str, str]:
@@ -847,11 +875,6 @@ def _generate_fp_locally(length: int = 13) -> str:
     return "".join(random.choices(string.digits + "abcdef", k=length))
 
 
-def _generate_id(length: int = 64) -> str:
-    """大写字母+数字随机串（GsCore `generate_ID` 同款，用于 aaid / vaid）。"""
-    return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
-
-
 def _build_ext_fields(profile: Dict[str, str]) -> str:
     """GsCore `BaseMysApi.generate_fp` 的 ext_fields 拼接（机型档案可替换）。
 
@@ -1064,14 +1087,9 @@ def _get_device_info_locked(game_id: str) -> Tuple[str, str, str]:
     return device_id, device_fp, USER_AGENT
 
 
-#: 设备身份串行锁：并行查询时，多个米游社系游戏同时走到 _get_device_info 会
-#: 各自生成不同的 uuid/device_fp 并互覆缓存 —— 每次运行指纹都在变，正是风控
-#: 雷区（服务器会看到"同一 IP 下的多台陌生设备"）。加锁后首线程签发、其余
-#: 线程命中缓存，与串行版行为完全一致。
-_DEVICE_LOCK = threading.RLock()
-#: 身份文件（device_identity.json）读写锁：device_id / aaid / vaid 的
-#: 认领、签发与迁移都是"读→判→写"，双重检查锁依赖它。
-_IDENTITY_LOCK = threading.RLock()
+# 注：`_DEVICE_LOCK` / `_IDENTITY_LOCK` 定义在文件上部（已 import threading 之后、
+# DEVICE_MODEL 模块级初始化之前）。**不要在此处重新定义** —— 首次运行时
+# 模块级 load_device_profile() 就要用 _IDENTITY_LOCK，定义在文件末尾必然 NameError。
 
 
 def _device_env_tag() -> Dict[str, str]:
