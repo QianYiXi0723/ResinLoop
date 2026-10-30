@@ -818,8 +818,7 @@ def extract_credentials(account: AccountConfig) -> Tuple[str, str, str, str, str
 
     if not (ltuid and ltoken):
         raise MiyousheAuthError(
-            f"游戏 {account.game_name} 的凭证不完整：需要 ltuid 和 ltoken"
-            f"（在 credential 里直接给这两个字段，或给整串 cookie 让脚本自动抽取）"
+            f"游戏 {account.game_name} 的登录凭证不完整，请重新扫码登录一次即可自动补全"
         )
 
     uid = str(credential.get("uid", "") or "").strip()
@@ -828,7 +827,7 @@ def extract_credentials(account: AccountConfig) -> Tuple[str, str, str, str, str
 
     server = str(credential.get("server", "") or "").strip() or DEFAULT_SERVERS.get(account.game, "")
     if not server:
-        raise MiyousheAuthError(f"游戏 {account.game_name} 未能确定 server，请在 credential 里填写 server 字段")
+        raise MiyousheAuthError(f"游戏 {account.game_name} 没有识别到所在服务器，请重新扫码登录一次")
 
     cookie = cookie_raw or f"{COOKIE_FIELDS[0]}={ltuid}; {COOKIE_FIELDS[1]}={ltoken}"
     return ltuid, ltoken, uid, server, cookie
@@ -1450,13 +1449,13 @@ def _daily_note_once(
 
     if response.status_code != 200:
         logger.debug("[%s] HTTP %s 原始响应：%s", game_id, response.status_code, response.text[:_DEBUG_MAX_CHARS])
-        raise MiyousheQueryError(f"HTTP {response.status_code}：{response.text[:120]}")
+        raise MiyousheQueryError(f"米游社接口暂时没有响应（HTTP {response.status_code}），请稍后再试；详情见运行日志")
 
     try:
         payload = response.json()
     except ValueError as exc:
         logger.debug("[%s] 非 JSON 原始响应：%s", game_id, response.text[:_DEBUG_MAX_CHARS])
-        raise MiyousheQueryError(f"响应不是合法 JSON：{response.text[:120]}") from exc
+        raise MiyousheQueryError("米游社返回了无法解析的数据，请稍后再试；详情见运行日志") from exc
 
     # 调试日志：无论成功失败，--debug 模式都打印脱敏后的原始返回（用户亲眼验证数据来源）
     logger.debug("[%s] 原始返回 JSON（脱敏）：%s", game_id, _sanitize_for_log(payload))
@@ -1558,7 +1557,7 @@ def require_field(data: Dict[str, Any], *path: str) -> Any:
     for key in path:
         walked.append(key)
         if not isinstance(node, dict) or key not in node or node[key] is None:
-            raise MiyousheQueryError(f"返回数据缺少字段 {'.'.join(walked)}")
+            raise MiyousheQueryError("米游社返回的数据不完整，可能需要更新软件版本")
         node = node[key]
     return node
 
@@ -1569,4 +1568,4 @@ def require_int(data: Dict[str, Any], *path: str) -> int:
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
-        raise MiyousheQueryError(f"字段 {'.'.join(path)} 不是数字：{value!r}") from exc
+        raise MiyousheQueryError("米游社返回的数据格式有变化，可能需要更新软件版本") from exc

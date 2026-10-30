@@ -291,7 +291,7 @@ def get_skland_credentials(
         return result
 
     raise SklandAuthError(
-        "森空岛凭证未配置：请在 credential 里填 token（鹰角通行证 Token），"
+        "森空岛还没有登录过：请先在「账号绑定」页扫码登录森空岛，"
         "获取方法见 README「森空岛接入」一节"
     )
 
@@ -411,13 +411,13 @@ def request_skland(
 
     if response.status_code != 200:
         logger.debug("[skland] HTTP %s 原始响应：%s", response.status_code, response.text[:500])
-        raise SklandQueryError(f"HTTP {response.status_code}：{response.text[:120]}")
+        raise SklandQueryError(f"森空岛接口暂时没有响应（HTTP {response.status_code}），请稍后再试")
 
     try:
         payload = response.json()
     except ValueError as exc:
         logger.debug("[skland] 非 JSON 原始响应：%s", response.text[:500])
-        raise SklandQueryError(f"响应不是合法 JSON：{response.text[:120]}") from exc
+        raise SklandQueryError("森空岛返回了无法解析的数据，请稍后再试") from exc
 
     logger.debug("[skland] %s 原始返回（脱敏前按需看 --debug 日志）：%s", path, str(payload)[:200])
     return _check_payload(payload, path)

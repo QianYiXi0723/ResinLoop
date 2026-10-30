@@ -286,7 +286,7 @@ class MiyousheQuerier(BaseQuerier):
             finished = _optional_int(data, "done_task")  # 旧版字段兼容
         total = _optional_int(data, "total_task_num")
         if finished is None or total is None:
-            raise MiyousheQueryError("返回数据缺少每日委托字段（finished_task_num/total_task_num）")
+            raise MiyousheQueryError("米游社返回的数据格式有变化，当前版本可能无法识别，请关注软件更新")
         tasks.append(TaskItem("每日委托", finished >= total, f"{finished}/{total}"))
 
         current_resin = _optional_int(data, "current_resin")
@@ -372,7 +372,7 @@ class MiyousheQuerier(BaseQuerier):
             vitality_now = _optional_int(data, "vitality", "progress", "current")
             vitality_max = _optional_int(data, "vitality", "progress", "max")
         if vitality_now is None or vitality_max is None:
-            raise MiyousheQueryError("返回数据缺少每日活跃度字段（vitality.current/max）")
+            raise MiyousheQueryError("米游社返回的数据格式有变化，当前版本可能无法识别，请关注软件更新")
         tasks.append(TaskItem("每日活跃度", vitality_now >= vitality_max, f"{vitality_now}/{vitality_max}"))
 
         energy_now = _optional_int(data, "energy", "progress", "current")
@@ -623,17 +623,17 @@ def _require_int_field(data: Dict[str, Any], key: str, label: str) -> int:
     """取整数字段，缺失/非数字一律按字段异常报错（不编造默认值）。"""
     value = data.get(key)
     if value is None:
-        raise SklandQueryError(f"返回数据缺少字段 {label}")
+        raise SklandQueryError("森空岛返回的数据不完整，可能需要更新软件版本")
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
-        raise SklandQueryError(f"字段 {label} 不是数字：{value!r}") from exc
+        raise SklandQueryError("森空岛返回的数据格式有变化，可能需要更新软件版本") from exc
 
 
 def require_str(data: Dict[str, Any], key: str) -> str:
     value = data.get(key)
     if value is None or str(value) == "":
-        raise SklandQueryError(f"返回数据缺少字段 {key}")
+        raise SklandQueryError("森空岛返回的数据不完整，可能需要更新软件版本")
     return str(value)
 
 

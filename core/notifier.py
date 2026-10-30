@@ -329,7 +329,7 @@ class BarkNotifier(BaseNotifier):
             return PushResult(
                 self.name,
                 ok=False,
-                message=f"HTTP {response.status_code}：{response.text[:120]}",
+                message=f"推送服务暂时没有响应（HTTP {response.status_code}），请稍后再试",
             )
 
         try:
@@ -405,7 +405,7 @@ class ServerChanNotifier(BaseNotifier):
         if response.status_code != 200:
             logger.warning("[serverchan] HTTP %s：%s", response.status_code, response.text[:200])
             return PushResult(
-                self.name, ok=False, message=f"HTTP {response.status_code}：{response.text[:120]}"
+                self.name, ok=False, message=f"推送服务暂时没有响应（HTTP {response.status_code}），请稍后再试"
             )
         try:
             payload = response.json()
@@ -499,12 +499,12 @@ class QmsgNotifier(BaseNotifier):
         if response.status_code != 200:
             logger.warning("[qmsg] HTTP %s：%s", response.status_code, response.text[:200])
             return PushResult(
-                self.name, ok=False, message=f"HTTP {response.status_code}：{response.text[:120]}"
+                self.name, ok=False, message=f"推送服务暂时没有响应（HTTP {response.status_code}），请稍后再试"
             )
         try:
             payload = response.json()
         except ValueError:
-            return PushResult(self.name, ok=False, message=f"响应不是合法 JSON：{response.text[:120]}")
+            return PushResult(self.name, ok=False, message="推送服务返回了无法解析的数据，请稍后再试")
 
         # 旧版返回 {"success":true,"reason":"操作成功","code":0}
         if "success" in payload:
@@ -587,7 +587,7 @@ class FeishuNotifier(BaseNotifier):
         if response.status_code != 200:
             logger.warning("[feishu] HTTP %s：%s", response.status_code, response.text[:200])
             return PushResult(
-                self.name, ok=False, message=f"HTTP {response.status_code}：{response.text[:120]}"
+                self.name, ok=False, message=f"推送服务暂时没有响应（HTTP {response.status_code}），请稍后再试"
             )
         try:
             result = response.json()
@@ -675,7 +675,7 @@ class DingTalkNotifier(BaseNotifier):
         if response.status_code != 200:
             logger.warning("[dingtalk] HTTP %s：%s", response.status_code, response.text[:200])
             return PushResult(
-                self.name, ok=False, message=f"HTTP {response.status_code}：{response.text[:120]}"
+                self.name, ok=False, message=f"推送服务暂时没有响应（HTTP {response.status_code}），请稍后再试"
             )
         try:
             result = response.json()

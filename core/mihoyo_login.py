@@ -132,11 +132,11 @@ def create_qr(device_id: str) -> Dict[str, str]:
     except Exception as exc:
         raise MiyousheLoginError(f"创建二维码网络异常：{exc}") from exc
     if resp.status_code != 200:
-        raise MiyousheLoginError(f"创建二维码 HTTP {resp.status_code}：{resp.text[:120]}")
+        raise MiyousheLoginError(f"创建二维码失败（HTTP {resp.status_code}），请稍后再试")
     try:
         payload = resp.json()
     except ValueError as exc:
-        raise MiyousheLoginError(f"创建二维码返回非 JSON：{resp.text[:120]}") from exc
+        raise MiyousheLoginError("创建二维码失败：服务端返回了无法解析的数据，请稍后再试") from exc
 
     retcode = payload.get("retcode")
     if retcode != 0:
@@ -297,7 +297,7 @@ def poll_confirm(
                 raise MiyousheLoginError("二维码已过期，请重新运行登录")
             if retcode == -3505:
                 raise MiyousheLoginError("已在手机上取消登录")
-            raise MiyousheLoginError(f"查询扫码状态失败：retcode={retcode}，{message}")
+            raise MiyousheLoginError(f"扫码状态查询失败：{message}（错误码 {retcode}）")
 
         status = data.get("status")
         if status == STATUS_CONFIRMED:
@@ -336,7 +336,7 @@ def build_cookie_string(jar: Dict[str, str]) -> Tuple[str, Dict[str, str]]:
         ltoken = _fetch_ltoken_by_stoken(stoken, mid, uid)
 
     if not uid:
-        raise MiyousheLoginError("扫码成功但未拿到账号 ID（ltuid/account_id）")
+        raise MiyousheLoginError("登录成功，但该米游社账号下没有游戏角色，请先在米游社 App 创建角色")
     if not ltoken:
         raise MiyousheLoginError(
             "扫码成功但未拿到 ltoken（且 stoken 派生失败）。"

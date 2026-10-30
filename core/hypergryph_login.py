@@ -135,11 +135,11 @@ def create_qr() -> Dict[str, Any]:
     except Exception as exc:
         raise HypergryphLoginError(f"创建扫码会话网络异常：{exc}") from exc
     if resp.status_code != 200:
-        raise HypergryphLoginError(f"创建扫码会话 HTTP {resp.status_code}：{resp.text[:120]}")
+        raise HypergryphLoginError(f"创建扫码会话失败（HTTP {resp.status_code}），请稍后再试")
     try:
         payload = resp.json()
     except ValueError as exc:
-        raise HypergryphLoginError(f"创建扫码会话返回非 JSON：{resp.text[:120]}") from exc
+        raise HypergryphLoginError("创建扫码会话返回了无法解析的数据，请稍后再试") from exc
 
     if payload.get("status") != 0:
         dump_raw("gen_scan/login", payload)
@@ -151,7 +151,7 @@ def create_qr() -> Dict[str, Any]:
     scan_url = str(data.get("scanUrl") or "")
     if not (scan_id and scan_url):
         dump_raw("gen_scan/login", payload)
-        raise HypergryphLoginError(f"创建扫码会话返回缺少 scanId/scanUrl：{str(data)[:120]}")
+        raise HypergryphLoginError("创建扫码会话失败：服务端返回不完整，请稍后再试")
 
     app_names = [
         str(app.get("name") or "")
@@ -221,7 +221,7 @@ def poll_confirm(
             scan_code = str(data.get("scanCode") or "")
             dump_raw("scan_status（已确认）", payload)
             if not scan_code:
-                raise HypergryphLoginError(f"扫码确认返回缺少 scanCode：{str(data)[:120]}")
+                raise HypergryphLoginError("扫码确认失败：服务端返回不完整，请稍后再试")
             return scan_code
         if status in (SCAN_CANCELED, SCAN_EXPIRED):
             dump_raw("scan_status（取消/过期）", payload)
@@ -246,11 +246,11 @@ def exchange_short_token(scan_code: str) -> str:
     except Exception as exc:
         raise HypergryphLoginError(f"换取登录 token 网络异常：{exc}") from exc
     if resp.status_code != 200:
-        raise HypergryphLoginError(f"换取登录 token HTTP {resp.status_code}：{resp.text[:120]}")
+        raise HypergryphLoginError(f"换取登录凭证失败（HTTP {resp.status_code}），请稍后再试")
     try:
         payload = resp.json()
     except ValueError as exc:
-        raise HypergryphLoginError(f"换取登录 token 返回非 JSON：{resp.text[:120]}") from exc
+        raise HypergryphLoginError("换取登录凭证返回了无法解析的数据，请稍后再试") from exc
     dump_raw("token_by_scan_code", payload)
     if payload.get("status") != 0:
         raise HypergryphLoginError(
