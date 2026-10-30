@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Type
@@ -424,7 +425,14 @@ class StaleSnapshotError(Exception):
 
     注意它**不是查询失败**：凭证、网络、解析全都正常，只是游戏里今天还没刷新。
     调用方把它落到 ``GameStatus.stale``（数据待更新），而不是 ``error``。
+
+    ``extra_tasks``：快照过期但仍然可信、值得展示的附带信息任务
+    （如按恢复字段推算的理智），由调用方原样放进 GameStatus.tasks。
     """
+
+    def __init__(self, reason: str, extra_tasks: Optional[List[TaskItem]] = None):
+        super().__init__(reason)
+        self.extra_tasks = list(extra_tasks or [])
 
 
 def _stale_snapshot_reason(data: Dict[str, Any]) -> Optional[str]:
@@ -449,6 +457,47 @@ def _stale_snapshot_reason(data: Dict[str, Any]) -> Optional[str]:
     return (
         f"游戏数据未更新（上次在线 {datetime.fromtimestamp(online_ts):%m-%d %H:%M}），"
         "无法确认今日进度"
+    )
+
+
+def _arknights_sanity_task(data: Dict[str, Any]) -> Optional[TaskItem]:
+    """明日方舟理智：优先按恢复字段现算，字段缺失回退快照值。
+
+    理智恢复是确定性的（6 分钟/点），``status.ap.completeRecoveryTime``
+    给出回满时刻，任意时刻的真实理智都能算出来——官方森空岛 App 同款
+    口径（2026-10-31 与官方显示两次逐分钟对账：47@05:34、48@05:39:27）。
+    "现在"用服务端 currentTs，不依赖本机时钟；快照冻结多久都不影响
+    推算准确性。回退路径（无恢复字段）沿用快照值=旧行为，可选字段
+    缺失绝不把查询打成失败。``recover_seconds`` 仅在现算路径有值，
+    供调用方区分"推算值"与"快照值"。
+    """
+    status = data.get("status")
+    ap = status.get("ap") if isinstance(status, dict) else None
+    if not isinstance(ap, dict):
+        return None
+    ap_max = _optional_int(ap, "max")
+    if not ap_max:
+        return None
+    now_ts = _optional_int(data, "currentTs")
+    crt = _optional_int(ap, "completeRecoveryTime")
+    cur = _optional_int(ap, "current")
+    if crt and now_ts:
+        # normalize 统一吃秒/毫秒并给出"距满秒数"，推算与 recover_seconds 同源
+        recover_seconds = normalize_recover_seconds(crt, now=now_ts)
+        if recover_seconds is None:
+            projected = cur
+        elif recover_seconds <= 0:
+            projected, recover_seconds = ap_max, 0
+        else:
+            projected = max(0, ap_max - math.ceil(recover_seconds / 360))
+    else:
+        projected, recover_seconds = cur, None
+    if projected is None:
+        return None
+    projected = max(0, min(projected, ap_max))
+    return TaskItem(
+        "理智", projected >= ap_max, f"{projected}/{ap_max}", counted=False,
+        recover_seconds=recover_seconds,
     )
 
 
@@ -479,14 +528,16 @@ class SklandQuerier(BaseQuerier):
             # 快照过期**不是**查询失败：凭证、网络、解析都没问题，
             # 只是游戏里今天还没刷新。落到 stale（数据待更新）而不是 error ——
             # 前端按"待更新"中性展示，不画红字"失败"、不算进失败数；
-            # 同时 tasks 为空 → finished=False、unfinished_tasks 为空，
-            # 既不会冒充"今日已完成"，也不会误报"未完成"去推送/记漏。
+            # 同时 unfinished_tasks 为空，既不会冒充"今日已完成"，
+            # 也不会误报"未完成"去推送/记漏。extra_tasks 是 stale 期间
+            # 仍然可信的附带信息（如按恢复推算的理智）。
             return GameStatus(
                 game_id=account.game,
                 game_name=account.game_name,
                 nickname=account.nickname,
                 source=self.source,
                 stale=str(exc),
+                tasks=list(exc.extra_tasks),
             )
         except GameNotBoundError as exc:
             # 凭证有效但该森空岛账号下没这款游戏的角色（勾选并扫码了、
@@ -555,7 +606,18 @@ class SklandQuerier(BaseQuerier):
             # 森空岛给的是"上次登录时的快照"，跨过 04:00 日界就不能当今日进度用
             reason = _stale_snapshot_reason(data)
             if reason:
-                raise StaleSnapshotError(reason)
+                # 快照过期但理智是确定性恢复量、照常可算（官方 App 同款口径）：
+                # 附进 stale 文案并在 tasks 里带上推算值，页面在"无法确认
+                # 今日进度"之外仍有可用信息；字段缺失则维持原横幅（旧行为）
+                sanity = _arknights_sanity_task(data)
+                extra = (sanity if sanity is not None
+                         and sanity.recover_seconds is not None else None)
+                if extra is not None:
+                    now_ts = _optional_int(data, "currentTs") or 0
+                    eta = datetime.fromtimestamp(now_ts + extra.recover_seconds)
+                    reason += (f"。理智按恢复推算约 {extra.progress}，"
+                               f"预计 {eta:%H:%M} 回满")
+                raise StaleSnapshotError(reason, extra_tasks=[extra] if extra else None)
             return self.parse_arknights(data)
 
         role_id = str(role.get("roleId") or "")
@@ -583,15 +645,11 @@ class SklandQuerier(BaseQuerier):
         tasks = [TaskItem("每日任务", done=current >= total, progress=f"{current}/{total}")]
 
         # 理智：status.ap = {current, max}。可选字段，缺了宁可不展示，不让整款游戏失败。
-        status = data.get("status")
-        ap = status.get("ap") if isinstance(status, dict) else None
-        if isinstance(ap, dict):
-            ap_cur = _optional_int(ap, "current")
-            ap_max = _optional_int(ap, "max")
-            if ap_cur is not None and ap_max:
-                tasks.append(TaskItem(
-                    "理智", ap_cur >= ap_max, f"{ap_cur}/{ap_max}", counted=False,
-                ))
+        # 理智：按恢复字段现算（官方森空岛 App 同款口径），字段缺失回退快照值；
+        # 可选字段，缺了宁可不展示，不让整款游戏变成"查询失败"
+        sanity = _arknights_sanity_task(data)
+        if sanity is not None:
+            tasks.append(sanity)
         return tasks
 
     @staticmethod
