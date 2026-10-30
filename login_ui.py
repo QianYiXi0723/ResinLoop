@@ -262,6 +262,15 @@ def _enabled_game_ids() -> List[str]:
     return games
 
 
+def _app_version() -> str:
+    """程序版本号。唯一来源是 core/__init__.py 的 __version__，界面左下角也读它。"""
+    try:
+        from core import __version__ as version
+    except Exception:  # noqa: BLE001 - 版本号读不到不该拖垮页面
+        return ""
+    return str(version or "")
+
+
 def push_status() -> Dict[str, Any]:
     """当前推送通道的配置状态。
 
@@ -271,7 +280,7 @@ def push_status() -> Dict[str, Any]:
     try:
         raw = load_raw_config()
     except Exception:  # noqa: BLE001 - 读不到配置也要能开页面
-        return {"channels": [], "ready": [], "configured": False}
+        return {"channels": [], "ready": [], "configured": False, "version": _app_version()}
 
     push = raw.get("push") or {}
     channels = [str(c).lower() for c in (push.get("channels") or [])]
@@ -296,6 +305,8 @@ def push_status() -> Dict[str, Any]:
         "configured": bool(ready),
         "always_notify": bool(push.get("always_notify", False)),
         "demo_mode": provider == "mock",
+        # 界面左下角显示的版本号从这里取，避免 HTML 里再写死一个数字
+        "version": _app_version(),
     }
 
 

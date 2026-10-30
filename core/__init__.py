@@ -10,4 +10,7 @@
 """
 
 __all__ = ["models", "config", "querier", "analyzer", "notifier", "logger"]
-__version__ = "0.1.0"
+
+#: 版本号唯一来源。界面左下角、打包脚本的 release 目录与 zip 名都从它派生，
+#: 发版时只改这一处（shell/ResinLoop.csproj 的 <Version> 由打包脚本断言一致）。
+__version__ = "2.1.2"

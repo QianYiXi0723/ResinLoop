@@ -470,6 +470,10 @@ function reset(){
 
 function refreshNotice(){
   fetch('/api/env').then(function(r){ return r.json(); }).then(function(d){
+    /* 左下角版本号：以 /api/env 的 version 为准（HTML 里不再写死数字）。
+       拿不到就保持"本地运行"，不显示一个可能是错的版本。 */
+    const ver = document.getElementById('ver-line');
+    if (ver && d.version) ver.textContent = 'v' + d.version + ' · 本地运行';
     /* 演示模式横幅：出厂 mock 配置时点亮，扫码切换真实数据源后自然消失 */
     const wb = document.getElementById('welcome');
     if (wb) wb.hidden = !d.demo_mode || welcomeDismissed;

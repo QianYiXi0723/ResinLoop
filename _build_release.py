@@ -2,8 +2,10 @@
 """构建 exe 发行包（C# 壳 + engine/ 便携 Python）。
 
 产物：
-  release/ResinLoop_v2.1.2/                      可直接发给小白的目录
-  dist/ResinLoop_v2.1.2_Windows_x64.zip
+  release/ResinLoop_v<版本>/                     可直接发给小白的目录
+  dist/ResinLoop_v<版本>_Windows_x64.zip
+
+版本号唯一来源是 core/__init__.py 的 __version__（OUT / ZIP_NAME / 说明标题都从它派生）。
 
 包内容（面向最终用户，越少越好）：
   ResinLoop.exe                          C# 壳（net48，多文件发布，内嵌图标）
@@ -23,6 +25,7 @@
 自检敏感值全部在运行时从本地 config.json / logs 动态提取。
 """
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -31,9 +34,21 @@ from pathlib import Path
 from typing import List, Optional
 
 ROOT = Path(__file__).resolve().parent
-OUT = ROOT / "release" / "ResinLoop_v2.1.2"
+
+
+def _read_version() -> str:
+    """版本号唯一来源：core/__init__.py 的 __version__（界面左下角也读同一个值）。"""
+    text = (ROOT / "core" / "__init__.py").read_text(encoding="utf-8")
+    match = re.search(r'^__version__\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    if not match:
+        raise SystemExit("[FATAL] core/__init__.py 里找不到 __version__ 定义")
+    return match.group(1)
+
+
+VERSION = _read_version()
+OUT = ROOT / "release" / f"ResinLoop_v{VERSION}"
 ZIP_DIR = ROOT / "dist"
-ZIP_NAME = "ResinLoop_v2.1.2_Windows_x64"
+ZIP_NAME = f"ResinLoop_v{VERSION}_Windows_x64"
 
 #: 壳的产物（构建流程见 shell/build.ps1；本脚本不负责编译，只负责组装）
 SHELL_EXE = ROOT / "ResinLoop.exe"
@@ -122,7 +137,7 @@ def collect_secrets() -> List[str]:
 #   2. 绑定关系按游戏写，不写平台之间的扫码次数对比
 #      （「米游社 1 次 / 森空岛每款 1 次」），也不写「一次扫码绑三款」「每款必须单独扫」；
 #   3. 不替用户判断谁是「小白」，语气与 README / 界面保持一致。
-README_TXT = """ResinLoop v2.1.2 · 日常巡查 —— 小白使用说明
+README_TXT = """ResinLoop v{VERSION} · 日常巡查 —— 小白使用说明
 ================================================
 
 每天定时查一次游戏日常进度，没做完就推送到手机（微信 / QQ）。
@@ -193,6 +208,11 @@ A：全部数据（登录凭证、巡检历史）只存在本机这个文件夹�
 Q：只读查询，不会代打游戏、不会自动签到。
 A：是的。本项目使用 MIT 许可证，可自由修改分发。
 """
+
+# 版本号只写在上面的 {VERSION} 占位里，别在文案中再抄一遍数字
+if "{VERSION}" not in README_TXT:
+    raise SystemExit("[FATAL] README_TXT 缺少 {VERSION} 占位，版本号会印错")
+README_TXT = README_TXT.replace("{VERSION}", VERSION)
 
 
 def write_crlf_bom(path: Path, text: str) -> None:
@@ -303,8 +323,27 @@ def build_engine(out_engine: Path) -> None:
     #    （provider=mock → 欢迎横幅引导扫码，绝不显示假数据）
 
 
+def verify_version_consistency() -> None:
+    """csproj 的 <Version> 必须与 core/__init__.py 一致。
+
+    两处不同步的后果很隐蔽：zip 名和界面写的是新版本，而 exe 属性页、资源管理器
+    里显示的是旧版本 —— v2.1.2 构建时就差点这样发出去。
+    """
+    csproj = ROOT / "shell" / "ResinLoop.csproj"
+    text = csproj.read_text(encoding="utf-8")
+    match = re.search(r"<Version>\s*([^<\s]+)\s*</Version>", text)
+    if not match:
+        raise SystemExit("[FATAL] shell/ResinLoop.csproj 里找不到 <Version>")
+    if match.group(1) != VERSION:
+        raise SystemExit(
+            f"[FATAL] 版本号不一致：ResinLoop.csproj={match.group(1)} / core/__init__.py={VERSION}"
+        )
+    print(f"[OK] 版本号一致：{VERSION}")
+
+
 def main() -> None:
     verify_shell_fresh()
+    verify_version_consistency()
 
     if OUT.exists():
         shutil.rmtree(OUT)
