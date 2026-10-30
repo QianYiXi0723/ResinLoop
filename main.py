@@ -127,97 +127,99 @@ def _validate_skland_token(token: str) -> str:
 
 
 def cmd_login_skland(config_path: Path, game: str) -> int:
-    """扫码登录鹰角通行证，把拿到的长期 Token 写回 config.json 的指定游戏节点。
+    """扫码登录鹰角通行证，把拿到的长期 Token 写回 config.json 的游戏节点。
 
-    【多账号支持】明日方舟和终末地可能在不同的鹰角通行证账号下：
-    game="both" 时依次扫两次码，每次只更新对应游戏的 credential.token，
-    绝不覆盖另一个游戏的 Token。
+    一次扫码：扫一次就写完本次要更新的全部游戏（game="both" 时两款一起写）。
     """
     import json
 
     from core.hypergryph_login import HypergryphLoginError, run_qr_login
 
     games = ["arknights", "endfield"] if game == "both" else [game]
-    results: List[str] = []
+    scope = "、".join(games)
 
-    for target in games:
-        _safe_console("=" * 60)
-        _safe_console(f"鹰角通行证扫码登录 -> {target}")
-        _safe_console("=" * 60)
-        try:
-            result = run_qr_login()
-        except HypergryphLoginError as exc:
-            _safe_console(f"[登录失败] {target}：{exc}")
-            return 1
-        except KeyboardInterrupt:
-            _safe_console("\n已中断")
-            return 130
+    _safe_console("=" * 60)
+    _safe_console(f"鹰角通行证扫码登录 -> {scope}")
+    _safe_console("=" * 60)
+    try:
+        result = run_qr_login()
+    except HypergryphLoginError as exc:
+        _safe_console(f"[登录失败] {scope}：{exc}")
+        return 1
+    except KeyboardInterrupt:
+        _safe_console("\n已中断")
+        return 130
 
-        token = (result["token"] or "").strip()
-        _safe_console(f"登录成功！Token：长度 {len(token)}，前缀 {token[:10]!r}")
+    token = (result["token"] or "").strip()
+    _safe_console(f"登录成功！Token：长度 {len(token)}，前缀 {token[:10]!r}")
 
-        # ---- 写入前的硬校验（格式不对绝不落盘） ---- #
-        problem = _validate_skland_token(token)
-        if problem:
-            _print_error("登录接口获取 Token 异常，请检查源码：")
-            _print_error(f"  - {problem}")
-            _print_error(f"  - 实际长度={len(token)}，前缀={token[:16]!r}")
-            _print_error("  - 已中止，未写入 config.json")
-            return 1
+    # ---- 写入前的硬校验（格式不对绝不落盘） ---- #
+    problem = _validate_skland_token(token)
+    if problem:
+        _print_error("登录接口获取 Token 异常，请检查源码：")
+        _print_error(f"  - {problem}")
+        _print_error(f"  - 实际长度={len(token)}，前缀={token[:16]!r}")
+        _print_error("  - 已中止，未写入 config.json")
+        return 1
 
-        # ---- 语义预检：真的能过 grant 校验才写 ---- #
-        from core.skland_api import verify_ark_token
+    # ---- 语义预检：真的能过 grant 校验才写 ---- #
+    from core.skland_api import verify_ark_token
 
-        _safe_console("正在向鹰角 grant 接口验证 token 有效性...")
-        check = verify_ark_token(token)
-        if not check.get("ok"):
-            _print_error("登录接口获取 Token 异常，请检查源码：")
-            _print_error(f"  - {check.get('error')}")
-            _print_error(f"  - token 长度={len(token)}，前缀={token[:16]!r}")
-            _print_error("  - 已中止，未写入 config.json")
-            return 1
-        _safe_console("      验证通过（grant 返回 status=0）")
+    _safe_console("正在向鹰角 grant 接口验证 token 有效性...")
+    check = verify_ark_token(token)
+    if not check.get("ok"):
+        _print_error("登录接口获取 Token 异常，请检查源码：")
+        _print_error(f"  - {check.get('error')}")
+        _print_error(f"  - token 长度={len(token)}，前缀={token[:16]!r}")
+        _print_error("  - 已中止，未写入 config.json")
+        return 1
+    _safe_console("      验证通过（grant 返回 status=0）")
 
-        # 只写回目标游戏的 credential.token，不动其它游戏
-        try:
-            raw = json.loads(config_path.read_text(encoding="utf-8"))
+    # 一次扫码的结果写进本次涉及的全部游戏节点
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        written: List[str] = []
+        missing: List[str] = []
+        for target in games:
             hit = False
             for account in raw.get("accounts", []):
                 if account.get("game") == target:
                     account.setdefault("credential", {})["token"] = token
                     hit = True
                     break
-            if not hit:
-                _safe_console(f"config.json 里没有 {target} 账号节点，Token 未写入")
-                return 1
-            # 同上：模板的 provider=mock 会让人误以为在查真实数据，登录成功后切走。
-            query_node = raw.setdefault("query", {})
-            if str(query_node.get("provider", "")).strip().lower() == "mock":
-                query_node["provider"] = "miyoushe"
-                _safe_console("已自动把 query.provider 从 mock 切到 miyoushe（否则查的是模拟数据）")
-            config_path.write_text(
-                json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
-            # 清掉该游戏的旧 cred 缓存，强制下次用新 token 重新换取
-            cache_file = BASE_DIR / "logs" / f"skland_cred_{target}.json"
-            cache_file.unlink(missing_ok=True)
-            _safe_console(f"已写入 config.json 的 {target} 节点（未触碰其它游戏），下次运行自动生效")
-            results.append(target)
-        except (OSError, ValueError) as exc:
-            _print_error(f"[配置写入失败] {exc}")
-            _safe_console("请手动把下面的 Token 填到 config.json 对应游戏的 credential.token：")
-            _safe_console(token)
+            (written if hit else missing).append(target)
+        if not written:
+            _safe_console(f"config.json 里没有 {'、'.join(missing)} 账号节点，Token 未写入")
             return 1
+        # 同上：模板的 provider=mock 会让人误以为在查真实数据，登录成功后切走。
+        query_node = raw.setdefault("query", {})
+        if str(query_node.get("provider", "")).strip().lower() == "mock":
+            query_node["provider"] = "miyoushe"
+            _safe_console("已自动把 query.provider 从 mock 切到 miyoushe（否则查的是模拟数据）")
+        config_path.write_text(
+            json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        for target in written:
+            # 清掉该游戏的旧 cred 缓存，强制下次用新 token 重新换取
+            (BASE_DIR / "logs" / f"skland_cred_{target}.json").unlink(missing_ok=True)
+        _safe_console(
+            f"已写入 config.json 的 {'、'.join(written)} 节点，下次运行自动生效"
+        )
+        if missing:
+            _safe_console(f"[提示] 没有对应账号节点，未写入：{'、'.join(missing)}")
+    except (OSError, ValueError) as exc:
+        _print_error(f"[配置写入失败] {exc}")
+        _safe_console("请手动把下面的 Token 填到 config.json 对应游戏的 credential.token：")
+        _safe_console(token)
+        return 1
 
-    if len(results) > 1:
-        _safe_console(f"全部完成：{'、'.join(results)} 的 Token 均已分别写入")
     return 0
 
 
 def cmd_login_mihoyo(config_path: Path, proxy: Optional[str] = None) -> int:
     """米游社扫码登录：手机米游社 App 扫码，自动写入 Cookie 并绑定设备。
 
-    一次扫码更新原神 / 崩铁 / 绝区零三个账号（同一米游社账号），
+    一次扫码把该账号的 Cookie 写入原神 / 崩铁 / 绝区零三款游戏，
     并自动把 query.mihoyo_enabled 改回 true。
     """
     import json
@@ -817,7 +819,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="{arknights|endfield}",
         help="扫码登录鹰角通行证并写入 config.json。可选参数指定游戏："
              "--login-skland arknights / --login-skland endfield /"
-             " 不带参数=两款依次各扫一次（明日方舟与终末地可在不同账号下）",
+             " 不带参数=一次扫码写入两款",
     )
     parser.add_argument(
         "--login-mihoyo", action="store_true",

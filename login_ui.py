@@ -116,7 +116,7 @@ class Session:
     """一次登录任务的完整状态。
 
     state 取值：creating / waiting / scanned / writing / done / error
-    森空岛是多步的（每款一次扫码），用 step / total / current 表示进度。
+    step / total 只表示「已写入几款 / 勾了几款」，两条平台都是一次扫码全部写入。
     """
 
     def __init__(self, provider: str, targets: List[str]) -> None:
@@ -850,6 +850,13 @@ TOOLS_SERVER: Optional[Dict[str, Any]] = None
 #: 启动失败的原因。空串表示没失败（要么没试过，要么成功了）
 TOOLS_ERROR: str = ""
 
+#: 是否允许启动 APK 局域网下载服务（--no-lan-tools 关闭）。
+#: 这个服务必须绑 0.0.0.0 手机才能扫码下载，代价是每出现一个新的可执行文件路径，
+#: Windows 防火墙就要问一次「是否允许接受来自网络的连接」。所以启动时不再预热，
+#: 只在用户真的要看下载地址时（/api/apk/restart）才起来 —— 主控制台只绑 127.0.0.1，
+#: 回环流量不经过防火墙，从来不会触发询问。
+LAN_TOOLS_ENABLED: bool = True
+
 _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
 
@@ -944,7 +951,8 @@ def device_status() -> Dict[str, Any]:
         },
         "ua": mihoyo_api.build_user_agent(profile),
         "cache_exists": _DEVICE_CACHE_PATH.exists(),
-        "apk": apk_info(),
+        # retry=False：设备页每次加载都会走到这里，不能顺手把绑 0.0.0.0 的服务拉起来
+        "apk": apk_info(retry=False),
     }
 
 
@@ -1498,7 +1506,7 @@ def run_mihoyo(session: Session) -> None:
 
 
 def run_skland(session: Session) -> None:
-    """逐款扫码：勾了几款就依次扫几次，每款单独写自己的 token。"""
+    """一次扫码，更新所有被勾选的森空岛游戏（与米游社同一口径）。"""
     from core.hypergryph_login import (
         HypergryphLoginError,
         create_qr,
@@ -1507,66 +1515,65 @@ def run_skland(session: Session) -> None:
     )
     from core.skland_api import verify_ark_token
 
-    total = session.total
-    finished: List[str] = []
+    targets = list(session.targets)
+    labels = [SKLAND_TARGETS.get(t, t) for t in targets]
+    joined = "、".join(labels)
 
-    for index, target in enumerate(session.targets, 1):
-        label = SKLAND_TARGETS.get(target, target)
-        session.current = target
+    def on_status(status: Any) -> None:
+        if status == 101:
+            session.update("scanned", "已扫码，请在手机上点击「确认」")
 
-        def on_status(status: Any) -> None:
-            if status == 101:
-                session.update(
-                    "scanned", f"第 {index}/{total} 步 · 已扫码，请在手机上点击「确认」"
-                )
+    try:
+        session.set_qr("")
+        session.update("creating", f"正在申请二维码（将更新 {len(targets)} 款游戏）…")
+        qr = create_qr()
+        session.set_qr(qr_png_base64(qr["scan_url"]))
+        session.update("waiting", f"请用「森空岛」App 扫码，将更新：{joined}")
 
-        try:
-            session.set_qr("")
-            session.update("creating",
-                           f"第 {index}/{total} 步 · {label}：正在申请二维码（将更新 {total} 款游戏）…")
-            qr = create_qr()
-            session.set_qr(qr_png_base64(qr["scan_url"]))
-            session.update(
-                "waiting",
-                f"第 {index}/{total} 步 · 请用「森空岛」App 扫描{label}的二维码",
+        scan_code = poll_confirm(qr["scan_id"], timeout=180, on_status=on_status)
+
+        session.update("writing", "正在验证 Token…")
+        token = exchange_short_token(scan_code)
+        check = verify_ark_token(token)
+        if not check.get("ok"):
+            raise HypergryphLoginError(
+                f"Token 校验未通过：{check.get('message') or check}"
             )
+    except HypergryphLoginError as exc:
+        session.update("error", f"登录失败：{exc}")
+        logger.warning("森空岛登录失败：%s", exc)
+        return
+    except Exception as exc:  # noqa: BLE001
+        session.update("error", f"登录异常：{exc}")
+        logger.exception("森空岛登录未预期异常")
+        return
 
-            scan_code = poll_confirm(qr["scan_id"], timeout=180, on_status=on_status)
-
-            session.update("writing", f"第 {index}/{total} 步 · 正在验证 {label} 的 Token…")
-            token = exchange_short_token(scan_code)
-            check = verify_ark_token(token)
-            if not check.get("ok"):
-                raise HypergryphLoginError(
-                    f"Token 校验未通过：{check.get('message') or check}"
-                )
-
+    written: List[str] = []
+    failed: List[str] = []
+    for target, label in zip(targets, labels):
+        try:
             name = write_skland(target, token)
             session.add_result(target, name, True)
-            finished.append(name)
-            session.step = index
-            logger.info("%s 登录成功（第 %d/%d 款）", name, index, total)
-        except HypergryphLoginError as exc:
-            session.add_result(target, label, False, str(exc))
-            session.update(
-                "error",
-                f"第 {index}/{total} 步 · {label} 登录失败：{exc}"
-                + (f"（已完成：{'、'.join(finished)}）" if finished else ""),
-                finished=finished,
-            )
-            logger.warning("%s 登录失败：%s", label, exc)
-            return
+            written.append(name)
+            session.step += 1
+            logger.info("%s 写入成功（一次扫码）", name)
         except Exception as exc:  # noqa: BLE001
-            session.add_result(target, label, False, f"登录异常：{exc}")
-            session.update("error", f"第 {index}/{total} 步 · {label} 登录异常：{exc}")
-            logger.exception("%s 登录未预期异常", label)
-            return
+            session.add_result(target, label, False, str(exc))
+            failed.append(label)
+            logger.warning("%s 写入失败：%s", label, exc)
 
+    if not written:
+        session.update("error", "写入失败：" + "、".join(failed))
+        return
+
+    note = "各游戏的 cred 缓存已清除，下次运行自动换新"
+    if failed:
+        note = "未写入：" + "、".join(failed) + "；" + note
     session.update(
         "done",
-        f"全部完成，{len(finished)} 款游戏已更新",
-        games=finished,
-        note="各游戏的 cred 缓存已清除，下次运行自动换新",
+        f"{len(written)} 款游戏已更新",
+        games=written,
+        note=note,
     )
 
 
@@ -2208,6 +2215,10 @@ def start_tools_service() -> Optional[Dict[str, Any]]:
 
     if TOOLS_SERVER is not None:
         return TOOLS_SERVER
+    if not LAN_TOOLS_ENABLED:
+        TOOLS_ERROR = "局域网下载服务已被禁用（--no-lan-tools）"
+        logger.info("APK 下载服务未启动：%s", TOOLS_ERROR)
+        return None
     try:
         from core import tools_server
 
@@ -2251,9 +2262,12 @@ def serve(
     逻辑漂移。返回 ``{"server", "port", "url", "thread", "tools"}``，
     关闭时调用 :func:`stop_server`。
     """
+    global LAN_TOOLS_ENABLED
+
     ensure_config()
-    if lan_tools:
-        start_tools_service()
+    # 刻意不在这里预热 APK 下载服务：它必须绑 0.0.0.0，会让 Windows 防火墙在
+    # 每次出现新路径时问一次。等用户点「生成下载二维码」再由 /api/apk/restart 懒启动。
+    LAN_TOOLS_ENABLED = lan_tools
 
     actual = pick_port(port, tries)
     server = LocalHTTPServer(("127.0.0.1", actual), Handler)
@@ -2337,7 +2351,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if info["tools"]:
         print(f"  APK 下载：{info['tools']['url']}（手机连同一 WiFi 可访问）")
     else:
-        print("  [提示] tools/ 为空或端口被占用，手机扫码下载不可用")
+        print("  APK 下载：按需启动 —— 界面「设备」页点「生成下载二维码」才监听局域网")
     print("  关闭本窗口只停控制台，定时提醒由守护进程负责")
     print("=" * 58)
 
