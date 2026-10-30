@@ -54,13 +54,8 @@ REQUEST_TIMEOUT = 8
 NOTIFIED_KEEP_DAYS = 7
 
 #: 拿不到结构化日历的游戏（其余四款都已接入）
-UNSUPPORTED: Tuple[Dict[str, str], ...] = (
-    {
-        "game": "endfield",
-        "game_name": "终末地",
-        "reason": "官方只有公告且不含截止日期，没有可用的活动日历接口",
-    },
-)
+#: 全部五款游戏都有活动数据源了，暂无「仅公告、无日程」的游戏
+UNSUPPORTED: Tuple[Dict[str, str], ...] = ()
 
 #: 只留「抽卡资源」：每款游戏对应的可抽卡货币（标题/奖励名里包含即算数）
 GACHA_REWARDS: Dict[str, Tuple[str, ...]] = {
@@ -827,12 +822,99 @@ def fetch_arknights_activities() -> List[Dict[str, Any]]:
     return result
 
 
+#: 终末地：官方没有活动日历接口（公告不带截止时间），社区的做法是吃
+#: fz.wiki「活动」文章——编辑者维护的结构化日程（open/close 直出），
+#: 零启发式，比方舟的正文正则干净得多。数据质量依赖 wiki 维护。
+ENDFIELD_WIKI_API = "https://api.fz.wiki/api/v1/articles/by-title"
+_ENDFIELD_ITEM_TYPE = "endfieldCardActivityIndex__activities"
+
+
+def _parse_wiki_time(text: Any) -> Optional[datetime]:
+    """fz.wiki 时刻格式："2026/7/16 7:00:00"（月/日/时不补零）。"""
+    try:
+        return datetime.strptime(str(text).strip(), "%Y/%m/%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return None
+
+
+def _endfield_activity_nodes(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """从文章修订里挖 endfieldCardActivityIndex 的活动节点。
+
+    上游有两种历史形态：legacy 把字段直接挂在 attrs 上，current 挪进了
+    attrs.data——用 node.type 或 attrs.itemType 识别后统一解包 attrs.data。
+    """
+    content = (((payload.get("revision") or {}).get("contentJson") or {}).get("content")) or []
+    index_node = next(
+        (n for n in content
+         if isinstance(n, dict) and n.get("type") == "endfieldCardActivityIndex"),
+        None,
+    )
+    children = (index_node or {}).get("content") or []
+    nodes: List[Dict[str, Any]] = []
+    for child in children:
+        if not isinstance(child, dict):
+            continue
+        attrs = child.get("attrs") or {}
+        if (child.get("type") != _ENDFIELD_ITEM_TYPE
+                and attrs.get("itemType") != _ENDFIELD_ITEM_TYPE):
+            continue
+        data = attrs.get("data")
+        node = data if isinstance(data, dict) else attrs
+        if isinstance(node, dict) and node.get("name"):
+            nodes.append(node)
+    return nodes
+
+
+def fetch_endfield_activities() -> List[Dict[str, Any]]:
+    """终末地：fz.wiki「活动」日程 → 活动列表（已结束的跳过）。"""
+    session = _new_session()
+    response = session.get(
+        ENDFIELD_WIKI_API,
+        params={"ns": "0", "title": "活动", "withRevision": "1"},
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    now = datetime.now()
+    result: List[Dict[str, Any]] = []
+    for act in _endfield_activity_nodes(payload):
+        calendar_range = act.get("calendarRange") or {}
+        window = (calendar_range
+                  if isinstance(calendar_range, dict) and calendar_range.get("open")
+                  else (act.get("timeRanges") or [{}])[0])
+        if not isinstance(window, dict) or not window.get("open"):
+            continue
+        start = _parse_wiki_time(window.get("open"))
+        end = _parse_wiki_time(window.get("close"))
+        if start is None:
+            continue
+        if end is not None and end <= now:
+            continue  # 已结束：不展示、也不提醒
+        if end is None:
+            continue  # 常驻类（无截止时间）：没有"结束"可提醒，进卡只会永远占位
+        title = _clean_text(act.get("calendarTitle") or act.get("name"))
+        if not title:
+            continue
+        result.append({
+            "game": "endfield", "game_name": "终末地", "kind": "act", "title": title,
+            "start": start.strftime("%Y-%m-%d %H:%M:%S"),
+            "end": end.strftime("%Y-%m-%d %H:%M:%S") if end else "",
+            "status": "", "progress": "", "icon": "",
+            "remote_id": str(act.get("activityId") or title),
+            "reward": "", "reward_ok": True,
+        })
+    result.sort(key=lambda item: item["end"])
+    return result
+
+
 #: 每个抓取器对应的来源说明，写进缓存的 source 字段方便排查
 SOURCES: Dict[str, str] = {
     "genshin": "miyoushe act_calendar",
     "starrail": "miyoushe get_act_calender",
     "zzz": "miyoushe activity_calendar",
     "arknights": "ak.hypergryph.com news(tab=1)+正文",
+    "endfield": "fz.wiki 活动（wikiCardActivityIndex 结构化日程）",
 }
 
 #: 新增游戏时在这里挂一个 fetch 函数即可。
@@ -841,6 +923,7 @@ FETCHERS = {
     "starrail": fetch_starrail_activities,
     "zzz": fetch_zzz_activities,
     "arknights": fetch_arknights_activities,
+    "endfield": fetch_endfield_activities,
 }
 
 
