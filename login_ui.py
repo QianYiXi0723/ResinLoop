@@ -396,6 +396,24 @@ def accounts_status() -> Dict[str, Any]:
     return {"ok": True, "items": items}
 
 
+#: config.json 是「读 → 改 → 写」的共享文件。界面上两个开关几乎同时保存时，
+#: 后写的一方会拿着旧副本把前一次的改动覆盖掉。这把锁把整段临界区串起来。
+#: （必须放在 set_account_enabled 之前：装饰器在 def 执行时就要用到这个名字。）
+_CONFIG_WRITE_LOCK = threading.Lock()
+
+
+def _serialized_write(func):
+    """让同一个进程内的配置写入排队执行（HTTP 服务是多线程的）。"""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with _CONFIG_WRITE_LOCK:
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
+@_serialized_write
 def set_account_enabled(games: List[str], enabled: bool) -> Dict[str, Any]:
     """把指定游戏写进/移出每日巡检（config accounts[].enabled）。
 
@@ -496,22 +514,6 @@ def thresholds_status() -> Dict[str, Any]:
         "defaults": {key: default for key, _jk, default in _THRESHOLD_FIELDS},
         "max": 1000,
     }
-
-
-#: config.json 是「读 → 改 → 写」的共享文件。界面上两个开关几乎同时保存时，
-#: 后写的一方会拿着旧副本把前一次的改动覆盖掉。这把锁把整段临界区串起来。
-_CONFIG_WRITE_LOCK = threading.Lock()
-
-
-def _serialized_write(func):
-    """让同一个进程内的配置写入排队执行（HTTP 服务是多线程的）。"""
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        with _CONFIG_WRITE_LOCK:
-            return func(*args, **kwargs)
-
-    return wrapper
 
 
 @_serialized_write
@@ -1038,6 +1040,7 @@ def reset_device_text() -> Dict[str, Any]:
     return result
 
 
+@_serialized_write
 def save_query_proxy(raw_value: Any) -> Dict[str, Any]:
     """校验并写入 config.query.proxy（空串 = 直连）。仅本地读写，不做连通性测试。
 
@@ -1488,6 +1491,7 @@ def save_schedule(times: Any) -> Dict[str, Any]:
     return result
 
 
+@_serialized_write
 def write_mihoyo(
     cookie: str,
     games: List[str],
@@ -1540,6 +1544,7 @@ def write_mihoyo(
     return updated, absent
 
 
+@_serialized_write
 def write_skland(target: str, token: str) -> str:
     """只更新目标游戏的 token，不动另一款。"""
     raw = load_raw_config()
@@ -2315,6 +2320,7 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json({"ok": False, "message": "not found"}, 404)
 
+    @_serialized_write
     def _handle_save_push(self, payload: Dict[str, Any]) -> None:
         try:
             raw = load_raw_config()
