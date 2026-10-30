@@ -11,6 +11,26 @@
 
 ## 更新日志
 
+### v2.1.2
+
+- **修复全新机器首次运行必崩**：没有 `device_identity.json` 时（也就是任何新用户第一次
+  解压运行），`core/mihoyo_api.py` 的模块级初始化会调用定义在文件后方的 `_IDENTITY_LOCK`
+  与 `_generate_id`，直接抛 `NameError`，导致 `/api/device` 空响应，扫码、查询、巡检一起失效。
+  已把两处定义上移到初始化之前，并在原位置留下位置说明防止被搬回去。
+  **v2.1.1 的包里就是这份坏代码，请换成本版。**
+- **发行形态改为多文件**：去掉 ILRepack 合并。net48 没有官方单文件发布，手搓合并在
+  `/internalize` 下会把 WebView2 类型降为 internal → `TypeLoadException`（v2.0.0/v2.1 的病根）。
+  实测合并只省 10,888 字节和两个文件，而 `WebView2Loader.dll` 本来就是原生件、合不进去，
+  「单文件」一直是假象。现在根目录是 exe + 3 个 dll，与 BetterGI、绘世启动器等成熟项目一致。
+- **新增构建门禁**：`shell/build.ps1` 每次构建都会把四件 + engine（剥掉 `logs/`）复制到
+  `%TEMP%` 空目录实跑，断言窗口标题、`/api/env`、`/api/device`、首启自动生成身份文件、
+  页面 DOM 已渲染、页面内 `fetch('/api/*')` 真的走通。
+  上面两个 bug 都只在「无历史产物、无身份文件」的全新目录复现，旧冒烟永远绿。
+- **页面不再依赖本地 HTTP 服务**：壳接管 `https://resinloop.local/*`，`index.html`、
+  `app.js`、`style.css`、图标全部从 `engine\ui` 与 `engine\static` 直接读盘；
+  页面发出的 `/api/*` 由壳转发到引擎端口（显式 `Proxy = null` 绕过系统代理）。
+  窗口出现得比引擎更早，也不再受端口与代理影响。浏览器/`app.py` 路径仍走原来的 HTTP 服务。
+
 ### v2.1.1
 
 - **修复发行版双击打不开**：v2.0.0 / v2.1 的 exe 启动后进程立刻退出，窗口根本不出现
@@ -492,7 +512,7 @@ python main.py --login-mihoyo
 1. 终端打印 ASCII 二维码（同时保存 `qr_login.png`）；
 2. 手机【**米游社 App**】扫一扫 → 在手机上点确认；
 3. 程序从 `Set-Cookie` 自动取出 `ltuid` / `ltoken` / `cookie_token`（只给 stoken_v2 时自动用 `getLTokenBySToken` 派生 ltoken）；
-4. **自动写入** config.json 里原神 / 崩铁 / 绝区零三个账号的 `credential.cookie`（uid/server 原样保留）；
+4. **自动写入** config.json 里原神 / 崩铁 / 绝区零三款游戏的 `credential.cookie`（uid/server 原样保留）；
 5. **设备绑定**：扫码用的 `x-rpc-device_id` 会写进 `logs/device_fp.json`，并为它重新签发 `device_fp`，之后三款游戏的 dailyNote 请求用的就是"扫码登录那台设备"；
 6. 自动把 `query.mihoyo_enabled` 改回 `true`。
 
@@ -589,12 +609,12 @@ python main.py --dry-run --debug
 - 查不到的（如基建、剿灭、周任务明细）：不在本阶段范围；周任务字段（`weeklyMission` / `routine.weekly`）已在接口里，但为避免"周任务没做完天天催"暂不纳入每日提醒。
 - 森空岛签到（`/game/attendance`）仍保留在 `core/skland_api.py` 里备用，但**主流程不再用它判断完成度**。
 
-### 7.2 Token 怎么填（扫码登录，推荐；支持两款游戏两个账号）
+### 7.2 Token 怎么填（扫码登录，推荐）
 
 给 `arknights` / `endfield` 的 `credential` 各填一个**鹰角登录 token**——即扫码流程中
 `token_by_scan_code` 返回的那串**短 token**（**40~100 字符、纯 base64 字符集、不以 eyJ 开头**）。
-**两款游戏可以在不同的鹰角通行证账号下**——各自扫各自的码、各写各的节点，互不覆盖：
-凭证缓存也按游戏分文件（`logs/skland_cred_arknights.json` / `logs/skland_cred_endfield.json`），不会互相污染。
+扫一次码，本次要更新的游戏一起写入；凭证缓存按游戏分文件
+（`logs/skland_cred_arknights.json` / `logs/skland_cred_endfield.json`），不会互相污染。
 
 > ⚠️ **不要填 eyJ 开头的网页 JWT**。skland 换票接口 `/user/oauth2/v2/grant` 对
 > `GrantV2Req.token` 有 **max=128 字符**的硬校验（2026-10-26 实测：128 通过、129 起即报
@@ -606,7 +626,7 @@ python main.py --dry-run --debug
 ```bash
 python main.py --login-skland arknights   # 只登明日方舟的账号，写入 arknights 节点
 python main.py --login-skland endfield    # 只登终末地的账号，写入 endfield 节点
-python main.py --login-skland             # 不带参数：两款依次各扫一次
+python main.py --login-skland             # 不带参数：一次扫码写入两款
 ```
 
 流程（全自动，接口为鹰角官方扫码登录，已实测）：
@@ -615,7 +635,8 @@ python main.py --login-skland             # 不带参数：两款依次各扫一
 2. 用手机 **森空岛 / 明日方舟 / 终末地 App** 任一款扫码，并在手机上点确认；
 3. 打印 `gen_scan/login`、`scan_status`、`token_by_scan_code` 的**服务端完整返回**，并体检 token 长度/前缀/是否含空白；
 4. **写入前双重校验**：格式检查（空 / 含空白 / eyJ 开头 / >128 字符 / 过短 → 红字报错且**不落盘**）+ 语义预检（真调一次 grant，`status=0` 才写）；
-5. **只写入本次指定的游戏节点**，另一个游戏的 Token 原样保留；该游戏旧的 cred 缓存会清掉，下次用新 token 重新换取。
+5. **只写入本次指定的游戏节点**：`--login-skland arknights` 只动 arknights，不带参数则两款一起写，
+   没被指定的游戏 Token 原样保留；被写入的游戏旧 cred 缓存会清掉，下次用新 token 重新换取。
 
 依赖：`pip install qrcode pillow`（已加入 requirements.txt）。未安装 qrcode 时会降级为打印扫码链接。
 
@@ -682,7 +703,7 @@ python main.py --dry-run            # 跑完整流程但不发真实推送请求
 python main.py --dry-run --debug    # 调试模式：打印接口原始返回（脱敏），核对数据真伪
 python main.py --login-skland arknights   # 扫码登录明日方舟的鹰角账号，只写 arknights 节点
 python main.py --login-skland endfield    # 扫码登录终末地的鹰角账号，只写 endfield 节点
-python main.py --login-skland             # 两款依次各扫一次（支持两个不同账号）
+python main.py --login-skland             # 一次扫码写入两款
 python main.py --login-mihoyo             # 米游社扫码登录（米游社 App 扫），写三款游戏 Cookie + 绑设备
 python main.py --probe-mihoyo             # 米游社链路探针：出口 IP / device_fp / 设备注册 / 两种模式的 retcode
 python main.py --probe-mihoyo --proxy http://127.0.0.1:7890   # 换代理试 IP（不写回配置）
@@ -892,27 +913,17 @@ python main.py --force-alert   :: 强制发一条，验证推送通道本身通�
 
 #### 账号绑定
 
-按平台分成两块，**每款游戏一个复选框**：
+按平台分成两块，**每款游戏一个复选框**，勾选只决定这次更新哪几款：
 
-| 平台 | 勾选方式 | 扫码次数 |
-| --- | --- | --- |
-| **米游社** | 原神 / 崩铁 / 绝区零，想更哪几款就勾哪几款 | **1 次**（同一账号的 Cookie 通用） |
-| **森空岛** | 明日方舟 / 终末地，勾几款就登录几款 | **每款 1 次**（各有独立 token） |
-
-所以两种极端情况都是同一个入口：
-
-- **只登录一款**：只勾那一款 → 米游社扫 1 次，森空岛扫 1 次；
-- **全部一起**：点"全选" → 米游社扫 1 次搞定三款，森空岛依次扫 2 次。
-
-写入范围严格按勾选执行：没勾的游戏，`config.json` 里的 Cookie/token 和 `logs/device_fp.json`
-里的设备指纹都**原样不动**。这点对"三款挂在两个不同米游社账号下"的情况很重要——
-只登录原神时，不会把另外两款所在的账号设备身份一起换掉。
+- 勾哪几款就只更新哪几款；没勾的游戏，`config.json` 里的 Cookie/token 和
+  `logs/device_fp.json` 里的设备指纹都**原样不动**。
+- 某一款换了账号，重新勾上扫一次，只覆盖这一款的凭证。
+- 每款游戏的凭证、有效期、状态点分开记录，互不影响。
 
 相比命令行版的区别：
 
 - 二维码是图片，尺寸够大，直接对着屏幕扫；
 - 状态实时刷新：等待扫码 → 已扫码待确认 → 写入中 → 完成；
-- 森空岛多款时显示"第 1/2 步"，扫完一款自动出下一款的码；
 - 成功后页面直接列出写入的米游社 ID、更新了哪几款游戏，不用回头翻日志；
 - 失败时给出具体原因（二维码过期、手机上取消、Token 校验不通过等），
   并保留已完成的部分（比如第 2 款失败，第 1 款仍然写入了）。
