@@ -248,7 +248,12 @@ def record(report: Any, *, at: Optional[datetime] = None) -> Dict[str, Any]:
         node["checks"] = int(node.get("checks") or 0) + 1
         node["last"] = time_text
 
-        ok = bool(getattr(status, "ok", False))
+        # 数据待更新（stale）与未创建角色（no_account）都等于"这次没拿到当日数据"：
+        # 只刷新检查时间，不能把 known 置真 —— 否则报表会把"没登录/没建号"
+        # 画成"已知、漏 0 项"。
+        ok = bool(getattr(status, "ok", False)) and not getattr(
+            status, "stale", None
+        ) and not getattr(status, "no_account", None)
         if ok:
             # 完成是"粘"的：当天只要有一次查到全做完，这天就算完成
             if bool(getattr(status, "finished", False)):
@@ -273,11 +278,14 @@ def _game_meta(
 ) -> Dict[str, Dict[str, str]]:
     """每个游戏的中文名与昵称（报表列头用）。
 
-    来源有两部分，缺一不可：
-        1. ``days`` 里已经写过的历史记录（老数据、曾经启用过的游戏也要能看）；
-        2. ``extra`` —— **当前配置里启用的游戏**，这样刚启用、还没来得及
-           跑一轮检查的游戏也能立刻出现在报表里（显示为 –，而不是压根没列）。
-    名字兜底到 ``config.KNOWN_GAMES``，认不出来就用 game id 本身。
+    来源与列的取舍：
+        1. ``extra`` —— **当前配置里启用的游戏**：提供了它（非 None）时就
+           **只列这些**——用户取消勾选的游戏从报表/热力图/KPI 全部消失
+           （数据仍留在 days 里，重新勾选即原样恢复）；
+        2. ``extra`` 为 None（调用方没有配置上下文）→ 维持旧行为：
+           ``days`` 里出现过的游戏全部列出。
+    名字兜底到 ``config.KNOWN_GAMES``，认不出来就用 game id 本身；
+    启用游戏的昵称仍会从历史节点回填（有则用）。
     """
     meta: Dict[str, Dict[str, str]] = {}
 
@@ -290,6 +298,8 @@ def _game_meta(
         if nickname:
             item["nickname"] = nickname
 
+    extra_set = set(extra) if extra is not None else None
+
     for game in extra or []:
         if isinstance(game, str) and game:
             put(game)
@@ -301,6 +311,8 @@ def _game_meta(
         for game, node in day.items():
             if not isinstance(node, dict):
                 continue
+            if extra_set is not None and game not in extra_set:
+                continue   # 未勾选的游戏：不进报表列（数据保留，重新勾选即恢复）
             put(game, str(node.get("game_name") or ""), str(node.get("nickname") or ""))
     return meta
 

@@ -429,7 +429,7 @@ def _query_account(account, provider: str) -> GameStatus:
     """
     import logging
 
-    from core.mihoyo_api import MiyousheAuthError
+    from core.mihoyo_api import MiyousheAuthError, MiyousheNotBoundError
 
     logger = logging.getLogger("dailycheck.main")
     try:
@@ -447,6 +447,15 @@ def _query_account(account, provider: str) -> GameStatus:
             nickname=account.nickname,
             error=str(exc),
             cred_kind="other",
+        )
+    except MiyousheNotBoundError as exc:
+        # 凭证有效但账号下没这款游戏的角色：不是失败，不触发凭证告警
+        logger.info("%s 未创建角色：%s", account.game_name, exc)
+        return GameStatus(
+            game_id=account.game,
+            game_name=account.game_name,
+            nickname=account.nickname,
+            no_account=str(exc),
         )
     except MiyousheAuthError as exc:
         logger.error("%s 凭证失效：%s", account.game_name, exc)
@@ -552,20 +561,28 @@ def collect_statuses(config: AppConfig) -> List[GameStatus]:
     statuses: List[GameStatus] = []
     # 逐状态日志放回主线程按原顺序补发，日志叙事与串行版完全一致
     for account, status in zip(accounts, results):
-        if status.ok and not getattr(status, "tasks", None):
+        if status.ok and not status.stale and not getattr(status, "tasks", None):
             logger.warning(
                 "%s 查询成功但没返回任何日常项（数据源可能改版），明细为空", status.game_name
             )
 
         level = logging.INFO if status.ok else logging.WARNING
+        if not status.ok:
+            detail = f"查询失败：{status.error}"
+        elif status.no_account:
+            detail = f"未创建角色：{status.no_account}"
+        elif status.stale:
+            detail = f"数据待更新：{status.stale}"
+        elif status.finished:
+            detail = "全部完成"
+        else:
+            detail = f"未完成 {len(status.unfinished_tasks)} 项"
         logger.log(
             level,
             "%s(%s) -> %s",
             status.game_name,
             status.display_name,
-            "全部完成" if status.finished else (
-                f"未完成 {len(status.unfinished_tasks)} 项" if status.ok else f"查询失败：{status.error}"
-            ),
+            detail,
         )
         statuses.append(status)
     return statuses
@@ -637,6 +654,9 @@ def run_once(config: AppConfig, dry_run: bool = False) -> int:
             activity_alerts = activities.pending_alerts(
                 hours=config.activity_alert_days * 24
             )
+            # 未勾选的游戏：其活动结束提醒不进推送（与「不参与巡检并推送」语义一致）
+            enabled_ids = {acc.game for acc in config.enabled_accounts}
+            activity_alerts = [a for a in activity_alerts if a.game_id in enabled_ids]
         except Exception as exc:  # noqa: BLE001 - 活动提醒坏了也不能影响日常检查
             logger.warning("读取活动提醒失败（不影响本轮检查）：%s", exc)
 
@@ -761,6 +781,20 @@ def cmd_run(config_path: Path, args: argparse.Namespace) -> int:
     if getattr(args, "proxy", None) is not None:
         config.query.proxy = str(args.proxy).strip()
 
+    # provider=mock（出厂模板/尚未绑定任何账号）＝内置写死的演示数据。
+    # 2026-10-30 实测：新机器上这轮"检查"会把假结果写进巡检历史、编进周报
+    # 推送出去。daemon 和 /api/live 都已拒绝 mock，CLI 这里同样拒绝；
+    # 开发自测请显式加 --mock。
+    if (config.query.provider or "mock").strip().lower() == "mock" and not getattr(
+        args, "mock", False
+    ):
+        _safe_console(
+            "[拒绝运行] provider=mock：尚未绑定任何账号，跑下去只会产生演示假数据"
+            "（写进历史、编进推送）。\n"
+            "  请先在「账号绑定」页扫码登录；开发自测请显式加 --mock。"
+        )
+        return 1
+
     # 命令行参数临时覆盖测试模式，不写回配置文件
     if args.force_alert:
         config.test_mode = TEST_MODE_FORCE_ALERT
@@ -845,6 +879,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="完整跑流程但不真正发推送请求"
+    )
+    parser.add_argument(
+        "--mock", action="store_true",
+        help="允许在 provider=mock（尚未绑定任何账号）时运行，查询走内置演示数据。"
+             "仅供开发自测；出厂状态下不加这个参数会被拒绝，防止假数据进历史/推送",
     )
     parser.add_argument(
         "--debug", action="store_true",

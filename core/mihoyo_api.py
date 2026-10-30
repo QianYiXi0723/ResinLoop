@@ -789,6 +789,20 @@ class MiyousheAuthError(MiyousheQueryError):
     """凭证缺失 / 格式错误。"""
 
 
+class MiyousheNotBoundError(MiyousheAuthError):
+    """凭证有效，但这个米游社账号下**没有这款游戏的角色**（或还没绑定角色 UID）。
+
+    典型场景：勾选了原神并扫码，但该账号从来没玩过原神 —— 登录本身是成功的，
+    查不到数据只是因为没角色。它不该显示成红色「查询失败」，也不该触发
+    「凭证失效」告警（凭证是好的），所以单独一档，等建号后自动生效。
+    """
+
+
+#: config.json 首启播种模板里的角色 UID 占位值（core/config.py 同值）。
+#: 扫码登录会自动用角色列表回填真实 UID；查询时见到这个值说明还没绑定过角色。
+PLACEHOLDER_UID = "100000000"
+
+
 # --------------------------------------------------------------------------- #
 # 凭证处理
 # --------------------------------------------------------------------------- #
@@ -811,6 +825,15 @@ def extract_credentials(account: AccountConfig) -> Tuple[str, str, str, str, str
     ltoken = str(credential.get(COOKIE_FIELDS[1], "") or "").strip()
     cookie_raw = str(credential.get("cookie", "") or "").strip()
 
+    # 出厂模板里的占位符（"请填写…"）是非空字符串，不拦的话会一路走进
+    # HTTP 头，然后 'latin-1' codec 编码爆炸 —— 用户看到的是天书堆栈。
+    # 这里提前识别成"还没绑定"，给一句能看懂的中文。
+    if any("请填写" in part for part in (ltuid, ltoken, cookie_raw)):
+        raise MiyousheAuthError(
+            f"游戏 {account.game_name} 的米游社凭证还没绑定（仍是出厂占位符），"
+            "请在「账号绑定」页勾选后扫码登录米游社"
+        )
+
     if cookie_raw:
         parsed = parse_cookie_string(cookie_raw)
         ltuid = ltuid or parsed.get(COOKIE_FIELDS[0], "")
@@ -822,8 +845,11 @@ def extract_credentials(account: AccountConfig) -> Tuple[str, str, str, str, str
         )
 
     uid = str(credential.get("uid", "") or "").strip()
-    if not uid:
-        raise MiyousheAuthError(f"游戏 {account.game_name} 的 credential 里缺少 uid（游戏内角色 UID）")
+    if not uid or uid == PLACEHOLDER_UID:
+        raise MiyousheNotBoundError(
+            f"账号下还没有《{account.game_name}》的角色 UID"
+            "（扫码登录会自动回填；该账号没玩过这款游戏时也会这样，建号后自动生效）"
+        )
 
     server = str(credential.get("server", "") or "").strip() or DEFAULT_SERVERS.get(account.game, "")
     if not server:
@@ -1548,6 +1574,78 @@ def request_daily_note(
         k: ("***" if k == "Cookie" else v) for k, v in retry_headers.items()
     })
     return _daily_note_once(game_id, url, params, retry_headers)
+
+
+#: getGameRecordCard 的 game_id -> 本项目 game_id
+#: （实测记录见 RETCODE_HINTS 上方注释：该接口在本项目环境 retcode=0 通过）
+RECORD_CARD_GAME_IDS: Dict[int, str] = {2: "genshin", 6: "starrail", 8: "zzz"}
+
+#: 米游社「我的角色」列表接口：一次请求返回该账号在**所有游戏**里的角色，
+#: 扫码登录后用它回填各游戏的 uid/server/nickname，并识别"账号没玩过这款游戏"。
+RECORD_CARD_PATH = "/game_record/card/wapi/getGameRecordCard"
+
+
+def fetch_game_roles(
+    ltuid: str,
+    ltoken: str,
+    cookie: str = "",
+    base_url: Optional[str] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """拉取该米游社账号的游戏角色列表（getGameRecordCard，GET，只读）。
+
+    Args:
+        cookie: 完整 Cookie 串（扫码后拿到的那串），空则用 ltuid+ltoken 拼。
+
+    Returns:
+        {game_id: {"uid": "123456789", "server": "cn_gf01",
+                   "nickname": "旅行者", "level": 60}} —— 只含认得出的游戏。
+        某款游戏不在结果里 = 该账号没玩过它。
+
+    Raises:
+        MiyousheQueryError: 网络 / HTTP / retcode != 0。扫码流程应当**自行降级**
+        （拉不到列表就跳过回填，保持旧行为），绝不能因为这一步失败让登录报错。
+    """
+    base_url = (base_url or RECORD_BASE).rstrip("/")
+    params: Dict[str, Any] = {"uid": ltuid}
+    headers = build_headers(
+        ltuid, ltoken, query=params, cookie=cookie, with_device=False,
+    )
+    logger.debug(
+        "[roles] 请求 %s?uid=%s（代理=%s）", RECORD_CARD_PATH, ltuid,
+        _mask_proxy(_PROXY) if _PROXY else "直连",
+    )
+    data = _daily_note_once("roles", base_url + RECORD_CARD_PATH, params, headers)
+
+    roles: Dict[str, Dict[str, Any]] = {}
+    raw_list = data.get("list")
+    if not isinstance(raw_list, list):
+        # 没玩过任何游戏的账号 list 可能为空数组；结构异常才报错
+        if raw_list == []:
+            return roles
+        raise MiyousheQueryError(f"角色列表返回缺少 list 数组：{type(raw_list).__name__}")
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        try:
+            game_id = RECORD_CARD_GAME_IDS.get(int(item.get("game_id")))
+        except (TypeError, ValueError):
+            continue
+        if not game_id:
+            continue
+        uid = str(item.get("role_id") or "").strip()
+        if not uid:
+            continue
+        try:
+            level = int(item.get("level"))
+        except (TypeError, ValueError):
+            level = None
+        roles[game_id] = {
+            "uid": uid,
+            "server": str(item.get("region") or "").strip(),
+            "nickname": str(item.get("nickname") or "").strip(),
+            "level": level,
+        }
+    return roles
 
 
 def require_field(data: Dict[str, Any], *path: str) -> Any:

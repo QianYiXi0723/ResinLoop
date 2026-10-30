@@ -15,7 +15,7 @@ function switchTab(name){
 
   if (name === 'query') loadQuery();
   if (name === 'notify') { loadPush(); loadPushPreview(); loadPushRecent(); }
-  if (name === 'schedule') { loadSchedule(); startSchedPoll(); loadThresholds(); loadAutostart(); loadRunLog(); } else { stopSchedPoll(); }
+  if (name === 'schedule') { loadSchedule(); startSchedPoll(); loadThresholds(); loadAutostart(); loadAlwaysNotify(); loadRunLog(); } else { stopSchedPoll(); }
   if (name === 'account') { loadDevice(); loadAccounts(); refreshNotice(); }
   if (name === 'history') { loadHistory(); loadLive(false); }
 }
@@ -347,6 +347,11 @@ function render(d){
   }
   if (d.results && d.results.length && (d.results.length > 1 || d.state === 'error')) {
     const rows = d.results.map(function(r){
+      /* skipped = 正常跳过（账号下没这款游戏）：灰色 –，别画成红 ✗ 吓人 */
+      if (r.skipped) {
+        return '<div><span class="dim">–</span>' + r.label +
+               (r.note ? ' — ' + r.note : '') + '</div>';
+      }
       return '<div><span class="' + (r.ok ? 'i-ok' : 'i-no') + '">' +
              (r.ok ? '✓' : '✗') + '</span>' + r.label +
              (r.note ? ' — ' + r.note : '') + '</div>';
@@ -750,8 +755,7 @@ function renderPush(d){
     en.checked = !!it.enabled;
     hint.innerHTML = hintText(it);
   });
-  const an = document.getElementById('always-notify');
-  if (an) an.checked = !!d.always_notify;
+  renderAlwaysNotify(d.always_notify);
 
   // 左栏渠道列表：名字右侧指示器 = 输入框是否有值（配置明细仍在编辑区 hint 里）
   CHANNELS.forEach(function(name){ updateChState(name); });
@@ -888,6 +892,41 @@ async function savePush(){
     btn.textContent = old;
   }
 }
+
+/* ---------- 完成也推送（开关已迁到「定时与状态 → 开机与提醒行为」卡
+   acc-alwaysnotify；id 保持 always-notify：collectPush/test_push 与 renderPush
+   回填零改动）。开关自带即时保存：update_push_config 对缺省通道"完全不动"，
+   只带 always_notify 的部分 payload 是官方支持的用法。 ---------- */
+function renderAlwaysNotify(v){
+  const an = document.getElementById('always-notify');
+  if (!an) return;
+  an.checked = !!v;
+  setSum('alwaysnotify', an.checked ? '已开启' : '已关闭',
+         an.checked ? '全部完成也会推送一条平安通知' : '仅在存在未完成项时推送');
+}
+
+function loadAlwaysNotify(){
+  fetch('/api/push').then(function(r){ return r.json(); }).then(function(d){
+    if (d.ok) renderAlwaysNotify(d.always_notify);
+  }).catch(function(){ /* 静默：进页不打断，通知绑定页的 loadPush 负责报错 */ });
+}
+
+const anSelfSave = document.getElementById('always-notify');
+if (anSelfSave) anSelfSave.addEventListener('change', async function(){
+  const want = this.checked;
+  this.disabled = true;
+  try {
+    const d = await postJSON('/api/push', { always_notify: want });
+    if (!d.ok) { this.checked = !want; toast(d.message || '设置失败', true); return; }
+    renderAlwaysNotify(this.checked);
+    toast(want ? '已开启：全部完成也推送平安通知' : '已关闭：仅在存在未完成项时推送');
+  } catch (e) {
+    this.checked = !want;
+    toast('设置失败：' + e, true);
+  } finally {
+    this.disabled = false;
+  }
+});
 
 async function testPush(){
   const btn = document.getElementById('btn-test');
@@ -1818,12 +1857,13 @@ function loadQuery(){
 }
 
 /* 把 /api/live 结果整理成 gid → {finished, tasks, 体力信息} 的映射。
-   只有查询成功（g.ok）的游戏才进入映射 —— 它的完成状态有"发言权"，
-   KPI 与迷你卡以它为准；查询失败的没有记录，回落到巡检历史。 */
+   只有拿到"当日数据"的游戏才进入映射 —— 它的完成状态有"发言权"，
+   KPI 与迷你卡以它为准；查询失败、数据待更新、未创建角色的都没有当日记录，
+   回落巡检历史。 */
 function buildLiveMap(d){
   const map = {};
   (d.games || []).forEach(function(g){
-    if (!g.ok) return;
+    if (!g.ok || g.stale || g.no_account) return;
     map[g.game] = {
       finished: !!g.finished,
       tasks: (g.tasks || []).map(function(t){
@@ -1917,6 +1957,22 @@ function renderLive(d){
             '<td><span class="badge err">失败</span></td>' +
             '<td class="wrap err-t">' + escHtml(g.error || '未知错误') + '</td>' +
             '<td>—</td></tr>';
+        }
+        if (g.stale) {
+          /* 数据待更新 ≠ 失败：凭证/网络/解析都正常，只是游戏里今天还没刷新。
+             灰色中性徽章 + 灰字说明，不画红字、不算进失败数。 */
+          return '<tr><td>' + gameIconHtml(g.game) + name + '</td>' +
+            '<td><span class="badge">数据待更新</span></td>' +
+            '<td class="wrap dim">' + escHtml(g.stale) + '</td>' +
+            '<td class="dim">—</td></tr>';
+        }
+        if (g.no_account) {
+          /* 未创建角色 ≠ 失败：凭证有效，只是这个账号下没这款游戏（勾选并
+             扫码了但没玩过它）。灰色提示，建号后自动生效。 */
+          return '<tr><td>' + gameIconHtml(g.game) + name + '</td>' +
+            '<td><span class="badge">未创建角色</span></td>' +
+            '<td class="wrap dim">' + escHtml(g.no_account) + '</td>' +
+            '<td class="dim">—</td></tr>';
         }
         const r = g.resource;
         const st = g.finished
@@ -2980,7 +3036,8 @@ function renderConsole(d){
     else if (/WARNING/.test(line)) cls += ' c-warn';
     else if (/推送成功/.test(line)) cls += ' c-ok';
     const marked = escHtml(line).replace(
-      /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/, '<span class="c-time">$1</span>');
+      /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/, '<span class="c-time">$1</span>')
+      .replace(/\n/g, '<br>');   /* 后端按块合并：traceback 等多行块保留换行 */
     return '<div class="' + cls + '">' + marked + '</div>';
   }).join('');
   body.scrollTop = body.scrollHeight;
@@ -2995,6 +3052,22 @@ function loadConsole(){
       if (body) body.innerHTML = '<span class="console-empty">读取日志失败，请点「刷新」。</span>';
     });
 }
+
+/* 收起状态的那一行也要活：每 30s 取最新一块的第一行（原来只在展开/刷新时更新，
+   平时永远停在旧内容）。读失败静默——底部条不是关键路径。 */
+function loadConsoleLast(){
+  fetch('/api/logtail?n=1').then(function(r){ return r.json(); })
+    .then(function(d){
+      if (!d || d.ok === false) return;
+      const lines = d.lines || [];
+      const last = document.getElementById('console-last');
+      if (last && lines.length) {
+        last.textContent = lines[lines.length - 1].split('\n')[0].replace(/^\S+\s+/, '');
+      }
+    }).catch(function(){ /* 静默 */ });
+}
+loadConsoleLast();
+setInterval(loadConsoleLast, 30000);
 
 document.getElementById('log-console').addEventListener('toggle', function(){
   if (this.open && !consoleLoaded) loadConsole();

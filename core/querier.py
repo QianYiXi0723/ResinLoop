@@ -22,6 +22,7 @@ from .config import KNOWN_GAMES, AccountConfig
 from .history import GAME_DAY_OFFSET
 from .mihoyo_api import (
     MiyousheAuthError,
+    MiyousheNotBoundError,
     MiyousheQueryError,
     extract_credentials,
     request_daily_note,
@@ -29,6 +30,7 @@ from .mihoyo_api import (
 )
 from .models import GameStatus, TaskItem
 from .skland_api import (
+    GameNotBoundError,
     SklandAuthError,
     SklandQueryError,
     get_arknights_player_info,
@@ -257,6 +259,16 @@ class MiyousheQuerier(BaseQuerier):
             )
             parser = self._PARSERS[account.game]
             tasks = parser(self, data)
+        except MiyousheNotBoundError as exc:
+            # 凭证有效但账号下没这款游戏的角色（或还没绑定角色 UID）：
+            # 不是查询失败，不画红字、不触发凭证告警，等建号后自动生效。
+            return GameStatus(
+                game_id=account.game,
+                game_name=account.game_name,
+                nickname=account.nickname,
+                source=self.source,
+                no_account=str(exc),
+            )
         except (MiyousheAuthError, MiyousheQueryError):
             # 凭证/网络/retcode/字段缺失：原样上抛，main 会标记为查询失败
             raise
@@ -409,7 +421,9 @@ class StaleSnapshotError(Exception):
     ``status.lastOnlineTs`` = 10-29 22:14（之后再没登录过游戏），
     而 ``routine.daily`` 仍原样返回 ``10/10`` —— 那是**前一天**的完成状态，
     理智同样停在快照时刻（25/205，实际早已回满）。
-    把它当"今日已完成"就是骗人，所以整款游戏按"数据不可用"处理。
+
+    注意它**不是查询失败**：凭证、网络、解析全都正常，只是游戏里今天还没刷新。
+    调用方把它落到 ``GameStatus.stale``（数据待更新），而不是 ``error``。
     """
 
 
@@ -463,15 +477,26 @@ class SklandQuerier(BaseQuerier):
             tasks = self._fetch_game(account)
         except StaleSnapshotError as exc:
             # 快照过期**不是**查询失败：凭证、网络、解析都没问题，
-            # 只是游戏里今天还没刷新。标成该游戏数据不可用（ok=False），
-            # 于是 finished=False、unfinished_tasks 为空 ——
+            # 只是游戏里今天还没刷新。落到 stale（数据待更新）而不是 error ——
+            # 前端按"待更新"中性展示，不画红字"失败"、不算进失败数；
+            # 同时 tasks 为空 → finished=False、unfinished_tasks 为空，
             # 既不会冒充"今日已完成"，也不会误报"未完成"去推送/记漏。
             return GameStatus(
                 game_id=account.game,
                 game_name=account.game_name,
                 nickname=account.nickname,
                 source=self.source,
-                error=str(exc),
+                stale=str(exc),
+            )
+        except GameNotBoundError as exc:
+            # 凭证有效但该森空岛账号下没这款游戏的角色（勾选并扫码了、
+            # 但没玩过它）：同样不是查询失败，等建号后自动生效。
+            return GameStatus(
+                game_id=account.game,
+                game_name=account.game_name,
+                nickname=account.nickname,
+                source=self.source,
+                no_account=str(exc),
             )
         except (SklandAuthError, SklandQueryError):
             raise
@@ -615,8 +640,14 @@ class SklandQuerier(BaseQuerier):
                 bindings = app.get("bindingList")
                 if isinstance(bindings, list) and bindings:
                     return bindings[0]
-                raise SklandQueryError(f"{wanted} 账号下没有绑定的角色（bindingList 为空）")
-        raise SklandQueryError(f"当前森空岛账号没有绑定 {KNOWN_GAMES.get(game_id, game_id)}")
+                raise GameNotBoundError(
+                    f"当前森空岛账号下没有《{KNOWN_GAMES.get(game_id, game_id)}》的角色"
+                    "（bindingList 为空；没玩过这款游戏，建号后自动生效）"
+                )
+        raise GameNotBoundError(
+            f"当前森空岛账号下没有《{KNOWN_GAMES.get(game_id, game_id)}》的角色"
+            "（没玩过这款游戏；建号后自动生效）"
+        )
 
 
 def _require_int_field(data: Dict[str, Any], key: str, label: str) -> int:

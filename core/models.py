@@ -64,6 +64,14 @@ class GameStatus:
         nickname: 账号昵称，展示用。
         source: 数据来源标记（mock / real），便于日志排查。
         error: 查询失败原因；为空表示查询成功。
+        stale: 数据待更新原因（如"上次在线 10-26 21:46"）；为空表示数据是当日的。
+            与 error 互斥：快照陈旧时凭证、网络、解析都正常，**不是**查询失败，
+            只是数据源还没刷新（典型：当天没进过游戏）。它同样不该被当成
+            "今日已完成/未完成"去判定和推送，所以单独一档。
+        no_account: 未创建角色原因；为空表示该游戏有角色（或未走到这判断）。
+            与 error 互斥：凭证是有效的，只是这个米游社/森空岛账号下
+            **没有这款游戏的角色**（勾选了游戏、扫了码，但账号没玩过它）。
+            和 stale 一样不算失败、不算未完成，等玩家建号后自动生效。
     """
 
     game_id: str
@@ -72,6 +80,8 @@ class GameStatus:
     nickname: str = ""
     source: str = "mock"
     error: Optional[str] = None
+    stale: Optional[str] = None
+    no_account: Optional[str] = None
     cred_kind: Optional[str] = None    # "auth"：凭证类失败；"other"：网络/解析；成功为 None
 
     @property
@@ -80,8 +90,13 @@ class GameStatus:
 
     @property
     def ok(self) -> bool:
-        """是否查询成功。"""
+        """是否查询成功（成功但数据待更新/未创建角色的也算成功，见 stale/no_account）。"""
         return self.error is None
+
+    @property
+    def has_today_data(self) -> bool:
+        """是否有可当"今日进度"用的数据：查询成功、非陈旧、有角色、且至少有判定项。"""
+        return self.ok and not self.stale and not self.no_account and bool(self.counted_tasks)
 
     @property
     def counted_tasks(self) -> List[TaskItem]:
@@ -95,9 +110,9 @@ class GameStatus:
 
     @property
     def finished(self) -> bool:
-        """是否全部日常已完成。查询失败、无判定项一律视为"未完成/未知"。"""
+        """是否全部日常已完成。查询失败、数据待更新、未创建角色、无判定项一律视为"未完成/未知"。"""
         counted = self.counted_tasks
-        if not self.ok or not counted:
+        if not self.ok or self.stale or self.no_account or not counted:
             return False
         return all(task.done for task in counted)
 
@@ -115,6 +130,10 @@ class GameStatus:
         who = f"{self.game_name}（{self.nickname}）" if self.nickname else self.game_name
         if not self.ok:
             return f"{who}｜查询失败：{self.error}"
+        if self.no_account:
+            return f"{who}｜未创建角色：{self.no_account}"
+        if self.stale:
+            return f"{who}｜数据待更新：{self.stale}"
         counted = self.counted_tasks
         if not counted:
             return f"{who}｜无判定项（仅资源数据）｜0/0"
@@ -129,6 +148,8 @@ class GameStatus:
             "source": self.source,
             "finished": self.finished,
             "error": self.error,
+            "stale": self.stale,
+            "no_account": self.no_account,
             "done_count": self.done_count,
             "total_count": len(self.counted_tasks),
             "tasks": [task.to_dict() for task in self.tasks],

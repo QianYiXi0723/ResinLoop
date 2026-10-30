@@ -45,7 +45,7 @@
   <div class="kpi-bar" id="kpi-bar">
     <div class="kpi card">
       <div class="kpi-label">今日完成
-        <span class="q" data-tip="按今天最近一次巡检结果统计；查询失败不计为未完成"></span></div>
+        <span class="q" data-tip="按今天最近一次巡检结果统计；查询失败与数据待更新都不计为未完成"></span></div>
       <div class="kpi-value value" id="k-today">–</div>
       <div class="kpi-sub" id="k-today-sub">等待巡检数据</div>
     </div>
@@ -311,12 +311,6 @@
             <div><b>Qmsg 酱</b><span class="ch-ind"><span class="ch-dot" id="ch-dot-qmsg"></span><span class="ch-state" id="ch-state-qmsg">读取中…</span></span><small>推送到 QQ</small></div>
           </div>
         </div>
-        <div class="v-sep"></div>
-        <label class="opt" style="justify-content:space-between;width:100%">
-          <span>全部完成时也推送</span>
-          <input type="checkbox" id="always-notify">
-        </label>
-        <div class="hint">默认仅在存在未完成项时推送；勾选后即使全部完成也会推送一条。</div>
       </div>
     </section>
 
@@ -428,7 +422,7 @@
         <span class="daemon-kv daemon-kv--opt"><span>PID</span><b id="d-pid">-</b></span>
         <span class="daemon-kv daemon-kv--opt"><span>运行</span><b id="d-since">-</b></span>
         <span class="daemon-kv"><span>参与检查</span><b id="d-games">-</b></span>
-        <span class="daemon-kv"><span>心跳</span><b id="d-heart">-</b></span>
+        <span class="daemon-kv"><span title="守护进程每 30 秒汇报一次运行状态；超过 2 分钟没汇报会显示为未运行">最后活跃</span><b id="d-heart">-</b></span>
         <span class="spacer"></span>
         <button type="button" class="mini" id="btn-daemon-start">启动</button>
         <button type="button" class="mini" id="btn-daemon-stop">停止</button>
@@ -532,6 +526,22 @@
                 <button id="btn-activity-days" class="btn">保存</button>
               </div>
               <div class="hint">活动结束前多少天开始提醒，1–30 天。</div>
+            </div>
+          </details>
+
+          <details class="set-item" id="acc-alwaysnotify">
+            <summary class="set-head">
+              <span class="set-lead"><i class="set-ico">📤</i>
+                <span class="set-txt"><b>完成也推送</b>
+                  <small>默认仅在存在未完成项时推送；开启后全部完成也发一条平安通知</small></span>
+              </span>
+              <span class="set-sum" id="sum-alwaysnotify">读取中…</span>
+              <span class="set-end">
+                <label class="toggle"><input type="checkbox" id="always-notify"><i></i></label>
+              </span>
+            </summary>
+            <div class="set-body">
+              <div class="hint">默认仅在存在未完成项时推送；勾选后即使全部完成也会推送一条。</div>
             </div>
           </details>
         </div><!-- /rule-list -->

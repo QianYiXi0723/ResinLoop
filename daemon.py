@@ -480,6 +480,11 @@ def run_weekly_report() -> bool:
     except Exception:  # noqa: BLE001
         logger.exception("周报：读取配置失败，本轮跳过")
         return False
+    # 与 run_check 同一门卫：出厂 mock 状态下历史里就算有残留数据也是假的，
+    # 不该拿去发周报（2026-10-30 实测 mock 假数据被编进周报推出去了）。
+    if (config.query.provider or "mock").strip().lower() == "mock":
+        logger.info("周报：尚未绑定任何账号（provider=mock），跳过")
+        return False
     try:
         digest = history.weekly_digest(days=7)
         body = format_weekly_body(digest)
@@ -553,6 +558,15 @@ def run_check(reason: str, dry_run: bool = False) -> int:
     except Exception as exc:  # noqa: BLE001
         logger.error("读取 config.json 失败，本轮跳过：%s", exc)
         return 1
+
+    # 出厂状态（provider=mock）：查出来的全是写死的演示数据。
+    # 2026-10-30 实测：新机器首启补跑 20:30 那轮，mock 假数据被写进巡检历史、
+    # 还编进周报推了出去（「崩坏：星穹铁道 1 天全勤」——用户根本没绑过号）。
+    # 所以这里直接跳过：不查询、不写历史、不推送。返回 0 让补发机制把
+    # 该时间点记为已处理，避免 30 秒一轮地反复触发。
+    if (config.query.provider or "mock").strip().lower() == "mock":
+        logger.info("尚未绑定任何账号（provider=mock），本轮巡检跳过：不查询、不写历史、不推送")
+        return 0
 
     logger.info("=" * 56)
     logger.info(

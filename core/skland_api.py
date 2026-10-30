@@ -87,6 +87,16 @@ class SklandAuthError(SklandQueryError):
     """森空岛凭证缺失 / 换取失败。"""
 
 
+class GameNotBoundError(SklandQueryError):
+    """凭证有效，但这个森空岛账号下**没有绑这款游戏的角色**。
+
+    典型场景：勾选了明日方舟并扫码，但该鹰角通行证从来没玩过方舟 ——
+    登录本身是成功的，查不到数据只是因为没角色。它不该显示成红色
+    「查询失败」，也不该触发凭证告警（凭证是好的），所以单独一档，
+    玩家在游戏里建号后会自动生效。
+    """
+
+
 # --------------------------------------------------------------------------- #
 # 凭证：鹰角通行证 token -> 森空岛 cred + token（自动缓存）
 # --------------------------------------------------------------------------- #
@@ -123,6 +133,13 @@ def _grant_code(ark_token: str) -> str:
     token = (ark_token or "").strip()
     if not token:
         raise SklandAuthError("鹰角 token 为空，请重新扫码登录")
+    if "请填写" in token:
+        # 出厂模板占位符（"请填写鹰角通行证Token"）：不拦会进 Authorization 头，
+        # 'latin-1' 编码爆炸，用户看到的是天书而不是"还没绑定"
+        raise SklandAuthError(
+            "鹰角通行证 token 还没绑定（仍是出厂占位符），"
+            "请在「账号绑定」页勾选后扫码登录森空岛"
+        )
     if any(ch.isspace() for ch in token):
         raise SklandAuthError(
             f"鹰角 token 中间含空白字符（长度 {len(token)}），请重新扫码登录"

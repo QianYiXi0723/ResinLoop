@@ -14,8 +14,10 @@
   A4  日界边界 04:00 整 → 03:59 的快照算陈旧
   A5  lastOnlineTs 缺失 → 不判定（沿用旧行为，不误伤）
   A6  currentTs 缺失 → 不判定
-  A7  端到端 fetch()：陈旧快照下 ok=False、finished=False、unfinished_tasks 为空，
-      error 文案可读，且 cred_kind 不是 "auth"（不会误报"凭证失效"）
+  A7  端到端 fetch()：陈旧快照下 ok=True（不是查询失败）+ stale 非空、
+      finished=False、unfinished_tasks 为空，说明文案可读，
+      且 cred_kind 不是 "auth"（不会误报"凭证失效"）
+  A7' 汇总层：stale 既不算未完成也不算失败，更不会让推送标题说「全部完成」
   A8  端到端 fetch()：新鲜快照下照常 10/10 且 finished=True（防误伤回归）
 """
 import sys
@@ -104,13 +106,45 @@ def run_fetch(data):
         Q.list_players, Q.get_arknights_player_info, Q.get_skland_credentials = orig
 
 stale = run_fetch(payload(NOW, LAST_NIGHT))
-check("A7a ok=False", stale.ok is False, stale.ok)
+check("A7a 不再算查询失败（ok=True），改由 stale 标记", stale.ok is True, stale.error)
+check("A7a2 stale 说明非空", bool(stale.stale), stale.stale)
 check("A7b finished=False（不再冒充已完成）", stale.finished is False, stale.finished)
 check("A7c unfinished_tasks 为空（不会误报未完成）",
       stale.unfinished_tasks == [], len(stale.unfinished_tasks))
 check("A7d cred_kind 不是 auth（不触发凭证告警）",
       stale.cred_kind != "auth", stale.cred_kind)
-check("A7e error 文案可读", "数据未更新" in (stale.error or ""), stale.error)
+check("A7e 说明文案可读", "数据未更新" in (stale.stale or ""), stale.stale)
+check("A7f 序列化带 stale 字段（前端要据此画中性徽章）",
+      "stale" in stale.to_dict() and bool(stale.to_dict()["stale"]),
+      stale.to_dict().get("stale"))
+
+# ============ A7' 汇总层：不催、不谎报全部完成、不算失败 ============
+print("== A7' 汇总层（analyzer） ==")
+from core.analyzer import DailyReport  # noqa: E402
+
+only_stale = DailyReport(statuses=[stale])
+check("A7g 不算未完成", only_stale.unfinished == [], len(only_stale.unfinished))
+check("A7h 不算查询失败", only_stale.failed == [], len(only_stale.failed))
+check("A7i 不算已完成", only_stale.finished == [], len(only_stale.finished))
+check("A7j 不触发催促推送", only_stale.need_alert is False, only_stale.need_alert)
+_title, _body = only_stale.to_push_payload()
+check("A7k 推送标题不说「全部完成」", "全部完成" not in _title, _title)
+check("A7l 推送正文点名待更新，别当成已完成",
+      "数据待更新" in _body and "明日方舟" in _body, _body.replace("\n", " / "))
+check("A7m 控制台汇总区分待更新", "数据待更新" in only_stale.to_console_text())
+
+# 混合：另一款已完成的真数据 + 方舟待更新 → 标题不能是「2/2 全部完成」
+from core.models import GameStatus, TaskItem  # noqa: E402
+
+other_done = GameStatus(
+    game_id="endfield", game_name="终末地", source="skland",
+    tasks=[TaskItem("每日活跃度", True, "100/100")],
+)
+mixed = DailyReport(statuses=[other_done, stale])
+check("A7n 混合场景标题不是全完成",
+      "全部完成" not in mixed.to_push_payload()[0], mixed.to_push_payload()[0])
+check("A7o 混合场景不把方舟算进未完成",
+      [s.game_name for s in mixed.unfinished] == [], [s.game_name for s in mixed.unfinished])
 
 fresh = run_fetch(payload(NOW, datetime(2026, 10, 30, 5, 0)))
 check("A8a 新鲜快照 ok=True", fresh.ok is True, fresh.error)

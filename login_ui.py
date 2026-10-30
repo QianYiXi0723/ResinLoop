@@ -152,9 +152,18 @@ class Session:
         with self._lock:
             self.qr = png_b64
 
-    def add_result(self, game: str, label: str, ok: bool, note: str = "") -> None:
+    def add_result(self, game: str, label: str, ok: bool, note: str = "",
+                   skipped: bool = False) -> None:
+        """记录单款游戏的写入结果。
+
+        skipped=True 表示"没写入是正常的"（账号下没这款游戏），前端画灰色 `–`，
+        不算失败也不算成功 —— 别让正常跳过显示成红 ✗ 吓人。
+        """
         with self._lock:
-            self.results.append({"game": game, "label": label, "ok": ok, "note": note})
+            self.results.append(
+                {"game": game, "label": label, "ok": ok, "note": note,
+                 "skipped": skipped}
+            )
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -346,6 +355,16 @@ def _enabled_account_info() -> List[Dict[str, str]]:
     return items
 
 
+def _cred_filled(value: object) -> bool:
+    """凭证字段是否真的填了：非空，且不是出厂模板的「请填写…」占位符。
+
+    占位符也算非空字符串，直接 bool() 会把"还没绑定"显示成"已绑定"，
+    用户就被引导去看查询报错而不是先扫码。
+    """
+    v = str(value or "").strip()
+    return bool(v) and "请填写" not in v
+
+
 def accounts_status() -> Dict[str, Any]:
     """每个游戏账号的当前状态：是否参与巡检（enabled）、是否已有登录凭证。
 
@@ -365,8 +384,7 @@ def accounts_status() -> Dict[str, Any]:
         if not game:
             continue
         cred = node.get("credential") if isinstance(node.get("credential"), dict) else {}
-        has_cred = bool(str(cred.get("cookie") or "").strip()
-                        or str(cred.get("token") or "").strip())
+        has_cred = _cred_filled(cred.get("cookie")) or _cred_filled(cred.get("token"))
         items.append({
             "id": game,
             "name": names.get(game, game),
@@ -1134,23 +1152,50 @@ def schedule_status() -> Dict[str, Any]:
 
 
 def log_tail(n: int = 200) -> Dict[str, Any]:
-    """读取巡检日志（logs/dailycheck.log）最后 n 行，给底部日志控制台。
+    """读取运行日志最后 n 块，给底部日志控制台。
 
-    当天日志被零点切分后 dailycheck.log 可能为空或不存在，此时回退到最近的
-    dailycheck.log.YYYY-MM-DD。key 在 notifier 源头已脱敏，可直接展示。
+    双源按时间戳合并：dailycheck.log（守护进程：巡检/推送）+ desktop.log
+    （控制台进程：配置保存/扫码登录/守护进程启停等一切界面操作）——
+    只读单源时另一个进程做的事在日志里完全不可见（日志分家老问题）。
+    零点切分后当天 dailycheck.log 可能为空或不存在，回退最近的 .YYYY-MM-DD。
+    无时间戳的续行（traceback 等）并入上一块，保证多行堆栈排序后仍完整。
+    key 在 notifier 源头已脱敏，可直接展示。
     """
     log_dir = BASE_DIR / "logs"
-    path = log_dir / "dailycheck.log"
+    ts_pat = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+
+    def _pick(path: Path) -> Path:
+        if path.exists():
+            return path
+        candidates = sorted(log_dir.glob(path.name + ".*"))
+        return candidates[-1] if candidates else path
+
+    def _blocks(path: Path, limit: int) -> list:
+        if not path.exists():
+            return []
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+        except OSError as exc:  # noqa: BLE001 - 单源读取失败降级为空，不拖垮另一源
+            logger.warning("读取 %s 失败：%s", path.name, exc)
+            return []
+        blocks: list = []
+        # 预读 4 倍余量：traceback 续行会摊薄块数，按行数截断再收敛到块数
+        for raw in lines[-(limit * 4):]:
+            line = raw.rstrip("\r\n")
+            m = ts_pat.match(line)
+            if m:
+                blocks.append((m.group(1), line))
+            elif blocks:
+                ts, text = blocks[-1]
+                blocks[-1] = (ts, text + "\n" + line)
+        return blocks[-limit:]
+
     try:
-        if not path.exists():
-            candidates = sorted(log_dir.glob("dailycheck.log.*"))
-            path = candidates[-1] if candidates else path
-        if not path.exists():
-            return {"ok": True, "lines": [], "message": "还没有日志文件"}
-        with path.open("r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-        tail = [line.rstrip("\r\n") for line in lines[-n:]]
-        return {"ok": True, "lines": tail}
+        merged = _blocks(_pick(log_dir / "dailycheck.log"), n) + \
+                 _blocks(_pick(log_dir / "desktop.log"), n)
+        merged.sort(key=lambda item: item[0])
+        return {"ok": True, "lines": [text for _, text in merged[-n:]]}
     except Exception as exc:  # noqa: BLE001 - 前端要的是 200 + 错误文案，不是 500
         return {"ok": False, "message": f"读取日志失败：{exc}"}
 
@@ -1296,34 +1341,60 @@ def _split_progress(text: Any) -> Tuple[Optional[int], Optional[int]]:
         return None, None
 
 
+def _filter_live_games(payload: Dict[str, Any], enabled: Optional[set]) -> Dict[str, Any]:
+    """缓存回放按当前启用账号过滤 games —— 未勾选的游戏不从历史缓存里漏出来。
+
+    缓存写入时的启用集合可能与当前不同（用户中途取消勾选）；
+    过滤只影响本响应的 games 列表，不改动缓存文件本身。
+    enabled 为 None（配置读不出）时原样返回并已记 warning，不静默。"""
+    if enabled is None:
+        return payload
+    out = dict(payload)
+    out["games"] = [g for g in (payload.get("games") or [])
+                    if isinstance(g, dict) and g.get("game") in enabled]
+    return out
+
+
 def live_status(force: bool = False) -> Dict[str, Any]:
     """返回每款游戏的体力 / 理智看板。
 
     三级缓存：进程内 45 秒 → 磁盘 data/live_cache.json → 现场查询。
     默认（页面加载）只回缓存，绝不现场打接口 —— 秒开是铁律；
     真正的实时查询只发生在「刷新」按钮（force=1），日常数据由定时守护进程落盘。
+
+    状态切换不漏旧数据：配置读取在最前 —— 演示模式（provider=mock）在所有
+    缓存路径之前短路（切换后任何时代的旧缓存都不会漏出来）；缓存回放按
+    当前启用集合过滤（未勾选的游戏不从历史缓存里漏出来）。
     """
+    try:
+        from core.config import load_config
+
+        cfg = load_config(CONFIG_PATH)
+        enabled = {acc.game for acc in cfg.enabled_accounts}
+        demo_mode = cfg.query.provider == "mock"
+    except Exception as exc:  # noqa: BLE001 - 配置读不出：不做过滤/演示判定，按正常路径走
+        logger.warning("live_status 读取配置失败（%s），缓存回放不过滤", exc)
+        cfg = None
+        enabled = None
+        demo_mode = False
+
+    # 演示模式（出厂 provider=mock）：拒绝展示模拟假数据，也绝不让假数据进缓存 ——
+    # 首次体验应该是引导扫码，而不是"博士 全部完成"这种会让用户以为软件出错的假面板。
+    # 放在所有缓存路径之前：provider 切换后，任何时代写入的旧缓存都不会漏出来。
+    if demo_mode:
+        return {
+            "ok": True,
+            "cached": False,
+            "demo": True,
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "games": [],
+        }
+
     cached = _LIVE_CACHE.get("payload")
     if (not force) and cached is not None and (time.time() - float(_LIVE_CACHE.get("at") or 0)) < _LIVE_TTL_SECONDS:
         payload = dict(cached)
         payload["cached"] = True
-        return payload
-
-    # 演示模式（出厂 provider=mock）：拒绝展示模拟假数据，也绝不让假数据进缓存 ——
-    # 首次体验应该是引导扫码，而不是"博士 全部完成"这种会让用户以为软件出错的假面板。
-    try:
-        from core.config import load_config as _lc
-
-        if _lc(CONFIG_PATH).query.provider == "mock":
-            return {
-                "ok": True,
-                "cached": False,
-                "demo": True,
-                "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "games": [],
-            }
-    except Exception:  # noqa: BLE001 - 配置读不出就按正常路径走
-        pass
+        return _filter_live_games(payload, enabled)
 
     if not force:
         # 进程缓存不在有效期：直接回上一次落盘的结果（标 stale，前端提示可手动刷新）。
@@ -1332,13 +1403,16 @@ def live_status(force: bool = False) -> Dict[str, Any]:
             payload = dict(disk)
             payload["cached"] = True
             payload["stale"] = True
-            return payload
+            return _filter_live_games(payload, enabled)
 
-    from core.config import RESOURCE_TASK_NAMES, load_config
+    if cfg is None:
+        # 配置读不出（上面已 warning）：没有可靠的游戏清单，返回空面板兜底
+        return {"ok": True, "cached": False, "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "games": []}
+
+    from core.config import RESOURCE_TASK_NAMES
     from main import collect_statuses
 
-    config = load_config(CONFIG_PATH)
-    statuses = collect_statuses(config)
+    statuses = collect_statuses(cfg)
 
     games: List[Dict[str, Any]] = []
     for status in statuses:
@@ -1368,6 +1442,12 @@ def live_status(force: bool = False) -> Dict[str, Any]:
             "ok": status.ok,
             "finished": status.finished,
             "error": status.error or "",
+            # 非空 = 数据待更新（如当天没进过游戏，接口只给上次登录快照）；
+            # 此时 ok 仍为 True、finished 必为 False，前端画中性提示而不是"失败"
+            "stale": status.stale or "",
+            # 非空 = 这个账号下没这款游戏的角色（勾选并扫码了但没玩过）；
+            # 同样不是失败，前端画灰色「未创建角色」，建号后自动生效
+            "no_account": status.no_account or "",
             "resource": resource,
             # 判定任务明细（不含"仅展示"的资源项）：供迷你卡显示"委托 0/4"级进度
             "tasks": [
@@ -1408,26 +1488,48 @@ def save_schedule(times: Any) -> Dict[str, Any]:
     return result
 
 
-def write_mihoyo(cookie: str, games: List[str]) -> List[str]:
-    """把 Cookie 写进**选中的**游戏节点，其余游戏原样不动。"""
+def write_mihoyo(
+    cookie: str,
+    games: List[str],
+    roles: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Tuple[List[str], List[str]]:
+    """把 Cookie 写进**选中的**游戏节点，其余游戏原样不动。
+
+    roles 是扫码后从角色列表接口拿到的 ``{game_id: {uid, server, nickname}}``；
+    有角色的游戏顺手回填 uid / server（修掉模板占位 UID 100000000），
+    没角色的游戏只写登录态、不回填 —— 查询层会按"未创建角色"提示，
+    玩家日后建号**无需重新扫码**。返回 (已写入, 未创建角色) 两个 id 列表。
+    """
     raw = load_raw_config()
     wanted = set(games)
+    roles = roles or {}
     updated: List[str] = []
+    absent: List[str] = []
     for account in raw.get("accounts", []):
         game = account.get("game")
-        if game in wanted:
-            cred = account.setdefault("credential", {})
-            cred["cookie"] = cookie
-            cred["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-            # 清掉可能残留的分字段，避免覆盖整串 cookie
-            cred.pop("ltuid", None)
-            cred.pop("ltoken", None)
+        if game not in wanted:
+            continue
+        cred = account.setdefault("credential", {})
+        cred["cookie"] = cookie
+        cred["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        # 清掉可能残留的分字段，避免覆盖整串 cookie
+        cred.pop("ltuid", None)
+        cred.pop("ltoken", None)
+        role = roles.get(game)
+        if role:
+            cred["uid"] = str(role.get("uid") or cred.get("uid") or "")
+            if role.get("server"):
+                cred["server"] = role["server"]
+            if role.get("nickname"):
+                account["nickname"] = role["nickname"]
             updated.append(str(account.get("nickname") or MIHOYO_GAMES.get(game, game)))
+        else:
+            absent.append(game)
     present = {a.get("game") for a in raw.get("accounts", [])}
     missing = wanted - present
     if missing:
         raise RuntimeError(f"config.json 里找不到这些游戏节点：{', '.join(sorted(missing))}")
-    if not updated:
+    if not updated and not absent:
         raise RuntimeError("没有写入任何游戏，请检查 config.json 的 accounts")
 
     query = raw.setdefault("query", {})
@@ -1435,7 +1537,7 @@ def write_mihoyo(cookie: str, games: List[str]) -> List[str]:
     if str(query.get("provider", "")).strip().lower() == "mock":
         query["provider"] = "miyoushe"
     save_raw_config(raw)
-    return updated
+    return updated, absent
 
 
 def write_skland(target: str, token: str) -> str:
@@ -1469,7 +1571,7 @@ def write_skland(target: str, token: str) -> str:
 
 def run_mihoyo(session: Session) -> None:
     """一次扫码，更新所有被勾选的米游社游戏。"""
-    from core.mihoyo_api import bind_device, identity_device_id
+    from core.mihoyo_api import bind_device, fetch_game_roles, identity_device_id
     from core.mihoyo_login import (
         MiyousheLoginError,
         build_cookie_string,
@@ -1494,26 +1596,81 @@ def run_mihoyo(session: Session) -> None:
 
         session.update("writing", "扫码成功，正在绑定设备并写入配置…")
         cookie, creds = build_cookie_string(result["cookies"])
+
+        # 拉一次角色列表：回填 uid/server/昵称 + 识别"账号下没这款游戏"。
+        # 这步失败**不阻断登录** —— 降级成旧行为（只写 cookie），界面说明一声。
+        roles: Optional[Dict[str, Dict[str, Any]]] = None
+        roles_note = ""
+        try:
+            roles = fetch_game_roles(creds["ltuid"], "", cookie=cookie)
+        except Exception as exc:  # noqa: BLE001 - 角色列表只是增强，失败不挡登录
+            logger.warning("角色列表拉取失败（跳过 UID 回填）：%s", exc)
+            roles_note = "没能自动读取角色列表，uid 保持原样；查询报「缺 UID」时手动填一次"
+
         # 只重签被勾选游戏的指纹，其余游戏保持原设备身份
         bind_device(device_id, games)
-        updated = write_mihoyo(cookie, games)
+        updated_ids, absent_ids = write_mihoyo(cookie, games, roles=roles)
 
-        for game in games:
-            session.add_result(game, MIHOYO_GAMES.get(game, game), True)
+        labels = [MIHOYO_GAMES.get(g, g) for g in games]
+        for game, label in zip(games, labels):
+            if game in absent_ids:
+                # 没写入角色 = 这个米游社账号没玩过它：正常跳过，不算失败
+                session.add_result(
+                    game, label, True,
+                    "账号下没有这款游戏，已保存登录态，建号后自动生效",
+                    skipped=True,
+                )
+            else:
+                session.add_result(game, label, True)
+        session.step = len(updated_ids)
+        updated = [MIHOYO_GAMES.get(g, g) for g in updated_ids]
+
+        note = "设备指纹已绑定到这些游戏，可直接运行 python main.py 验证"
+        if roles_note:
+            note = roles_note + "；" + note
+        if absent_ids:
+            names = "、".join(MIHOYO_GAMES.get(g, g) for g in absent_ids)
+            note = f"{names} 未创建角色（已保存登录态，建号后自动生效）；{note}"
         session.update(
             "done",
-            f"登录成功，已更新 {len(updated)} 款游戏",
+            f"登录成功，已更新 {len(updated)} 款游戏"
+            + (f"，{len(absent_ids)} 款未创建角色" if absent_ids else ""),
             ltuid=creds["ltuid"],
             games=updated,
-            note="设备指纹已绑定到这些游戏，可直接运行 python main.py 验证",
+            note=note,
         )
-        logger.info("米游社登录成功，ltuid=%s，写入 %s", creds["ltuid"], "、".join(updated))
+        logger.info(
+            "米游社登录成功，ltuid=%s，写入 %s，未创建角色 %s",
+            creds["ltuid"], "、".join(updated_ids) or "-", "、".join(absent_ids) or "-",
+        )
     except MiyousheLoginError as exc:
         session.update("error", str(exc))
         logger.warning("米游社登录失败：%s", exc)
     except Exception as exc:  # noqa: BLE001
         session.update("error", f"登录异常：{exc}")
         logger.exception("米游社登录未预期异常")
+
+
+def _skland_binds_game(token: str, game: str) -> Optional[bool]:
+    """该鹰角通行证账号是否绑定了这款游戏。True/False；确认不了返回 None。
+
+    用查询同款的 binding 接口只读确认一次；write_skland 刚清过 cred 缓存，
+    这次换取的 cred 会正常写入缓存，查询时直接复用，没有额外成本。
+    网络失败**绝不阻断登录**：返回 None，调用方按"未知"降级处理。
+    """
+    from core.skland_api import get_skland_credentials, list_players
+
+    try:
+        credential = get_skland_credentials({"token": token}, game)
+        players = list_players(credential["cred"], credential["token"])
+    except Exception as exc:  # noqa: BLE001 - 绑定确认只是增强，失败不挡登录
+        logger.warning("[skland] %s 绑定状态确认失败（按未知处理）：%s", game, exc)
+        return None
+    for app in players.get("list") or []:
+        if isinstance(app, dict) and app.get("appCode") == game:
+            bindings = app.get("bindingList")
+            return bool(isinstance(bindings, list) and bindings)
+    return False
 
 
 def run_skland(session: Session) -> None:
@@ -1564,14 +1721,33 @@ def run_skland(session: Session) -> None:
     for target, label in zip(targets, labels):
         try:
             name = write_skland(target, token)
-            session.add_result(target, name, True)
-            written.append(name)
-            session.step += 1
-            logger.info("%s 写入成功（一次扫码）", name)
         except Exception as exc:  # noqa: BLE001
             session.add_result(target, label, False, str(exc))
             failed.append(label)
             logger.warning("%s 写入失败：%s", label, exc)
+            continue
+
+        bound = _skland_binds_game(token, target)
+        if bound is False:
+            # 没绑这款游戏 = 这个鹰角账号没玩过它：正常跳过，不算失败。
+            # 登录态已写入，玩家建号后查询自动生效，无需重新扫码。
+            session.add_result(
+                target, name, True,
+                "账号下没有这款游戏，已保存登录态，建号后自动生效",
+                skipped=True,
+            )
+            logger.info("%s 未创建角色（登录态已写入，跳过）", name)
+            continue
+        if bound is None:
+            session.add_result(
+                target, name, True,
+                "绑定状态没能确认（网络原因），稍后查询时再看",
+            )
+        else:
+            session.add_result(target, name, True)
+        written.append(name)
+        session.step += 1
+        logger.info("%s 写入成功（一次扫码）", name)
 
     if not written:
         session.update("error", "写入失败：" + "、".join(failed))
@@ -1770,8 +1946,8 @@ class Handler(BaseHTTPRequestHandler):
                 days = 7
             from core import history
 
-            # 列 = 当前启用账号 ∪ 历史里出现过的游戏：刚启用、还没跑过一轮的
-            # 游戏也会立刻出现在报表里（显示为 –），不会被当成"从未存在"。
+            # 列 = 仅当前启用账号 —— 未勾选的游戏从报表/热力图/KPI 全部消失
+            # （数据保留在 history.json，重新勾选即原样恢复）。
             enabled_games = _enabled_game_ids()
 
             # 任何异常都必须变成"200 + 空报表"，绝不能 500：
@@ -1828,7 +2004,15 @@ class Handler(BaseHTTPRequestHandler):
             from core import activities
 
             try:
-                self._json(activities.summary())
+                payload = activities.summary()
+                # 未勾选的游戏：活动卡与「暂不支持」提示也从所有展示面消失
+                # （活动缓存仍全量抓取，重新勾选即恢复；过滤只影响本响应）
+                enabled = set(_enabled_game_ids())
+                payload["items"] = [it for it in (payload.get("items") or [])
+                                    if it.get("game") in enabled]
+                payload["unsupported"] = [u for u in (payload.get("unsupported") or [])
+                                          if u.get("game") in enabled]
+                self._json(payload)
             except Exception as exc:  # noqa: BLE001 - 页面读不到也要给人话
                 logger.exception("读取活动缓存失败")
                 self._json({"ok": False, "message": f"读取活动缓存失败：{exc}"}, 500)

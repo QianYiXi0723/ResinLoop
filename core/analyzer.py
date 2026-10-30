@@ -31,8 +31,12 @@ class DailyReport:
     # ---------------- 分组 ---------------- #
     @property
     def unfinished(self) -> List[GameStatus]:
-        """查询成功但仍有任务没做完的游戏。"""
-        return [item for item in self.statuses if item.ok and not item.finished]
+        """查询成功且有当日数据、但仍有任务没做完的游戏。
+
+        数据待更新（stale）和"没有判定项"的都不算未完成 —— 前者没拿到今天的
+        快照，后者本来就没有可判的东西，都不该进催促列表。
+        """
+        return [item for item in self.statuses if item.has_today_data and not item.finished]
 
     @property
     def finished(self) -> List[GameStatus]:
@@ -43,6 +47,23 @@ class DailyReport:
     def failed(self) -> List[GameStatus]:
         """查询失败的游戏。失败不算"未完成"，单独提示，避免误报催促。"""
         return [item for item in self.statuses if not item.ok]
+
+    @property
+    def stale(self) -> List[GameStatus]:
+        """数据待更新的游戏（如当天还没进过游戏，接口只给上次登录的快照）。
+
+        既不是失败也不是未完成：不参与完成度判定、不触发催促，
+        但要在推送/控制台里说明一句，免得"全部完成"把未知说成已完成。
+        """
+        return [item for item in self.statuses if item.ok and bool(item.stale)]
+
+    @property
+    def no_accounts(self) -> List[GameStatus]:
+        """账号下没这款游戏角色的游戏（勾选并扫码了，但没玩过它）。
+
+        凭证是有效的，所以也不算查询失败；等玩家建号后自动生效。
+        """
+        return [item for item in self.statuses if item.ok and bool(item.no_account)]
 
     @property
     def unfinished_task_count(self) -> int:
@@ -77,7 +98,16 @@ class DailyReport:
             return "\n".join(lines)
 
         for item in self.statuses:
-            mark = "OK  " if item.ok and item.finished else ("ERR " if not item.ok else "--  ")
+            if not item.ok:
+                mark = "ERR "
+            elif item.no_account:
+                mark = "SKIP"
+            elif item.stale:
+                mark = "WAIT"
+            elif item.finished:
+                mark = "OK  "
+            else:
+                mark = "--  "
             lines.append(f"{mark}{item.summary_line()}")
             for task in item.unfinished_tasks:
                 lines.append(f"      · 未完成：{task.describe()}")
@@ -92,6 +122,8 @@ class DailyReport:
             f"合计 {total} 个账号：已完成 {len(self.finished)}，"
             f"未完成 {len(self.unfinished)}（漏 {self.unfinished_task_count} 项），"
             f"查询失败 {len(self.failed)}"
+            + (f"，数据待更新 {len(self.stale)}" if self.stale else "")
+            + (f"，未创建角色 {len(self.no_accounts)}" if self.no_accounts else "")
         )
 
         for alert in self.resource_alerts:
@@ -102,8 +134,15 @@ class DailyReport:
         if self.unfinished:
             names = "、".join(item.game_name for item in self.unfinished)
             lines.append(f"结论：还没做完 -> {names}")
-        elif self.failed and not self.finished:
+        elif self.failed and not self.finished and not self.stale and not self.no_accounts:
             lines.append("结论：全部查询失败，无法判断，建议检查凭证后重试")
+        elif self.failed or self.stale or self.no_accounts:
+            # 有查到并做完的，也有压根没拿到当日数据的 —— 别把未知说成已完成
+            unknown = "、".join(
+                item.game_name
+                for item in (self.failed + self.stale + self.no_accounts)
+            )
+            lines.append(f"结论：{unknown} 没拿到当日数据，判断不了，别当成已经做完了")
         else:
             lines.append("结论：今天的日常都做完了，可以放心摆烂")
         lines.append(LINE)
@@ -113,7 +152,9 @@ class DailyReport:
     def to_push_payload(self) -> Tuple[str, str]:
         """生成 (标题, 正文)。标题短、正文按游戏分行，适配 Bark 的小卡片。"""
         total = len(self.statuses)
-        all_done = not self.unfinished and not self.failed
+        # "全部完成"只在真的一款不剩时才说：数据待更新/未创建角色/查询失败
+        # 的都算未知，否则会出现标题「5/5 全部完成」而方舟其实一整天没登录过的误导。
+        all_done = not self.unfinished and not self.failed and not self.stale and not self.no_accounts
 
         # 标题一律用「已完成」做进度分子：查询失败的游戏仍占分母，但不会让标题
         # 出现「1/5 个未完成」却和正文「已完成 2 款」对不上的观感。
@@ -143,13 +184,30 @@ class DailyReport:
             names = "、".join(item.game_name for item in self.failed)
             lines.append(f"[查询失败] {names}")
 
+        if self.stale:
+            # 一句话交代原因（"上次在线 xx"），不写接口细节
+            for item in self.stale:
+                lines.append(f"[数据待更新] {item.game_name}：{item.stale}")
+
+        if self.no_accounts:
+            names = "、".join(item.game_name for item in self.no_accounts)
+            lines.append(f"[未创建角色] {names}：这个账号下还没有这些游戏，建号后自动生效")
+
         if self.resource_alerts:
             lines.append("先去把体力花掉，别浪费了。")
         elif all_done:
             lines.append("今天的日常全部完成，可以放心摆烂了。")
-        elif not self.unfinished and self.failed:
-            # 全部查成功的那几款都做完了，剩下的是没查到的 —— 别再说「漏 0 项」
-            lines.append("没查到的几款先检查凭证或换个网络，别当成已经做完了。")
+        elif not self.unfinished and (self.failed or self.stale or self.no_accounts):
+            # 查成功的那几款都做完了，剩下的是没拿到当日数据的 —— 别再说「漏 0 项」
+            if self.no_accounts and not self.failed and not self.stale:
+                lines.append("没建号的几款不用管，在游戏里建号后自动生效。")
+            elif self.stale:
+                lines.append(
+                    "数据待更新的几款进游戏刷新一次再看；"
+                    "查询失败的先检查凭证或换个网络，别当成已经做完了。"
+                )
+            else:
+                lines.append("没查到的几款先检查凭证或换个网络，别当成已经做完了。")
         else:
             lines.append(f"共漏 {self.unfinished_task_count} 项，别拖到 23:59。")
 
@@ -182,6 +240,8 @@ class DailyReport:
                 "finished": len(self.finished),
                 "unfinished": len(self.unfinished),
                 "failed": len(self.failed),
+                "stale": len(self.stale),
+                "no_account": len(self.no_accounts),
             },
             "games": [item.to_dict() for item in self.statuses],
         }
