@@ -11,6 +11,15 @@
 
 ## 更新日志
 
+### v2.1.1
+
+- **修复发行版双击打不开**：v2.0.0 / v2.1 的 exe 启动后进程立刻退出，窗口根本不出现
+  （Windows 事件日志里是 `System.TypeLoadException`）。原因是壳在单文件化合并时把
+  WebView2 的类型降成了 internal，主窗口构造时类型加载失败。现已改为保留类型可见性的
+  合并方式，exe 体积不变（653,824 字节）。**如果下载过 v2.0.0 或 v2.1，请换成这个版本。**
+- 壳的构建流程固化成 `shell/build.ps1`（dotnet publish + ILRepack + 冒烟），
+  不再靠手工敲命令；脚本里写明了为什么不能加 `/internalize`。
+
 ### v2.0.0
 
 - **Windows 桌面壳**：C# WinForms + WebView2 外壳 + 便携 Python 引擎，

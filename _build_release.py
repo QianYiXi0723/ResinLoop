@@ -2,8 +2,8 @@
 """构建 exe 发行包（C# 壳 + engine/ 便携 Python）。
 
 产物：
-  release/ResinLoop_v2.1/                        可直接发给小白的目录
-  dist/ResinLoop_v2.1_Windows_x64.zip
+  release/ResinLoop_v2.1.1/                      可直接发给小白的目录
+  dist/ResinLoop_v2.1.1_Windows_x64.zip
 
 包内容（面向最终用户，越少越好）：
   ResinLoop.exe          C# 壳（net48，ILRepack 单文件化，内嵌图标）
@@ -26,9 +26,9 @@ from pathlib import Path
 from typing import List, Optional
 
 ROOT = Path(__file__).resolve().parent
-OUT = ROOT / "release" / "ResinLoop_v2.1"
+OUT = ROOT / "release" / "ResinLoop_v2.1.1"
 ZIP_DIR = ROOT / "dist"
-ZIP_NAME = "ResinLoop_v2.1_Windows_x64"
+ZIP_NAME = "ResinLoop_v2.1.1_Windows_x64"
 
 #: 壳的产物（构建流程见 shell/；本脚本不负责编译，只负责组装）
 SHELL_EXE = ROOT / "ResinLoop.exe"
@@ -107,7 +107,7 @@ def collect_secrets() -> List[str]:
     return sorted(found)
 
 
-README_TXT = """ResinLoop v2.1 · 日常巡查 —— 小白使用说明
+README_TXT = """ResinLoop v2.1.1 · 日常巡查 —— 小白使用说明
 ================================================
 
 每天定时查一次游戏日常进度，没做完就推送到手机（微信 / QQ）。
