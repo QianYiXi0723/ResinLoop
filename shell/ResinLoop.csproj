@@ -12,7 +12,7 @@
     <AssemblyTitle>ResinLoop · 日常巡查（桌面壳）</AssemblyTitle>
     <Product>ResinLoop</Product>
     <Description>ResinLoop 桌面壳：静默托管 engine/ 便携 Python 引擎，WebView2 加载本地控制台，托盘常驻。</Description>
-    <Version>1.2.0</Version>
+    <Version>2.1.0</Version>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <Nullable>disable</Nullable>
     <DebugType>none</DebugType>
