@@ -270,8 +270,12 @@
 
   /* ---------- 账号绑定：监控选择卡（Selector Card） ----------
      未选中 = 半透明去色；开关开启（.on）单独覆盖，绝不被滤镜变灰 */
+  /* 1fr 的自动最小尺寸 = 轨道内项目的 min-content，而 .sel-name 是 nowrap，
+     于是「明日方舟：终末地」这类长名字会把两列撑到 226+213px，窗口缩到
+     ~1150px 以下时整块网格顶穿卡片、压到右侧账号列。minmax(0,1fr) 把最小
+     尺寸钉成 0，超长名字交给 .sel-name 的省略号处理。 */
   .sel-grid{display:grid;
-            grid-template-columns:repeat(2, 1fr);gap:16px}
+            grid-template-columns:repeat(2, minmax(0, 1fr));gap:16px}
   .sel-card{position:relative;display:flex;align-items:center;justify-content:space-between;
     gap:12px;width:100%;min-height:72px;
     padding:12px 14px;border:none;border-radius:8px;
@@ -644,16 +648,18 @@
   .act-empty{display:flex;flex-direction:column;align-items:center;gap:8px;
              padding:36px 16px;color:var(--muted);font-size:12.5px}
   .act-empty-icon{font-size:30px;line-height:1}
-  .phone-mock{background:#1b1e23;border-radius:10px;
+  /* 推送预览气泡：跟随主题（原为写死的 #1b1e23/#2b3037 深色，浅色页里是一块黑板；
+     2026-10-30 改为用 token，深浅两套自带对比度，勿再写死色值） */
+  .phone-mock{background:var(--subtle);border:1px solid var(--line);border-radius:10px;
               padding:14px}
-  .pv-bubble{background:#2b3037;color:#e8eaed;border-radius:8px;padding:10px 12px;
-             max-width:440px}
-  .pv-app{font-size:10.5px;color:#9aa0a6;margin-bottom:4px;display:flex;
+  .pv-bubble{background:var(--bg-card);color:var(--fg);border:1px solid var(--line);
+             border-radius:8px;padding:10px 12px;max-width:440px}
+  .pv-app{font-size:10.5px;color:var(--muted);margin-bottom:4px;display:flex;
           align-items:center;gap:6px}
   .pv-app i{width:8px;height:8px;border-radius:2px;background:var(--brand);
             display:inline-block}
-  .pv-title{font-size:12.5px;font-weight:600;color:#fff;margin-bottom:3px}
-  .pv-body{font-size:11.5px;line-height:1.7;color:#c6cbd2;white-space:pre-line}
+  .pv-title{font-size:12.5px;font-weight:600;color:var(--fg);margin-bottom:3px}
+  .pv-body{font-size:11.5px;line-height:1.7;color:var(--muted);white-space:pre-line}
 
   /* ---------- 开关（BetterGI 尺寸） ---------- */
   .toggle{position:relative;display:inline-block;width:40px;height:22px;flex:none;vertical-align:middle}
@@ -982,8 +988,10 @@
   .pv-item.open{height:auto;max-height:220px;overflow-y:auto}
   .pv-empty{padding:14px 2px;color:var(--muted)}
   .pv-meta{line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  /* 折叠态正文只留一行；展开后放开 clamp，保留推送时的换行 */
-  .pv-body{margin-top:2px;opacity:.8;line-height:1.6;white-space:pre-line;
+  /* 折叠态正文只留一行；展开后放开 clamp，保留推送时的换行。
+     选择器必须限定在 .pv-item 内：同名 .pv-body 也用在「推送预览」气泡里，
+     早先的裸 .pv-body 会把预览正文一起裁成一行（省略号截断）。 */
+  .pv-item .pv-body{margin-top:2px;opacity:.8;line-height:1.6;white-space:pre-line;
     word-break:break-word;display:-webkit-box;-webkit-line-clamp:1;
     -webkit-box-orient:vertical;overflow:hidden}
   .pv-item.open .pv-body{display:block;-webkit-line-clamp:unset;overflow:visible}

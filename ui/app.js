@@ -531,7 +531,7 @@ function renderDevice(d){
     qrBox.innerHTML =
       '<div style="padding:10px 8px;text-align:center">' +
       '<div style="font-size:11px;color:var(--muted);line-height:1.5">二维码不可用</div>' +
-      '<button class="btn sm" id="btn-apk-retry" style="margin-top:6px">换个端口重试</button>' +
+      '<button class="btn sm" id="btn-apk-retry" style="margin-top:6px">生成下载二维码</button>' +
       '</div>';
     meta.innerHTML = '<span style="color:var(--warn)">' + (apk.message || '未找到 APK') + '</span>';
     const btn = document.getElementById('btn-apk-retry');
@@ -552,14 +552,14 @@ async function restartApkService(){
       let shown = d.url;
       try { shown = decodeURIComponent(d.url); } catch (e) {}
       meta.innerHTML = d.name + '（' + d.size_text + '）<br>' + shown;
-      toast('下载服务已重启，端口 ' + d.port);
+      toast('下载服务已就绪，端口 ' + d.port);
     } else {
-      if (btn) { btn.disabled = false; btn.textContent = '换个端口重试'; }
+      if (btn) { btn.disabled = false; btn.textContent = '生成下载二维码'; }
       meta.innerHTML = '<span style="color:var(--warn)">' + (d.message || '仍然不可用') + '</span>';
       toast('仍然不可用：' + (d.message || ''), true);
     }
   } catch (e) {
-    if (btn) { btn.disabled = false; btn.textContent = '换个端口重试'; }
+    if (btn) { btn.disabled = false; btn.textContent = '生成下载二维码'; }
     toast('重启失败：' + e.message, true);
   }
 }
@@ -2281,6 +2281,22 @@ function renderHistory(d){
   if (monthBadge) monthBadge.textContent = d.month ? (d.month + ' 本月') : '-';
 
   if (!d.has_data) {
+    /* 没有历史数据时也要把表画出来：列 = 最近 7 天，行 = 已启用游戏，格子全灰。
+       用户要看的是"表格长什么样、缺的只是数据"，不是一块空白。 */
+    if ((d.tracked || []).length && (d.days || []).length) {
+      const statsBox = document.getElementById('h-stats');
+      if (statsBox) {
+        // 概览卡不能只剩一个标题（之前清空后会留一块"没画完"的空白）
+        statsBox.innerHTML = '<div class="emptybox">暂无记录</div>';
+      }
+      renderHeatmap(d);
+      const box = document.getElementById('h-table');
+      if (box) {
+        box.insertAdjacentHTML('beforeend',
+          '<div class="hint">暂无历史记录，下一次定时检查写入后会自动填上。</div>');
+      }
+      return;
+    }
     renderHistoryEmpty('暂无历史记录，等待下一次定时检查写入。');
     return;
   }
