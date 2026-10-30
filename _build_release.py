@@ -65,6 +65,44 @@ ENGINE_PY = ROOT / "engine" / "python"
 #: engine 入口模板（exe 发行版专用：纯 HTTP、无窗口；与源码仓 app.py 是两份）
 ENGINE_APP_TEMPLATE = ROOT / "shell" / "engine_app.py"
 
+# ---------------- diet 阶段（2026-10-31）：只动打包副本，母本不动 ----------------
+# 实测依据（engine/python 40MB，site-packages 19MB 里 PIL 占 15MB）：
+#   _avif.pyd 7.6MB / _imagingft.pyd 2.2MB / _webp 408K / _imagingcms 272K
+#   对「只渲染 PNG 二维码 + 画托盘图标」的引擎全是死重——PNG 编解码在核心
+#   _imaging.pyd 里（zlib 内置），PIL 插件发现是静态 _plugins 名单且
+#   except ImportError 吞缺失，删扩展+包装模块对 PNG 路径零影响。
+#   sqlite3.dll+_sqlite3.pyd 1.6MB：全项目（代码+依赖链）零引用；
+#   python.cat 是 DLL 验签目录，运行时不需要。
+#   site-packages .py→.pyc 单态（-b 同目录旧式布局）：省一半源码体积，
+#   stdlib python311.zip 本就 637 pyc 零源码，无需处理。
+PIL_CODEC_EXT_PRUNE = ("_avif", "_imagingft", "_webp", "_imagingcms", "_imagingtk")
+#: 随编解码扩展一起删的包装模块：不删的话 PIL init 会注册出"打不开"的格式。
+#: 注意 ImageFont.py 必须保留——pillow 13 的 ImageDraw→ImageText→ImageFont
+#: 是顶层导入链，且 _imagingft 在 ImageFont 里是函数内惰性导入（真画字才碰）。
+PIL_CODEC_MODULE_PRUNE = (
+    "ImageCms.py",
+    "AvifImagePlugin.py",
+    "WebPImagePlugin.py",
+)
+ROOT_RUNTIME_PRUNE = ("sqlite3.dll", "_sqlite3.pyd", "python.cat")
+
+#: 瘦身冒烟：engine 自己的解释器验证「依赖可导入 + PIL 画图 + 二维码出 PNG」
+SMOKE_SNIPPET = (
+    "import io;"
+    "import requests, qrcode;"
+    "from PIL import Image, ImageDraw;"
+    "img = Image.new('RGBA', (8, 8), (0, 0, 0, 0));"
+    "ImageDraw.Draw(img).line([(0, 0), (7, 7)]);"
+    "buf = io.BytesIO(); img.save(buf, format='PNG');"
+    "qr = qrcode.QRCode(border=2, box_size=8, "
+    "error_correction=qrcode.constants.ERROR_CORRECT_M);"
+    "qr.add_data('smoke'); qr.make(fit=True);"
+    "im = qr.make_image(fill_color='#111111', back_color='#ffffff');"
+    "im.save(buf, format='PNG');"
+    "assert buf.getvalue()[:8] == b'\\x89PNG\\r\\n\\x1a\\n';"
+    "print('SMOKE_OK')"
+)
+
 
 def collect_secrets() -> List[str]:
     """从本地真实配置与缓存里提取敏感值，供打包自检使用。
@@ -268,6 +306,87 @@ def verify_shell_fresh() -> None:
         sys.exit(1)
 
 
+def diet_engine_python(py_dir: Path) -> None:
+    """瘦身打包副本里的 Python 运行时（母本 engine/python 不动，可重复可回滚）。
+
+    每一步都带存在性守卫：母本将来换了运行时（比如 python-build-standalone）
+    布局变化时，这里最多少省几 MB，绝不会把构建炸掉。
+    """
+    saved = 0
+
+    def rm(path: Path) -> None:
+        nonlocal saved
+        if path.exists():
+            saved += path.stat().st_size
+            path.unlink()
+
+    def rm_glob(directory: Path, pattern: str) -> None:
+        for item in directory.glob(pattern):
+            rm(item)
+
+    sp = py_dir / "Lib" / "site-packages"
+    pil = sp / "PIL"
+
+    # 1) PIL 用不到的编解码扩展（glob 版本后缀，不写死 cp311）
+    for stem in PIL_CODEC_EXT_PRUNE:
+        rm_glob(pil, f"{stem}.*.pyd")
+    # 2) 对应的纯 Python 包装（连注册都省掉）
+    for name in PIL_CODEC_MODULE_PRUNE:
+        rm(pil / name)
+    # 3) pip --target 留下的控制台脚本（qr.exe / normalizer.exe 等，运行时无用）
+    bin_dir = sp / "bin"
+    if bin_dir.is_dir():
+        shutil.rmtree(bin_dir)
+    # 4) 解释器根目录死重
+    for name in ROOT_RUNTIME_PRUNE:
+        rm(py_dir / name)
+
+    # 5) site-packages .py → .pyc 单态：engine 自己的解释器编译（版本必然匹配），
+    #    -b = 旧式同目录布局，删源后即 sourceless import
+    result = subprocess.run(
+        [str(py_dir / "python.exe"), "-m", "compileall", "-b", "-q", str(sp)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=600,
+    )
+    if result.returncode != 0:
+        print("[FATAL] compileall 失败，中止（不敢在没编译完的情况下删源码）")
+        print((result.stdout or "")[-2000:])
+        print((result.stderr or "")[-2000:])
+        sys.exit(1)
+    for py in sp.rglob("*.py"):
+        saved += py.stat().st_size
+        py.unlink()
+
+    print(f"[DIET] 瘦身完成：省 {saved/1024/1024:.1f} MB（副本）")
+
+
+def smoke_engine_runtime(engine_dir: Path) -> None:
+    """瘦身后用打包副本的解释器跑一遍真依赖链，失败即中止打包。
+
+    冒烟链 = requests 可导入 + PIL 画图 + 二维码出 PNG（与 login_ui.qr_png_base64
+    同参数同调用姿势）。 diet 删的是"确定不用"的东西，这一步是最后一道闸。
+    """
+    py = engine_dir / "python" / "python.exe"
+    result = subprocess.run(
+        [str(py), "-c", SMOKE_SNIPPET],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=180,
+        cwd=str(engine_dir),
+    )
+    if result.returncode != 0 or "SMOKE_OK" not in (result.stdout or ""):
+        print("[FATAL] 瘦身后运行时冒烟失败 —— 中止打包")
+        print((result.stdout or "")[-2000:])
+        print((result.stderr or "")[-2000:])
+        sys.exit(1)
+    print("[OK] 瘦身运行时冒烟通过（requests / PIL 画图 / 二维码 PNG）")
+
+
 def build_engine(out_engine: Path) -> None:
     """engine/ = 便携解释器 + 当前工作树代码（零凭据零缓存）。"""
     # 1) 便携 Python（解释器 + 预装依赖，纯库无隐私；剥掉 __pycache__ 减肥）
@@ -276,6 +395,7 @@ def build_engine(out_engine: Path) -> None:
         out_engine / "python",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyd.bak"),
     )
+    diet_engine_python(out_engine / "python")
 
     # 2) 项目代码：当前工作树（v2.1 未入库前的最新改动也要带上）
     for py in ("login_ui.py", "main.py", "daemon.py"):
@@ -354,8 +474,9 @@ def main() -> None:
     for name in SHELL_COMPANIONS:
         shutil.copy2(_require(ROOT / name, name), OUT / name)
 
-    # 2) engine
+    # 2) engine（含 diet 瘦身 + 瘦身后运行时冒烟，失败即中止）
     build_engine(OUT / "engine")
+    smoke_engine_runtime(OUT / "engine")
 
     # 3) 使用说明（记事本友好：UTF-8 BOM + CRLF）
     write_crlf_bom(OUT / "小白使用说明.txt", README_TXT)
@@ -369,6 +490,13 @@ def main() -> None:
             for token in banned:
                 if token in body:
                     leaked.append(f"{f.relative_to(OUT)} <- {token[:6]}…")
+
+    # 泄漏自检是门禁不是告示：带密 zip 一个都不许出（曾经只打印一行就继续打包）
+    if leaked:
+        print("[FATAL] 泄漏自检命中敏感值，中止打包：")
+        for item in leaked:
+            print("  -", item)
+        sys.exit(1)
 
     # 5) 打包
     ZIP_DIR.mkdir(parents=True, exist_ok=True)
