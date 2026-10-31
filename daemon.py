@@ -469,6 +469,20 @@ def format_weekly_body(digest: Dict[str, Any]) -> str:
     return "本周：" + "，".join(parts) + "。" + tail
 
 
+def _has_bound_credential(config) -> bool:
+    """启用账号里是否存在任何真实凭证（cookie/token 任一非空）。
+
+    mock 门卫的事实依据：provider 字段可能因旧版升级/手写配置停在 mock，
+    但凭证是扫码/粘贴时写入的硬事实——有凭证就该真实查询，没有才是出厂态。
+    """
+    for acc in getattr(config, "enabled_accounts", None) or []:
+        cred = getattr(acc, "credential", None) or {}
+        if (str(cred.get("cookie") or "").strip()
+                or str(cred.get("token") or "").strip()):
+            return True
+    return False
+
+
 def run_weekly_report() -> bool:
     """组装并发送周报；返回是否有通道真正发成功。任何异常都吞掉写日志。"""
     try:
@@ -482,9 +496,17 @@ def run_weekly_report() -> bool:
         return False
     # 与 run_check 同一门卫：出厂 mock 状态下历史里就算有残留数据也是假的，
     # 不该拿去发周报（2026-10-30 实测 mock 假数据被编进周报推出去了）。
+    # 2026-10-31 朋友机器实证：provider 字段可能停在 mock 而凭证已经写入
+    # （旧版升级残留等）——门卫升级为看凭证事实自愈，不再一刀切空转。
     if (config.query.provider or "mock").strip().lower() == "mock":
-        logger.info("周报：尚未绑定任何账号（provider=mock），跳过")
-        return False
+        if not _has_bound_credential(config):
+            logger.info("周报：尚未绑定任何账号（provider=mock），跳过")
+            return False
+        logger.warning(
+            "周报：provider=mock 但启用账号已有凭证——本轮按 miyoushe 继续"
+            "（配置字段疑似未随扫码切换，重扫码或手改 config 可消除本警告）"
+        )
+        config.query.provider = "miyoushe"
     try:
         digest = history.weekly_digest(days=7)
         body = format_weekly_body(digest)
@@ -583,11 +605,22 @@ def _run_check_locked(reason: str, dry_run: bool = False) -> int:
     # 出厂状态（provider=mock）：查出来的全是写死的演示数据。
     # 2026-10-30 实测：新机器首启补跑 20:30 那轮，mock 假数据被写进巡检历史、
     # 还编进周报推了出去（「崩坏：星穹铁道 1 天全勤」——用户根本没绑过号）。
-    # 所以这里直接跳过：不查询、不写历史、不推送。返回 0 让补发机制把
+    # 所以出厂态直接跳过：不查询、不写历史、不推送。返回 0 让补发机制把
     # 该时间点记为已处理，避免 30 秒一轮地反复触发。
+    # 2026-10-31 朋友机器实证（第二轮护栏）：provider 字段可能停在 mock 而
+    # 凭证已经写入（旧版升级残留/手写配置）——原门卫一刀切跳过会让这台机器
+    # 永远空转（游戏概览/周报/巡检全空）。升级为看凭证事实自愈：有凭证就按
+    # miyoushe 继续本轮（米游社系直连、森空岛系走回退链），大声警告；真正的
+    # 出厂态（无任何凭证）维持跳过。provider 字段的持久化修正交给重新扫码。
     if (config.query.provider or "mock").strip().lower() == "mock":
-        logger.info("尚未绑定任何账号（provider=mock），本轮巡检跳过：不查询、不写历史、不推送")
-        return 0
+        if not _has_bound_credential(config):
+            logger.info("尚未绑定任何账号（provider=mock），本轮巡检跳过：不查询、不写历史、不推送")
+            return 0
+        logger.warning(
+            "provider=mock 但启用账号已有凭证——本轮自愈为 miyoushe 继续巡检"
+            "（配置字段疑似未随扫码切换，重扫码或手改 config 可消除本警告）"
+        )
+        config.query.provider = "miyoushe"
 
     logger.info("=" * 56)
     logger.info(

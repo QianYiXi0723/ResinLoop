@@ -92,6 +92,24 @@ import daemon  # noqa: E402
 import main as main_mod  # noqa: E402
 
 tmp = Path(tempfile.mkdtemp(prefix="rl_mockguard_"))
+
+# ---------------------------------------------------------------- 日志隔离
+# 门卫测试会真跑 run_check/cmd_run，两者的 setup_logger 会把 handler 绑到
+# 真实 logs/dailycheck.log——2026-10-31 实证：28 行测试残留写进了生产日志。
+# 从源头把 core.logger.setup_logger 换成 no-op（run_check 内部是局部 import，
+# 必须在 core.logger 模块上 patch），日志统一进 tmp。
+import logging  # noqa: E402
+import core.logger as _core_logger  # noqa: E402
+
+_core_logger.setup_logger = lambda *a, **k: logging.getLogger("dailycheck")
+_test_handler = logging.FileHandler(tmp / "test_isolated.log", encoding="utf-8")
+_test_handler.setFormatter(
+    logging.Formatter("%(asctime)s [%(levelname)-7s] %(name)s: %(message)s"))
+logging.getLogger("dailycheck").addHandler(_test_handler)
+# main.py 在模块顶层绑定了 setup_logger 引用——只 patch core.logger 源头
+# 对它无效（cmd_run 走的是已绑定引用），main 侧也要换成同款 no-op
+main_mod.setup_logger = lambda *a, **k: logging.getLogger("dailycheck")
+
 cfg_mock = tmp / "config_mock.json"
 cfg_mock.write_text(json.dumps({
     "query": {"provider": "mock"},
@@ -174,6 +192,29 @@ check("M7c 空值不算已绑定", _cred_filled("") is False and _cred_filled(No
 check("M7d 真凭证算已绑定", _cred_filled("ltuid=123; ltoken=v2_x") is True)
 check("M7e 中间含「请填写」的真凭证不误伤？—— 含占位符一律视为未绑定",
       _cred_filled("ltoken=abc请填写def") is False)
+
+# ---------------------------------------------------------------- M9 自愈
+# provider=mock 但启用账号带凭证（旧版升级残留/手写配置）→ 不再一刀切空转：
+# 本轮按 miyoushe 继续巡检（2026-10-31 朋友机器实证：这台机器此前永远空转，
+# 游戏概览/周报/巡检全空）
+cfg_mock_cred = tmp / "config_mock_cred.json"
+cfg_mock_cred.write_text(json.dumps({
+    "query": {"provider": "mock"},
+    "accounts": [
+        {"game": "genshin", "enabled": True,
+         "credential": {"cookie": "ltuid=1; ltoken=v2_test"}},
+    ],
+}, ensure_ascii=False), encoding="utf-8")
+
+called["n"] = 0
+main_mod.run_once = lambda *a, **k: called.__setitem__("n", called["n"] + 1) or 0
+try:
+    daemon.CONFIG_PATH = cfg_mock_cred
+    code = daemon.run_check("测试 mock+凭证自愈")
+    check("M9a mock+有凭证 → 自愈进入检查（不再空转）", called["n"] == 1, str(called))
+    check("M9b 退出码来自 run_once", code == 0, str(code))
+finally:
+    daemon.CONFIG_PATH = orig_path
 
 # ---------------------------------------------------------------- 汇总
 print(f"\n==== 共 {PASS + FAIL} 项：PASS {PASS} / FAIL {FAIL} ====")
