@@ -1399,7 +1399,9 @@ function refreshSetSummaries(){
     setSum('catchup', !isNaN(v) && v > 0 ? '窗口 ' + v + ' 分钟' : '不补发');
   }
 
-  /* 体力溢出阈值：可见文字保持紧凑（用户点名：全量参数收进 title 悬浮看） */
+  /* 体力溢出阈值：折叠态直接摆数值（2026-10-31 裁决：该明显的不明显——
+     原方案「全量参数收进悬浮」把用户配置的值藏得太深，新裁决数值上浮）；
+     带游戏名的全量文本仍留 title 悬浮 */
   const rsBox = document.getElementById('resin-toggle');
   const rsInputs = ['genshin', 'starrail', 'zzz', 'arknights', 'endfield']
     .map(function(g){ return document.getElementById('resin-' + g); });
@@ -1408,14 +1410,19 @@ function refreshSetSummaries(){
   else if (rsBox && !rsBox.checked) setSum('resin', '已关闭');
   else {
     let zeros = 0;
-    const parts = [['genshin','原神'],['starrail','星铁'],['zzz','绝区零'],
-                   ['arknights','方舟'],['endfield','终末地']].map(function(r){
+    const nums = [], labeled = [];
+    [['genshin','原神'],['starrail','星铁'],['zzz','绝区零'],
+     ['arknights','方舟'],['endfield','终末地']].forEach(function(r){
       const inp = document.getElementById('resin-' + r[0]);
       const v = inp ? parseInt(inp.value, 10) : NaN;
-      if (!isNaN(v) && v === 0) zeros++;
-      return r[1] + ' ' + (isNaN(v) ? '–' : (v === 0 ? '关' : v));
+      const shown = isNaN(v) ? '–' : (v === 0 ? '关' : v);
+      nums.push(shown);
+      if (v === 0) zeros++;
+      labeled.push(r[1] + ' ' + shown);
     });
-    setSum('resin', '阈值已配置' + (zeros ? ' · ' + zeros + ' 款关闭' : ''), parts.join(' · '));
+    setSum('resin',
+      nums.join('/') + (zeros ? ' · ' + zeros + ' 款关闭' : ''),
+      labeled.join(' · '));
   }
 
   /* 活动结束提醒：关 → 已关闭；开 → 提前 X 天 */

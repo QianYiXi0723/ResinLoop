@@ -428,9 +428,10 @@
              white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .set-txt small{display:block;font-size:11px;color:var(--muted);line-height:1.5;
                  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  /* 参数摘要：标题右侧 11px 动态值，超宽截断、悬停看全量（title 由 JS 同步） */
-  .set-sum{font-size:11px;color:var(--text-tertiary);flex:0 1 auto;
-    max-width:120px;text-align:right;
+  /* 参数摘要：标题右侧动态值——2026-10-31 提级（11px 三级灰 → 12px 二级色，
+     宽 120→220px）：用户配置的值是折叠态的 primary，不该比开关还暗 */
+  .set-sum{font-size:12px;color:var(--text-secondary);flex:0 1 auto;
+    max-width:220px;text-align:right;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .set-end{display:flex;align-items:center;gap:12px;flex:0 0 auto}
   /* 展开箭头：贴最右，展开时翻转 */
