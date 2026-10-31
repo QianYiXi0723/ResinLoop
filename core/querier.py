@@ -698,14 +698,8 @@ class SklandQuerier(BaseQuerier):
                 bindings = app.get("bindingList")
                 if isinstance(bindings, list) and bindings:
                     return bindings[0]
-                raise GameNotBoundError(
-                    f"当前森空岛账号下没有《{KNOWN_GAMES.get(game_id, game_id)}》的角色"
-                    "（bindingList 为空；没玩过这款游戏，建号后自动生效）"
-                )
-        raise GameNotBoundError(
-            f"当前森空岛账号下没有《{KNOWN_GAMES.get(game_id, game_id)}》的角色"
-            "（没玩过这款游戏；建号后自动生效）"
-        )
+                raise GameNotBoundError("账号下没有这款游戏的角色，建号后自动生效")
+        raise GameNotBoundError("账号下没有这款游戏的角色，建号后自动生效")
 
 
 def _require_int_field(data: Dict[str, Any], key: str, label: str) -> int:

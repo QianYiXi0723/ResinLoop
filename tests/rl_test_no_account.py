@@ -127,7 +127,9 @@ players_no_endfield = {"list": [{
 }]}
 sk = run_skland_fetch(players_no_endfield)
 check("B3a ok=True（不是查询失败）", sk.ok is True, sk.error)
-check("B3b no_account 非空且点名游戏", "终末地" in (sk.no_account or ""), sk.no_account)
+# B3b 2026-10-31 裁决改版：消息不再点名游戏（卡片头/摘要行前缀已携带游戏身份，
+# 消息只留「原因 + 出路」一句），改为钉非空与行动指引
+check("B3b no_account 非空且给行动指引", "建号后自动生效" in (sk.no_account or ""), sk.no_account)
 check("B3c finished=False", sk.finished is False, sk.finished)
 
 # bindingList 为空的极端形态

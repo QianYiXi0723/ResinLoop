@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -630,6 +631,111 @@ def _active_notifiers(push_cfg):
     return active
 
 
+#: 昵称刷新的限频记账（logs/.roles_refresh，ltuid → 上次刷新的 time.time()）
+_ROLES_REFRESH_TTL = 86400
+_ROLES_STATE_PATH = BASE_DIR / "logs" / ".roles_refresh"
+
+
+def _refresh_mihoyo_nicknames(config: AppConfig, statuses: List[GameStatus]) -> None:
+    """每日限频刷新米游社三款的昵称——用户在游戏里改名后自动跟上。
+
+    门槛（全部满足才打角色列表接口）：
+      - 该账号当天所有米游社查询都成功（风控冷却/查询失败的账号绝不加请求）；
+      - 该 ltuid 距上次刷新 >= 24 小时（logs/.roles_refresh 记账）。
+    米游社便笺接口本身不带昵称字段，这是与森空岛链路（每轮自带并回写）的
+    行为差异根源；本函数用扫码同款的角色列表接口补齐。
+    写回前重读 config、只动 nickname 字段再原子替换：daemon 进程没有控制台的
+    进程内写锁，靠「新鲜读 + 最小改动」把与控制台保存互踩的窗口压到毫秒级。
+    """
+    import logging
+
+    logger = logging.getLogger("dailycheck.main")
+    from core.mihoyo_api import fetch_game_roles
+
+    miyoushe = ("genshin", "starrail", "zzz")
+    try:
+        state = json.loads(_ROLES_STATE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            state = {}
+    except (OSError, ValueError):
+        state = {}
+    now = time.time()
+
+    # 按账号聚合本轮查询结果（与 cred_health 同款按游戏序配对）
+    buckets: dict = {}
+    game_seen: dict = {}
+    for status in statuses:
+        if status.game_id not in miyoushe:
+            continue
+        same_game = [acc for acc in config.enabled_accounts if acc.game == status.game_id]
+        seen = game_seen.get(status.game_id, 0)
+        game_seen[status.game_id] = seen + 1
+        acc = same_game[seen] if seen < len(same_game) else None
+        if acc is None:
+            continue
+        try:
+            from core.mihoyo_api import extract_credentials
+            ltuid, ltoken, _uid, _server, cookie = extract_credentials(acc)
+        except Exception:  # noqa: BLE001 - 森空岛/空凭证的账号不在刷新范围
+            continue
+        bucket = buckets.setdefault(
+            str(ltuid), {"ok": True, "ltoken": ltoken, "cookie": cookie, "games": set()}
+        )
+        bucket["games"].add(status.game_id)
+        if status.error:
+            bucket["ok"] = False
+
+    cfg_path = Path(config.config_path) if config.config_path else (BASE_DIR / "config.json")
+    raw = None
+    changed = 0
+    refreshed_any = False
+    for ltuid, bucket in buckets.items():
+        if not bucket["ok"]:
+            continue
+        last = state.get(ltuid)
+        if isinstance(last, (int, float)) and (now - float(last)) < _ROLES_REFRESH_TTL:
+            continue
+        try:
+            roles = fetch_game_roles(ltuid, bucket["ltoken"], cookie=bucket["cookie"])
+        except Exception as exc:  # noqa: BLE001 - 刷新失败不影响巡检，明天再试
+            logger.warning("昵称刷新跳过（角色列表获取失败）：%s", exc)
+            continue
+        state[ltuid] = now
+        refreshed_any = True
+        if raw is None:
+            raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+        for node in raw.get("accounts", []):
+            if node.get("game") not in bucket["games"]:
+                continue
+            cred = node.get("credential") or {}
+            # 真实账号的 credential 是 cookie 形状（ltuid 藏在 cookie 里），
+            # 兼容直接写 ltuid 字段的测试/手写配置
+            node_ltuid = ""
+            for part in str(cred.get("cookie") or "").split(";"):
+                k, _, v = part.strip().partition("=")
+                if k.strip().lower() == "ltuid":
+                    node_ltuid = v.strip()
+                    break
+            if not node_ltuid:
+                node_ltuid = str(cred.get("ltuid", "") or "")
+            if node_ltuid != ltuid:
+                continue
+            new_nick = str((roles.get(node.get("game")) or {}).get("nickname") or "").strip()
+            if new_nick and new_nick != node.get("nickname"):
+                logger.info("%s 昵称已刷新：%s → %s", node.get("game"), node.get("nickname"), new_nick)
+                node["nickname"] = new_nick
+                changed += 1
+    if changed:
+        _atomic_write_json(cfg_path, raw)
+        logger.info("昵称刷新完成：%d 处更新", changed)
+    if refreshed_any:
+        # 只在真的刷新过才记账：错误态/限频跳过时连空文件都不留
+        try:
+            _atomic_write_json(_ROLES_STATE_PATH, state)
+        except OSError as exc:
+            logger.warning("昵称刷新记账写入失败（明天会重试）：%s", exc)
+
+
 def run_once(config: AppConfig, dry_run: bool = False) -> int:
     """跑一轮完整检查：查询 -> 判断 -> 推送 -> 返回退出码。
 
@@ -779,6 +885,14 @@ def run_once(config: AppConfig, dry_run: bool = False) -> int:
                 activities.mark_notified(report.activity_alerts)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("记录活动提醒失败（下次可能重复提醒）：%s", exc)
+
+    # 3.6) 昵称限频刷新：当天查询全成功的账号每 24h 顺带拉一次角色列表，
+    #      游戏里改过名自动跟上（best-effort，失败只记日志）
+    if not dry_run:
+        try:
+            _refresh_mihoyo_nicknames(config, statuses)
+        except Exception:  # noqa: BLE001 - 纯锦上添花，绝不让它影响退出码
+            logger.exception("昵称刷新异常（忽略）")
 
     # 4) 收尾 + 退出码
     if statuses and all(not status.ok for status in statuses):

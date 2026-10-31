@@ -107,6 +107,59 @@ check("T4 缺可选字段兜底且下游零 KeyError",
       and profile["oaid"] == mia.normalize_device_profile(raw_paste)["oaid"],
       "missing=%s" % (missing or "无"))
 
+# ---------- T5/T6 米游社昵称限频刷新（方案 A） ----------
+import core.config as rc
+import main as m
+
+m._ROLES_STATE_PATH = TMP / ".roles_refresh"
+cfg_path = TMP / "config_t5.json"
+cfg_path.write_text(json.dumps({
+    "accounts": [
+        {"game": "starrail", "enabled": True, "nickname": "开拓者",
+         "credential": {"cookie": "ltuid=10086; ltoken=ltok;", "uid": "101", "server": "cn_gf01"}},
+    ],
+    "query": {"provider": "miyoushe"},
+}, ensure_ascii=False), encoding="utf-8")
+config = rc.parse_config(json.loads(cfg_path.read_text(encoding="utf-8")), source=cfg_path)
+config.config_path = cfg_path
+
+roles_calls = {"n": 0}
+
+
+def _fake_roles(ltuid, ltoken, cookie=""):
+    roles_calls["n"] += 1
+    return {"starrail": {"uid": "101", "server": "cn_gf01", "nickname": "星穹新名", "level": 70}}
+
+
+mia.fetch_game_roles = _fake_roles
+from core.models import GameStatus, TaskItem
+
+statuses_ok = [GameStatus(game_id="starrail", game_name="崩坏：星穹铁道",
+                          nickname="开拓者", error=None,
+                          tasks=[TaskItem("每日实训", True, "1/1")])]
+m._refresh_mihoyo_nicknames(config, statuses_ok)
+after_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+state = json.loads((TMP / ".roles_refresh").read_text(encoding="utf-8"))
+check("T5 昵称刷新写回且限频记账",
+      after_cfg["accounts"][0]["nickname"] == "星穹新名"
+      and "10086" in state and roles_calls["n"] == 1,
+      "nickname=%s calls=%d" % (after_cfg["accounts"][0]["nickname"], roles_calls["n"]))
+
+# T5b 24h 内第二次调用：直接跳过
+m._refresh_mihoyo_nicknames(config, statuses_ok)
+check("T5b 限频生效（24h 内不打接口）", roles_calls["n"] == 1, "calls=%d" % roles_calls["n"])
+
+# T6 查询失败（风控）的账号：绝不打接口
+(TMP / ".roles_refresh").unlink()
+statuses_err = [GameStatus(game_id="starrail", game_name="崩坏：星穹铁道",
+                           nickname="开拓者", error="接口 retcode=10041：风控拒绝",
+                           tasks=[TaskItem("每日实训", False, "0/1")])]
+m._refresh_mihoyo_nicknames(config, statuses_err)
+check("T6 查询失败绝不加请求",
+      roles_calls["n"] == 1 and not (TMP / ".roles_refresh").exists(),
+      "calls=%d" % roles_calls["n"])
+
+
 import shutil
 shutil.rmtree(TMP, ignore_errors=True)
 print("=== rl_test_device_env.py: %d PASS / %d FAIL ===" % (len(PASS), len(FAIL)))

@@ -879,10 +879,9 @@ def extract_credentials(account: AccountConfig) -> Tuple[str, str, str, str, str
 
     uid = str(credential.get("uid", "") or "").strip()
     if not uid or uid == PLACEHOLDER_UID:
-        raise MiyousheNotBoundError(
-            f"账号下还没有《{account.game_name}》的角色 UID"
-            "（扫码登录会自动回填；该账号没玩过这款游戏时也会这样，建号后自动生效）"
-        )
+        # 一句话：原因 + 出路。UID/回填是实现细节，不进用户可见文案
+        # （游戏名也不重复——徽章/摘要行的前缀已经带游戏名）
+        raise MiyousheNotBoundError("账号下没有这款游戏的角色，建号后自动生效")
 
     server = str(credential.get("server", "") or "").strip() or DEFAULT_SERVERS.get(account.game, "")
     if not server:
@@ -1696,7 +1695,9 @@ def fetch_game_roles(
             continue
         if not game_id:
             continue
-        uid = str(item.get("role_id") or "").strip()
+        # getGameRecordCard 的字段名是 game_role_id（role_id 是另一接口的参数名，
+        # 写错会让每条记录 uid 取空被跳过 → 全部误判「未创建角色」）
+        uid = str(item.get("game_role_id") or "").strip()
         if not uid:
             continue
         try:
