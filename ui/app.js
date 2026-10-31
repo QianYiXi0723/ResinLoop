@@ -2137,12 +2137,15 @@ function btnSpin(btn, promise){
 function loadLive(force){
   const btn = document.getElementById('btn-live-refresh');
   const box = document.getElementById('live-grid');
-  if (!liveLoaded) force = true;   // 打开控制台后自动强刷一次（仅首次；首刷失败下次重试）
+  /* 打开控制台（首次加载）发 refresh=auto：服务端按磁盘缓存年龄决定
+     真查还是秒开（阈值 10 分钟，服务端时钟判定）——
+     「每次打开都强刷」实测让 F5 也要白等 ~14 秒，按年龄放行两头兼顾 */
+  if (!liveLoaded) force = 'auto';
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>'; }
   /* 已有缓存渲染的表格时不再打占位符 —— 静默刷新，数据到了平滑替换 */
   if (box && !liveRendered) box.innerHTML = '<div class="emptybox">正在查询，请稍候…</div>';
   kpiBusy(true);
-  return fetch('/api/live' + (force ? '?refresh=1' : ''))
+  return fetch('/api/live' + (force ? '?refresh=' + force : ''))
     .then(function(r){ return r.json(); })
     .then(function(d){
       liveLoaded = true;

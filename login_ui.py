@@ -1391,6 +1391,9 @@ def save_activity_alert(enabled: Any = None, days: Any = None) -> Dict[str, Any]
 #: 实时查询结果缓存（秒）。切页签不该每次都重新打 5 个游戏的接口。
 _LIVE_TTL_SECONDS = 45
 _LIVE_CACHE: Dict[str, Any] = {"at": 0.0, "payload": None}
+#: 打开页面自动刷新（refresh=auto）的年龄阈值（分钟）：磁盘缓存比这新就
+#: 秒开缓存，比这旧才真查——"每次打开都强刷"实测让 F5 也要白等 ~14 秒。
+_LIVE_AUTO_REFRESH_MINUTES = 10
 #: force 刷新的并发闸：collect_statuses 一轮几十秒，两个「刷新」同时点会双打
 #: 五游戏接口（风控面翻倍）并交错写同一磁盘缓存。持锁做二次新鲜度判定，
 #: 等锁期间别人刷完就直接吃他的结果。
@@ -2171,8 +2174,25 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/live":
-            # refresh=1 强制重新查询（默认走 45 秒进程内缓存）
-            force = (query.get("refresh") or ["0"])[0].lower() in ("1", "true", "yes")
+            # refresh=1 强制重新查询（默认走 45 秒进程内缓存）；
+            # refresh=auto（打开页面自动刷新）：由服务端按磁盘缓存年龄决定——
+            # 比 _LIVE_AUTO_REFRESH_MINUTES 新就秒开缓存，过旧才真查。
+            # 时钟判定放在服务端（缓存里的 generated_at），前端不做时间假设。
+            refresh_val = (query.get("refresh") or ["0"])[0].lower()
+            force = refresh_val in ("1", "true", "yes")
+            if refresh_val == "auto":
+                disk = _live_disk_read()
+                gen_dt = None
+                if disk is not None:
+                    try:
+                        gen_dt = datetime.strptime(
+                            str(disk.get("generated_at") or ""),
+                            "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        gen_dt = None
+                force = (disk is None or gen_dt is None or
+                         (datetime.now() - gen_dt).total_seconds()
+                         > _LIVE_AUTO_REFRESH_MINUTES * 60)
             try:
                 self._json(live_status(force=force))
             except Exception as exc:  # noqa: BLE001
