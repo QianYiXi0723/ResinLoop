@@ -3,7 +3,10 @@
 const PANEL_NAMES = ['history', 'query', 'account', 'schedule'];
 let schedTimer = null;
 
+let activeTab = 'history';   // 当前页签（数据轮询的闸门：只轮询可见页）
+
 function switchTab(name){
+  activeTab = name;
   PANEL_NAMES.forEach(function(k){
     const panel = document.getElementById('tab-' + k);
     if (panel) {
@@ -1233,9 +1236,11 @@ async function saveCatchUp(){
   const btn = document.getElementById('btn-catch-up');
   const input = document.getElementById('catch-up-minutes');
   const raw = parseInt(input.value, 10);
-  let minutes = isNaN(raw) ? 0 : raw;
-  if (minutes < 0) minutes = 0;
-  if (minutes > 720) minutes = 720;
+  /* 空值发 null（服务端语义=回默认 180），不翻译成 0——
+     0 是「显式不补发」，与「没填」是两种用户意图，混译会静默关闭补发 */
+  let minutes = isNaN(raw) ? null : raw;
+  if (minutes != null && minutes < 0) minutes = 0;
+  if (minutes != null && minutes > 720) minutes = 720;
   btn.disabled = true;
   try {
     const d = await postJSON('/api/catch_up',
@@ -1949,6 +1954,15 @@ if (proxySave && !proxySave.dataset.bound) {
 /* ========================= 信息查询 ========================= */
 let liveLoaded = false;    // 本次会话已经发起过实时请求
 let liveRendered = false;  // 页面上已有可展示的数据（缓存或实时），占位符不再覆盖
+/* 每日报表数据自动轮询（2026-10-31）：守护进程在后台定时写入历史，
+   打开着的页面原来永远不知道——概览"一直显示不了"的根因之一。
+   页签激活时每 60 秒拉一次（loadHistory 走 GET 不触发巡检；
+   loadLive(false) 走 45 秒缓存，两个都轻）。 */
+setInterval(function(){
+  if (activeTab !== 'history') return;
+  loadHistory();
+  loadLive(false);
+}, 60000);
 
 function loadQuery(){
   loadActivities();
@@ -2532,13 +2546,16 @@ function renderHistory(d){
   if (monthBadge) monthBadge.textContent = d.month ? (d.month + ' 本月') : '-';
 
   if (!d.has_data) {
-    /* 没有历史数据时也要把表画出来：列 = 最近 7 天，行 = 已启用游戏，格子全灰。
-       用户要看的是"表格长什么样、缺的只是数据"，不是一块空白。 */
+    /* 没有历史数据时也要把界面画出来：列 = 最近 7 天，行 = 已启用游戏，格子全灰；
+       游戏概览同样画满每款启用游戏的迷你卡（今日状态显示"今日无数据"）——
+       用户要看的是"界面长什么样、缺的只是数据"，不是一块空白。 */
     if ((d.tracked || []).length && (d.days || []).length) {
       const statsBox = document.getElementById('h-stats');
       if (statsBox) {
-        // 概览卡不能只剩一个标题（之前清空后会留一块"没画完"的空白）
-        statsBox.innerHTML = '<div class="emptybox">暂无记录</div>';
+        // 概览卡用与正常态同一套迷你卡骨架：streak/本月统计以 0 起步，
+        // 今日状态显示"今日无数据"，第一次巡检写入后原样刷新成真实数据
+        statsBox.innerHTML = '<div class="gcards">' +
+          d.games.map(gameCardHtml).join('') + '</div>';
       }
       renderHeatmap(d);
       const box = document.getElementById('h-table');
