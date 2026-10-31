@@ -12,7 +12,7 @@
     <AssemblyTitle>ResinLoop · 日常巡查（桌面壳）</AssemblyTitle>
     <Product>ResinLoop</Product>
     <Description>ResinLoop 桌面壳：静默托管 engine/ 便携 Python 引擎，WebView2 加载本地控制台，托盘常驻。</Description>
-    <Version>2.3.2</Version>
+    <Version>2.3.3</Version>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <!-- PerMonitorV2：不声明的话进程是 DPI-unaware，125% 缩放下窗口只剩 784 逻辑宽且整窗位图拉伸 -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
