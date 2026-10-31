@@ -1964,6 +1964,27 @@ def get_page() -> str:
 # HTTP 服务
 # --------------------------------------------------------------------------- #
 
+#: 无参只读端点路由表：统一走「异常 → 200 + ok/人话」信封。
+#: 2026-10-31 审计：这七个端点此前裸奔，config 读盘抖动会炸穿 do_GET——
+#: 3 秒轮询的 /api/schedule 首当其冲（前端每轮刷「连接失败」）。
+#: 复杂端点（/api/history、/api/live、/api/start、/api/state 等有自定义
+#: 查询参数/会话语义/专用错误文案的）不进此表，保留各自分支。
+def _api_autostart() -> Dict[str, Any]:
+    from core import autostart
+
+    return autostart.status()
+
+
+_GET_SIMPLE_ROUTES: Dict[str, Any] = {
+    "/api/accounts": accounts_status,
+    "/api/env": push_status,
+    "/api/push": push_detail,
+    "/api/device": device_status,
+    "/api/schedule": schedule_status,
+    "/api/settings": thresholds_status,
+    "/api/autostart": _api_autostart,
+}
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "DailyCheckLogin/1.1"
@@ -2052,25 +2073,17 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "message": "未知的 provider"}, 400)
             return
 
-        if parsed.path == "/api/accounts":
-            self._json(accounts_status())
-            return
-
-        if parsed.path == "/api/env":
-            self._json(push_status())
-            return
-
-        if parsed.path == "/api/push":
-            # 只返回掩码，明文 Key 永远不出后端
-            self._json(push_detail())
-            return
-
-        if parsed.path == "/api/device":
-            self._json(device_status())
-            return
-
-        if parsed.path == "/api/schedule":
-            self._json(schedule_status())
+        # ---- 无参只读端点：路由表 + 统一错误信封（异常必 200+人话，绝不 500）----
+        simple = _GET_SIMPLE_ROUTES.get(parsed.path)
+        if simple is not None:
+            try:
+                self._json(simple())
+            except Exception:  # noqa: BLE001 - 前端 3 秒轮询这些端点，500 会刷屏
+                logger.exception("GET %s 失败", parsed.path)
+                self._json({
+                    "ok": False,
+                    "message": "读取失败：服务端内部错误（详见运行日志）",
+                })
             return
 
         if parsed.path == "/api/history":
@@ -2144,16 +2157,6 @@ class Handler(BaseHTTPRequestHandler):
                     "body": WAITING_FIRST_CHECK_BODY,
                     "message": f"生成预览失败：{exc}",
                 })
-            return
-
-        if parsed.path == "/api/settings":
-            self._json(thresholds_status())
-            return
-
-        if parsed.path == "/api/autostart":
-            from core import autostart
-
-            self._json(autostart.status())
             return
 
         if parsed.path == "/api/activities":

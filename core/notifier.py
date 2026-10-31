@@ -23,6 +23,8 @@ import logging
 import os
 import tempfile
 import threading
+
+from core import ipc_lock
 import time
 from datetime import datetime
 from pathlib import Path
@@ -75,7 +77,9 @@ def record_push_history(
         "title": str(title or "")[:160],
         "body": str(body or "")[:300],
     }
-    with _PUSH_WRITE_LOCK:
+    # 跨进程锁：推送可能来自 daemon（定时）与控制台（测试按钮）两个进程，
+    # 读改写 push_history.json 必须跨进程互斥（线程锁只防进程内）
+    with _PUSH_WRITE_LOCK, ipc_lock.blocking(str(PUSH_HISTORY_PATH) + ".lock"):
         try:
             raw = PUSH_HISTORY_PATH.read_text(encoding="utf-8")
             data = json.loads(raw)

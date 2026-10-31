@@ -959,6 +959,16 @@ def stop_daemon(timeout: float = 8.0) -> Dict[str, Any]:
 
 def run_daemon(use_tray: bool = True) -> int:
     ensure_dirs()
+    # 单实例终极防线：对 daemon.lock 取非阻塞排它锁并持有到进程死亡——
+    # 内核保证被杀时自动释放，不存在陈旧锁（2026-10-31 审计：原「status 检查 →
+    # clear_state → write_pid」两步之间存在 TOCTOU，并发拉起可双实例同槽位双推送）。
+    # pid/心跳检查保留为 UX 快速通道，正确性以这把锁为准。
+    from core.ipc_lock import try_acquire
+
+    daemon_lock_fd = try_acquire(str(BASE_DIR / "logs" / "daemon.lock"))
+    if daemon_lock_fd is None:
+        print("另一个守护进程正在运行（daemon.lock 被其它进程持有），本次不重复启动")
+        return 0
     current = status()
     if current["running"]:
         print(f"守护进程已在运行（PID {current['pid']}），本次不重复启动")

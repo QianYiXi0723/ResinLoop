@@ -35,6 +35,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from core import ipc_lock
+
 logger = logging.getLogger("dailycheck.activities")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -933,11 +935,14 @@ def _merge_notified_and_save(cache: Dict[str, Any]) -> None:
     refresh 的网络抓取花数秒，期间守护进程可能已 mark_notified（跨进程无锁）——
     直接 save_cache(进锁前的旧快照) 会把去重标记整份回滚，同一活动重复推送。
     合并以磁盘为准（磁盘上的标记更新），本地旧快照只补磁盘没有的键。
+    2026-10-31：合并与落盘整体置于跨进程文件锁内（core/ipc_lock）——
+    mark_notified 同锁内「锁内重读 → 只改 notified → 落盘」，items 不再可能回滚。
     """
-    fresh = load_cache()
-    merged = {**(cache.get("notified") or {}), **(fresh.get("notified") or {})}
-    cache["notified"] = _prune_notified(merged)
-    save_cache(cache)
+    with ipc_lock.blocking(str(CACHE_PATH) + ".lock"):
+        fresh = load_cache()
+        merged = {**(cache.get("notified") or {}), **(fresh.get("notified") or {})}
+        cache["notified"] = _prune_notified(merged)
+        save_cache(cache)
 
 
 def refresh(force: bool = False) -> Dict[str, Any]:
@@ -1103,7 +1108,9 @@ def mark_notified(alerts: Iterable[ActivityAlert], *, today: Optional[datetime] 
     ids = [alert.uid for alert in alerts if alert.uid]
     if not ids:
         return
-    with _IGNORED_WRITE_LOCK:
+    # 跨进程锁：daemon（mark_notified）与控制台（refresh）写同一缓存文件，
+    # 线程锁只防进程内。锁内重读 → 只改 notified → 落盘，items 零回滚窗口
+    with _IGNORED_WRITE_LOCK, ipc_lock.blocking(str(CACHE_PATH) + ".lock"):
         cache = load_cache()
         notified = cache.get("notified") or {}
         if not isinstance(notified, dict):

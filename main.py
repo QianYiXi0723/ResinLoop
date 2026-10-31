@@ -492,16 +492,21 @@ def _query_account(account, provider: str) -> GameStatus:
         )
     except Exception as exc:  # 兜底，绝不让查询异常打断整轮
         logger.exception("%s 查询异常", account.game_name)
-        # 凭证失效判定按 retcode 数值精确匹配：不能子串匹配——
-        # "retcode=-100" in msg 会把 -10003（DS 盐失效）误判成凭证失效
-        m = _RETCODE_RE.search(str(exc))
-        cred_kind = "auth" if (m and int(m.group(1)) in _CRED_AUTH_RETCODES) else "other"
+        # 凭证失效判定两级：
+        #   1) 异常类自带 cred_kind 属性——森空岛错误文案没有 retcode= 字样，
+        #      只靠正则会让方舟/终末地的凭证失效永远判不成 "auth"；
+        #   2) retcode 数值精确匹配（米游社 _RetcodeError 路径）。
+        # 不能子串匹配——"retcode=-100" in msg 会把 -10003（DS 盐失效）误判成凭证失效
+        kind = getattr(exc, "cred_kind", None)
+        if kind is None:
+            m = _RETCODE_RE.search(str(exc))
+            kind = "auth" if (m and int(m.group(1)) in _CRED_AUTH_RETCODES) else "other"
         return GameStatus(
             game_id=account.game,
             game_name=account.game_name,
             nickname=account.nickname,
             error=f"查询异常：{exc}",
-            cred_kind=cred_kind,
+            cred_kind=kind,
         )
 
 

@@ -347,7 +347,10 @@ class MiyousheQuerier(BaseQuerier):
 
         current_train = require_int(data, "current_train_score")
         max_train = require_int(data, "max_train_score")
-        tasks.append(TaskItem("每日实训", current_train >= max_train, f"{current_train}/{max_train}"))
+        # total=0（实训未解锁/接口没给数据）不参与判定：0>=0 退化成「已完成」
+        # ——与 parse_genshin 的委托护栏同族（2026-10-31 全库审计补齐）
+        if max_train > 0:
+            tasks.append(TaskItem("每日实训", current_train >= max_train, f"{current_train}/{max_train}"))
 
         current_stamina = _optional_int(data, "current_stamina")
         max_stamina = _optional_int(data, "max_stamina")
@@ -390,7 +393,9 @@ class MiyousheQuerier(BaseQuerier):
             vitality_max = _optional_int(data, "vitality", "progress", "max")
         if vitality_now is None or vitality_max is None:
             raise MiyousheQueryError("米游社返回的数据格式有变化，当前版本可能无法识别，请关注软件更新")
-        tasks.append(TaskItem("每日活跃度", vitality_now >= vitality_max, f"{vitality_now}/{vitality_max}"))
+        # total=0 不参与判定（同 parse_genshin/parse_starrail 护栏）
+        if vitality_max > 0:
+            tasks.append(TaskItem("每日活跃度", vitality_now >= vitality_max, f"{vitality_now}/{vitality_max}"))
 
         energy_now = _optional_int(data, "energy", "progress", "current")
         energy_max = _optional_int(data, "energy", "progress", "max")

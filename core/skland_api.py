@@ -89,6 +89,10 @@ class SklandQueryError(Exception):
 class SklandAuthError(SklandQueryError):
     """森空岛凭证缺失 / 换取失败。"""
 
+    #: 凭证失效类别随异常类自带——森空岛错误文案没有 retcode= 字样，
+    #: main._query_account 的正则兜底对它永远无效，必须走类属性
+    cred_kind = "auth"
+
 
 class GameNotBoundError(SklandQueryError):
     """凭证有效，但这个森空岛账号下**没有绑这款游戏的角色**。

@@ -821,6 +821,9 @@ class MiyousheQueryError(Exception):
 class MiyousheAuthError(MiyousheQueryError):
     """凭证缺失 / 格式错误。"""
 
+    #: 凭证失效类别随异常类自带（main._query_account 据此分类，不靠错误文案匹配）
+    cred_kind = "auth"
+
 
 class MiyousheNotBoundError(MiyousheAuthError):
     """凭证有效，但这个米游社账号下**没有这款游戏的角色**（或还没绑定角色 UID）。
