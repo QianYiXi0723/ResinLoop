@@ -116,7 +116,9 @@ def main() -> int:
                     extras.append(root)
             elif root.is_dir():
                 extras.extend(
-                    f for f in root.rglob("*") if f.is_file() and f not in expected
+                    f for f in root.rglob("*")
+                    if f.is_file() and f not in expected
+                    and "__pycache__" not in f.parts   # 字节码缓存是运行产物，不算残留
                 )
         if not changes and not extras:
             print("engine/ 与工作树一致，无漂移。")

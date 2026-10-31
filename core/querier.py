@@ -300,7 +300,11 @@ class MiyousheQuerier(BaseQuerier):
         total = _optional_int(data, "total_task_num")
         if finished is None or total is None:
             raise MiyousheQueryError("米游社返回的数据格式有变化，当前版本可能无法识别，请关注软件更新")
-        tasks.append(TaskItem("每日委托", finished >= total, f"{finished}/{total}"))
+        # total=0（委托未解锁/接口没给数据）时不参与判定：0>=0 会退化成「已完成」
+        # ——2026-10-31 朋友机器实证：久未游玩的账号被判「全部完成」。
+        # 森空岛两侧同款护栏早已存在（total<=0 raise），这里补齐米游社侧
+        if total > 0:
+            tasks.append(TaskItem("每日委托", finished >= total, f"{finished}/{total}"))
 
         current_resin = _optional_int(data, "current_resin")
         max_resin = _optional_int(data, "max_resin")
