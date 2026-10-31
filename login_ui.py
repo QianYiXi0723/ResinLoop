@@ -1195,7 +1195,35 @@ def schedule_status() -> Dict[str, Any]:
     }
 
 
-def log_tail(n: int = 200) -> Dict[str, Any]:
+#: 底部运行日志的噪音规则表：这些 INFO 行是程序生命周期/机械动作，
+#: 对用户没有可行动的信息。黑名单式（宁可少滤不可误滤），可增删；
+#: WARNING/ERROR 永远不算噪音（哪怕来自机械动作——出问题就该被看见）。
+_LOG_NOISE_PATTERNS = (
+    "守护进程启动", "守护进程已退出", "守护进程停止",
+    "轮询线程已启动", "轮询线程已退出",
+    "检测到停止标记", "托盘图标已创建",
+    "时间点：", "补发窗口：", "日志：",
+    "测试模式：",
+    "未覆盖游戏", "自动改用",
+    "强制重新换取森空岛凭证",
+    "窗口已关闭", "控制台服务已关闭", "桌面控制台退出",
+)
+
+
+def _classify_log_block(text: str) -> Dict[str, Any]:
+    """给一块日志定级并标记是否为噪音块。首行的 [LEVEL] 决定级别。"""
+    first_line = text.split("\n", 1)[0]
+    if re.search(r"\[(ERROR|CRITICAL)\s*\]", first_line):
+        level = "error"
+    elif re.search(r"\[WARNING\s*\]", first_line):
+        level = "warn"
+    else:
+        level = "info"
+    noise = level == "info" and any(p in text for p in _LOG_NOISE_PATTERNS)
+    return {"level": level, "noise": noise}
+
+
+def log_tail(n: int = 200, useful: bool = False) -> Dict[str, Any]:
     """读取运行日志最后 n 块，给底部日志控制台。
 
     双源按时间戳合并：dailycheck.log（守护进程：巡检/推送）+ desktop.log
@@ -1204,6 +1232,11 @@ def log_tail(n: int = 200) -> Dict[str, Any]:
     零点切分后当天 dailycheck.log 可能为空或不存在，回退最近的 .YYYY-MM-DD。
     无时间戳的续行（traceback 等）并入上一块，保证多行堆栈排序后仍完整。
     key 在 notifier 源头已脱敏，可直接展示。
+
+    ``useful=True``（底部收起条专用）：从窗口里挑**最新一条非噪音块**——
+    收起条的价值在"一眼看到最近发生的有用的事"，而最新任意行大概率是
+    守护进程生命周期噪音（实测噪音占比 ~75-80%）。全窗口都是噪音时
+    回退最新块，保证永远有内容。
     """
     log_dir = BASE_DIR / "logs"
     ts_pat = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
@@ -1239,7 +1272,17 @@ def log_tail(n: int = 200) -> Dict[str, Any]:
         merged = _blocks(_pick(log_dir / "dailycheck.log"), n) + \
                  _blocks(_pick(log_dir / "desktop.log"), n)
         merged.sort(key=lambda item: item[0])
-        return {"ok": True, "lines": [text for _, text in merged[-n:]]}
+        window = merged[-n:]
+        events = []
+        for ts, text in window:
+            info = _classify_log_block(text)
+            events.append({"ts": ts, "level": info["level"],
+                           "noise": info["noise"], "text": text})
+        if useful:
+            picked = [e for e in events if not e["noise"]][-1:] or events[-1:]
+            return {"ok": True, "lines": [e["text"] for e in picked],
+                    "events": picked}
+        return {"ok": True, "lines": [e["text"] for e in events], "events": events}
     except Exception as exc:  # noqa: BLE001 - 前端要的是 200 + 错误文案，不是 500
         return {"ok": False, "message": f"读取日志失败：{exc}"}
 
@@ -1708,7 +1751,8 @@ def run_mihoyo(session: Session) -> None:
             session.step = len(updated_ids)
         updated = [MIHOYO_GAMES.get(g, g) for g in updated_ids]
 
-        note = "设备指纹已绑定到这些游戏，可直接运行 python main.py 验证"
+        # exe 用户没有 main.py：验证入口写 UI 路径（信息查询页刷新），两端通用
+        note = "设备指纹已绑定到这些游戏；到「信息查询」页点「刷新」即可验证"
         if roles_note:
             note = roles_note + "；" + note
         if absent_ids:
@@ -2062,7 +2106,8 @@ class Handler(BaseHTTPRequestHandler):
                 n = int((query.get("n") or ["200"])[0])
             except (TypeError, ValueError):
                 n = 200
-            self._json(log_tail(max(10, min(n, 500))))
+            useful = (query.get("useful") or ["0"])[0].lower() in ("1", "true", "yes")
+            self._json(log_tail(max(10, min(n, 500)), useful=useful))
             return
 
         if parsed.path == "/api/push_history":

@@ -365,7 +365,7 @@ function render(d){
   const items = [];
   if (d.detail) {
     if (d.detail.ltuid) items.push('米游社 ID：<code>' + d.detail.ltuid + '</code>');
-    if (d.detail.games) items.push('已更新：' + d.detail.games.join('、'));
+    if (d.detail.games && d.detail.games.length) items.push('已更新：' + d.detail.games.join('、'));
     if (d.detail.note) items.push(d.detail.note);
   }
   if (d.results && d.results.length && (d.results.length > 1 || d.state === 'error')) {
@@ -3168,34 +3168,47 @@ function renderRuler(times){
 
 /* ========================= 底部日志控制台 ========================= */
 let consoleLoaded = false;
+let consoleShowAll = false;   // 展开视图：false=用户视图（隐藏系统消息）
 
 function renderConsole(d){
   const body = document.getElementById('console-body');
-  const last = document.getElementById('console-last');
   if (!body) return;
   if (!d || d.ok === false) {
     body.innerHTML = '<span class="console-empty">' +
       escHtml((d && d.message) || '读取失败，请点「刷新」重试。') + '</span>';
     return;
   }
-  const lines = d.lines || [];
-  if (!lines.length) {
+  /* 事件流：后端分类好 level/noise；旧响应无 events 时全部按 info 兜底 */
+  const events = (d.events && d.events.length)
+    ? d.events
+    : (d.lines || []).map(function(t){ return {level: 'info', noise: false, text: t}; });
+  if (!events.length) {
     body.innerHTML = '<span class="console-empty">还没有日志。</span>';
-    if (last) last.textContent = '暂无日志';
     return;
   }
-  body.innerHTML = lines.map(function(line){
+  /* 用户视图：噪音块折叠成一条汇总，「显示」可切原始流 */
+  const visible = consoleShowAll ? events
+    : events.filter(function(e){ return !e.noise; });
+  const hidden = events.length - visible.length;
+  let html = '';
+  if (hidden > 0 || consoleShowAll) {
+    html += '<div class="console-fold">' +
+      (consoleShowAll ? '正在显示全部'
+                      : '已隐藏 ' + hidden + ' 条系统消息 · <a id="console-toggle">显示</a>') +
+      (consoleShowAll ? ' · <a id="console-toggle">只看关键</a>' : '') + '</div>';
+  }
+  html += visible.map(function(e){
     let cls = 'cline';
-    if (/ERROR|CRITICAL/.test(line)) cls += ' c-err';
-    else if (/WARNING/.test(line)) cls += ' c-warn';
-    else if (/推送成功/.test(line)) cls += ' c-ok';
-    const marked = escHtml(line).replace(
+    if (e.level === 'error') cls += ' c-err';
+    else if (e.level === 'warn') cls += ' c-warn';
+    else if (/推送成功/.test(e.text)) cls += ' c-ok';
+    const marked = escHtml(e.text).replace(
       /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/, '<span class="c-time">$1</span>')
       .replace(/\n/g, '<br>');   /* 后端按块合并：traceback 等多行块保留换行 */
     return '<div class="' + cls + '">' + marked + '</div>';
   }).join('');
+  body.innerHTML = html;
   body.scrollTop = body.scrollHeight;
-  if (last) last.textContent = lines[lines.length - 1].replace(/^\S+\s+/, '');
 }
 
 function loadConsole(){
@@ -3207,10 +3220,11 @@ function loadConsole(){
     });
 }
 
-/* 收起状态的那一行也要活：每 30s 取最新一块的第一行（原来只在展开/刷新时更新，
-   平时永远停在旧内容）。读失败静默——底部条不是关键路径。 */
+/* 折叠条：取最新一条「非噪音」行——收起条的价值在一眼看到最近发生的有用的事，
+   而最新任意行大概率是守护进程生命周期噪音（实测占比 ~75-80%）。
+   读失败静默——底部条不是关键路径。 */
 function loadConsoleLast(){
-  fetch('/api/logtail?n=1').then(function(r){ return r.json(); })
+  fetch('/api/logtail?n=60&useful=1').then(function(r){ return r.json(); })
     .then(function(d){
       if (!d || d.ok === false) return;
       const lines = d.lines || [];
@@ -3222,6 +3236,14 @@ function loadConsoleLast(){
 }
 loadConsoleLast();
 setInterval(loadConsoleLast, 30000);
+
+/* 「显示系统消息 / 只看关键」切换：console-body 是静态元素，委托只绑一次 */
+document.getElementById('console-body').addEventListener('click', function(e){
+  if (e.target && e.target.id === 'console-toggle') {
+    consoleShowAll = !consoleShowAll;
+    loadConsole();
+  }
+});
 
 document.getElementById('log-console').addEventListener('toggle', function(){
   if (this.open && !consoleLoaded) loadConsole();

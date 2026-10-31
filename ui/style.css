@@ -1130,3 +1130,7 @@
   @keyframes rl-spin{to{transform:rotate(360deg)}}
   .card.flash{animation:rl-flash .9s ease}
   @keyframes rl-flash{0%{box-shadow:0 0 0 0 rgba(59,130,246,.45)}100%{box-shadow:0 0 0 16px rgba(59,130,246,0)}}
+  /* ---------- 底部日志：用户视图（2026-10-31 方案 A）---------- */
+  .console-fold{padding:6px 4px;font-size:11px;color:var(--text-tertiary);
+    border-bottom:1px dashed var(--border);margin-bottom:6px}
+  #console-toggle{cursor:pointer;color:var(--accent);text-decoration:underline}
